@@ -1,0 +1,98 @@
+import unittest
+
+from bedrock_benchmark.analysis.capacity import SweepPoint, apply_headroom, meets_slo, recommend
+from bedrock_benchmark.analysis.metrics import RunMetrics
+
+
+def _metrics(**overrides) -> RunMetrics:
+    defaults = dict(
+        n=100, success_rate=1.0, throttle_rate=0.0, timeout_rate=0.0,
+        request_throughput_rps=5.0, token_throughput_tps=100.0,
+        latency_p50_ms=100.0, latency_p95_ms=200.0, latency_p99_ms=300.0,
+        slo_goodput_rps=5.0, slo_efficiency=1.0,
+    )
+    defaults.update(overrides)
+    return RunMetrics(**defaults)
+
+
+class MeetsSloTests(unittest.TestCase):
+    def test_empty_run_never_meets_slo(self):
+        self.assertFalse(meets_slo(_metrics(n=0)))
+
+    def test_low_success_rate_fails(self):
+        self.assertFalse(meets_slo(_metrics(success_rate=0.90), success_rate_min=0.99))
+
+    def test_high_throttle_rate_fails(self):
+        self.assertFalse(meets_slo(_metrics(throttle_rate=0.05), throttle_rate_max=0.001))
+
+    def test_ttft_over_slo_fails(self):
+        self.assertFalse(meets_slo(_metrics(ttft_p95_ms=1500.0), ttft_p95_slo_ms=1000.0))
+
+    def test_latency_over_slo_fails(self):
+        self.assertFalse(meets_slo(_metrics(latency_p95_ms=5000.0), latency_p95_slo_ms=3000.0))
+
+    def test_all_conditions_satisfied_passes(self):
+        self.assertTrue(meets_slo(
+            _metrics(success_rate=1.0, throttle_rate=0.0, ttft_p95_ms=500.0, latency_p95_ms=1000.0),
+            ttft_p95_slo_ms=1000.0, latency_p95_slo_ms=3000.0,
+        ))
+
+
+class RecommendTests(unittest.TestCase):
+    def test_picks_highest_slo_goodput_among_passing_points(self):
+        points = [
+            SweepPoint(concurrency=1, rps=None, metrics=_metrics(slo_goodput_rps=1.8)),
+            SweepPoint(concurrency=2, rps=None, metrics=_metrics(slo_goodput_rps=3.1)),
+            SweepPoint(concurrency=4, rps=None, metrics=_metrics(slo_goodput_rps=4.7)),
+            SweepPoint(concurrency=6, rps=None, metrics=_metrics(slo_goodput_rps=5.1)),
+        ]
+        rec = recommend(points)
+        self.assertEqual(rec.point.concurrency, 6)
+
+    def test_a_point_that_fails_slo_is_excluded_even_with_higher_raw_throughput(self):
+        """The exact case this repo's README calls out: C=8 has higher
+        raw throughput but blows the SLO via throttling -- C=6 must win."""
+        points = [
+            SweepPoint(concurrency=6, rps=None, metrics=_metrics(slo_goodput_rps=5.1, throttle_rate=0.0)),
+            SweepPoint(concurrency=8, rps=None, metrics=_metrics(slo_goodput_rps=3.9, throttle_rate=0.07)),
+        ]
+        rec = recommend(points, throttle_rate_max=0.001)
+        self.assertEqual(rec.point.concurrency, 6)
+        self.assertEqual(rec.saturation_point.concurrency, 8)
+
+    def test_no_passing_point_returns_none(self):
+        points = [SweepPoint(concurrency=1, rps=None, metrics=_metrics(success_rate=0.5))]
+        self.assertIsNone(recommend(points, success_rate_min=0.99))
+
+    def test_saturation_point_is_none_when_every_point_passes(self):
+        points = [SweepPoint(concurrency=1, rps=None, metrics=_metrics())]
+        rec = recommend(points)
+        self.assertIsNone(rec.saturation_point)
+
+    def test_rate_sweep_uses_rps_as_the_sort_key(self):
+        points = [
+            SweepPoint(concurrency=None, rps=1.0, metrics=_metrics(slo_goodput_rps=1.0)),
+            SweepPoint(concurrency=None, rps=5.0, metrics=_metrics(slo_goodput_rps=5.0)),
+        ]
+        rec = recommend(points)
+        self.assertEqual(rec.point.rps, 5.0)
+
+    def test_ties_broken_toward_lower_concurrency(self):
+        points = [
+            SweepPoint(concurrency=2, rps=None, metrics=_metrics(slo_goodput_rps=5.0)),
+            SweepPoint(concurrency=6, rps=None, metrics=_metrics(slo_goodput_rps=5.0)),
+        ]
+        rec = recommend(points)
+        self.assertEqual(rec.point.concurrency, 2)
+
+
+class ApplyHeadroomTests(unittest.TestCase):
+    def test_reduces_by_the_headroom_fraction(self):
+        self.assertEqual(apply_headroom(10.0, headroom=0.20), 8.0)
+
+    def test_zero_headroom_is_a_no_op(self):
+        self.assertEqual(apply_headroom(10.0, headroom=0.0), 10.0)
+
+
+if __name__ == "__main__":
+    unittest.main()

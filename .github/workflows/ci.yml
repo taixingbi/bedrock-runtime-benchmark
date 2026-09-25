@@ -1,0 +1,58 @@
+name: CI
+
+# No live-Bedrock job here -- this repo's whole reason to exist is
+# spending real time/money against real Bedrock capacity, which CI
+# should never do on every push. Tests run entirely against
+# tests/fakes.py's fake bedrock-runtime client -- no AWS credentials
+# needed or used here.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: Tests (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install boto3 pyyaml pytest
+
+      - name: Run tests
+        run: PYTHONPATH=src python -m pytest tests/ -q
+
+      - name: Verify shipped experiment YAMLs still parse
+        run: PYTHONPATH=src python -c "
+          from bedrock_benchmark.experiments.schema import load_experiment
+          import glob
+          for path in glob.glob('experiments/*.yaml'):
+              load_experiment(path)
+              print(f'ok: {path}')
+          "
+
+  pip-audit:
+    name: Dependency scan (pip-audit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: pip install boto3 pyyaml pytest pip-audit
+      - name: pip-audit
+        run: pip-audit --desc

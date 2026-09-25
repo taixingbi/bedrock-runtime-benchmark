@@ -1,0 +1,40 @@
+# Core experiment #1: how does throughput/TTFT/error rate change as
+# concurrency increases, for one workload shape? Talks to Bedrock
+# directly -- no gateway, no admission control, see this repo's own
+# README on why that boundary matters.
+#
+# quota below is documented context (queried from AWS Service Quotas,
+# same values gateway-model-quotas-dev holds), NOT enforced by this
+# tool -- it only ever measures what actually happens.
+name: nova-micro-concurrency-sweep
+description: |
+  Fixed "short" workload (512 input / 64 output tokens), swept across
+  concurrency 1/2/4/6/8, 120s per point (~10 minutes total). Answers:
+  what's the recommended concurrency for this workload shape under the
+  configured SLO, and where's the saturation edge?
+
+target:
+  model_id: us.amazon.nova-micro-v1:0
+  region: us-east-1
+
+quota:
+  rpm: 400
+  tpm: 8000000
+
+slo:
+  ttft_p95_ms: 1000
+  latency_p95_ms: 3000
+
+workloads:
+  - name: short
+    input_tokens: 512
+    output_tokens: 64
+
+duration_s: 120
+stream: true
+
+sweep:
+  type: concurrency
+  values: [1, 2, 4, 6, 8]
+
+provider_headroom: 0.20
