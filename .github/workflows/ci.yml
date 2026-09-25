@@ -36,7 +36,8 @@ jobs:
         run: PYTHONPATH=src python -m pytest tests/ -q
 
       - name: Verify shipped experiment YAMLs still parse
-        run: PYTHONPATH=src python -c "
+        run: |
+          PYTHONPATH=src python -c "
           from bedrock_benchmark.experiments.schema import load_experiment
           import glob
           for path in glob.glob('experiments/*.yaml'):
