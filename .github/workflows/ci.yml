@@ -54,6 +54,12 @@ jobs:
         with:
           python-version: "3.11"
       - name: Install dependencies
-        run: pip install boto3 pyyaml pytest pip-audit
+        # setuptools upgraded explicitly: the runner's ambient pip/
+        # setuptools (pulled in by actions/setup-python, not a
+        # dependency this project declares) had a known CVE
+        # (PYSEC-2026-3447) that isn't fixed by pinning anything in
+        # pyproject.toml -- live-caught by this exact job failing on
+        # the first real push, not guessed ahead of time.
+        run: pip install --upgrade pip setuptools && pip install boto3 pyyaml pytest pip-audit
       - name: pip-audit
         run: pip-audit --desc
