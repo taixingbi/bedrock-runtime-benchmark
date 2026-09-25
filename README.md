@@ -5,7 +5,7 @@ controlled workloads and derives SLO-aware operating envelopes for
 runtime admission and concurrency configuration.
 
 It does not test the whole gateway, and it does not do release
-regression -- that's `ai-eval-platform`'s job. It answers exactly one
+regression -- that's `bedrock-platform-eval`'s job. It answers exactly one
 question:
 
 > For a given Bedrock model/inference profile and workload shape, at a
@@ -37,7 +37,7 @@ Three sibling repos, three different questions:
 | Repo | Question |
 |---|---|
 | `bedrock-runtime-gateway` | Is the gateway's own implementation correct? |
-| `ai-eval-platform` | Does the *deployed platform* (gateway + Bedrock) behave correctly under real workload? |
+| `bedrock-platform-eval` | Does the *deployed platform* (gateway + Bedrock) behave correctly under real workload? |
 | `bedrock-runtime-benchmark` | What's the *model's own* safe operating envelope, independent of any gateway? |
 
 This repo's output feeds the first two as **input**, not as a replacement
