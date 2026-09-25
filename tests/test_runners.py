@@ -35,7 +35,36 @@ class ConcurrencyRunnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(results, [])
 
 
+    async def test_window_excludes_warmup_and_drain_is_recorded(self):
+        class SlowFakeTarget(BedrockConverseTarget):
+            async def invoke(self, request):
+                await asyncio.sleep(0.05)
+                return await super().invoke(request)
+
+        target = SlowFakeTarget(model_id="m", client=FakeBedrockRuntimeClient())
+        profile = WorkloadProfile(name="short", input_tokens=100, output_tokens=16)
+        runner = ConcurrencyRunner(target, profile, concurrency=2, duration_s=0.2, warmup_s=0.1, stream=False)
+
+        results = await runner.run()
+
+        self.assertAlmostEqual(runner.window.duration_s, 0.2, places=6)
+        self.assertTrue(any(r.scheduled_at < runner.window.start for r in results))  # warmup ran
+        self.assertTrue(any(r.completed_at >= runner.window.end for r in results))   # drain recorded
+        self.assertTrue(all(r.scheduled_at < runner.window.end for r in results))    # nothing fired after close
+
+
 class RateRunnerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_arrivals_span_warmup_plus_window(self):
+        target = BedrockConverseTarget(model_id="m", client=FakeBedrockRuntimeClient())
+        profile = WorkloadProfile(name="short", input_tokens=100, output_tokens=16)
+        runner = RateRunner(target, profile, rps=50.0, duration_s=0.3, warmup_s=0.2, stream=False, seed=0)
+
+        results = await runner.run()
+
+        self.assertTrue(any(r.scheduled_at < runner.window.start for r in results))
+        self.assertTrue(any(runner.window.contains(r.scheduled_at) for r in results))
+        self.assertTrue(all(r.scheduled_at < runner.window.end for r in results))
+
     async def test_fires_expected_number_of_requests_for_a_constant_ish_rate(self):
         client = FakeBedrockRuntimeClient()
         target = BedrockConverseTarget(model_id="m", client=client)

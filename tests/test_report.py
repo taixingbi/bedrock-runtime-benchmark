@@ -43,11 +43,11 @@ class BuildCapacityProfileTests(unittest.TestCase):
         defaults.update(overrides)
         return ExperimentSpec(**defaults)
 
-    def test_schema_version_is_2(self):
+    def test_schema_version_is_3(self):
         spec = self._spec()
         report = ExperimentReport(spec=spec, profiles=[ProfileReport(workload_name="short", recommendation=None)])
         profile = build_capacity_profile(report)
-        self.assertEqual(profile["schema_version"], 2)
+        self.assertEqual(profile["schema_version"], 3)
 
     def test_concurrency_sweep_writes_a_concurrency_block_not_rate(self):
         spec = self._spec(sweep_type="concurrency")
@@ -87,11 +87,51 @@ class BuildCapacityProfileTests(unittest.TestCase):
 
         self.assertIn("rate", entry)
         self.assertNotIn("concurrency", entry)
-        self.assertEqual(entry["rate"]["measured_sustainable_rps"], 5.8)
-        self.assertEqual(entry["rate"]["saturation_rps"], 7.0)
-        # 5.8 * (1 - 0.20) = 4.64 -- rate headroom is NOT floored to an int
-        # (unlike concurrency), since a fractional RPS is meaningful.
-        self.assertAlmostEqual(entry["rate"]["production_rps"], 4.64, places=4)
+        self.assertEqual(entry["rate"]["saturation_offered_rps"], 7.0)
+
+    def test_rate_block_keeps_offered_load_and_goodput_separate(self):
+        """The schema v3 fix: v2's `measured_sustainable_rps` was the
+        best point's GOODPUT and headroom was applied to it -- but a
+        gateway admission limit is on OFFERED load. 6.0 rps offered
+        that delivered 5.8 rps within SLO must produce a production
+        limit of 6.0 * 0.8 = 4.8 offered rps, not 5.8 * 0.8 = 4.64."""
+        spec = self._spec(sweep_type="rate", sweep_values=[5, 6, 7])
+        rec = Recommendation(
+            point=SweepPoint(concurrency=None, rps=6.0, metrics=_metrics(slo_goodput_rps=5.8)),
+            saturation_point=SweepPoint(concurrency=None, rps=7.0, metrics=_metrics(throttle_rate=0.05)),
+        )
+        report = ExperimentReport(spec=spec, profiles=[ProfileReport(workload_name="short", recommendation=rec)])
+
+        rate = build_capacity_profile(report)["workload_classes"]["short"]["rate"]
+
+        self.assertEqual(rate["max_safe_offered_rps"], 6.0)
+        self.assertEqual(rate["slo_goodput_rps"], 5.8)
+        # Not floored to an int (unlike concurrency) -- fractional RPS is meaningful.
+        self.assertAlmostEqual(rate["production_offered_rps"], 4.8, places=4)
+        self.assertNotIn("measured_sustainable_rps", rate)
+        self.assertNotIn("production_rps", rate)
+
+    def test_evidence_and_measurement_blocks_are_recorded(self):
+        spec = self._spec(warmup_s=10.0, repetitions=3, slo=SloConfig(ttft_p95_ms=1000, confidence=0.95))
+        rec = Recommendation(
+            point=SweepPoint(
+                concurrency=6, rps=None,
+                metrics=_metrics(n=3000, n_throttled=0, throttle_rate_upper=0.0009, success_rate_lower=0.999),
+                repetitions=[_metrics(slo_goodput_rps=5.0), _metrics(slo_goodput_rps=5.2), _metrics(slo_goodput_rps=5.1)],
+            ),
+            saturation_point=None,
+        )
+        report = ExperimentReport(spec=spec, profiles=[ProfileReport(workload_name="short", recommendation=rec)])
+
+        profile = build_capacity_profile(report)
+
+        m = profile["measurement"]
+        self.assertEqual((m["warmup_s"], m["repetitions"], m["gate"]), (10.0, 3, "confidence_bound"))
+        self.assertGreater(m["min_requests_to_resolve_throttle_slo"], 2000)
+        ev = profile["workload_classes"]["short"]["evidence"]
+        self.assertEqual(ev["n"], 3000)
+        self.assertEqual(ev["throttle_rate_upper"], 0.0009)
+        self.assertEqual(ev["repetition_slo_goodput_rps"], [5.0, 5.2, 5.1])
 
     def test_no_global_concurrency_rollup_is_derived_from_isolated_per_class_maxima(self):
         """The other real bug this fixes: there is no scientifically
@@ -156,6 +196,21 @@ class BuildCapacityProfileTests(unittest.TestCase):
         observed = profile["workload_classes"]["short"]["observed"]
         self.assertIsNotNone(observed["input_tokens_p50"])
         self.assertIsNotNone(observed["output_tokens_p50"])
+
+    def test_workload_validation_compares_requested_vs_bedrock_reported_input(self):
+        spec = self._spec()
+        report = ExperimentReport(
+            spec=spec, profiles=[ProfileReport(workload_name="short", recommendation=None)],
+            all_results=[_result(input_tokens=700), _result(input_tokens=700),
+                         _result(input_tokens=9999, tags={"workload": "short", "measured": False})],
+        )
+
+        v = build_capacity_profile(report)["workload_classes"]["short"]["workload_validation"]
+
+        self.assertEqual(v["observed_input_tokens_p50"], 700)  # warmup (measured: False) excluded
+        self.assertAlmostEqual(v["deviation_pct"], 36.72, places=2)
+        self.assertFalse(v["valid"])
+        self.assertEqual(v["padding"], "4_chars_per_token_estimate")
 
     def test_quota_snapshot_and_slo_and_transport_are_recorded(self):
         spec = self._spec()

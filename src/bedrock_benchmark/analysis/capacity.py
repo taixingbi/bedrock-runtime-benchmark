@@ -11,8 +11,8 @@ measured point actually produced.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import List, Optional
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional
 
 from .metrics import RunMetrics
 
@@ -24,19 +24,43 @@ class SweepPoint:
     RateRunner)."""
     concurrency: Optional[int]
     rps: Optional[float]
+    # Pooled across every repetition's measurement window -- what the
+    # SLO gate and the recommendation read.
     metrics: RunMetrics
+    # One entry per repetition, kept so run-to-run spread is visible
+    # instead of hidden inside the pooled number.
+    repetitions: List[RunMetrics] = field(default_factory=list)
+    # Mixed-workload sweeps only: pooled metrics per drawn class. The
+    # SLO must hold for EVERY class, not just the blend -- a 70/30
+    # short/long mix can have a fine aggregate p95 while the long
+    # class alone blows its latency SLO.
+    class_metrics: Dict[str, RunMetrics] = field(default_factory=dict)
 
 
 def meets_slo(
     metrics: RunMetrics, *,
     success_rate_min: float = 0.99, throttle_rate_max: float = 0.001,
     ttft_p95_slo_ms: Optional[float] = None, latency_p95_slo_ms: Optional[float] = None,
+    gate_on_bounds: bool = False,
 ) -> bool:
+    """gate_on_bounds=True gates the two rate SLOs on their confidence
+    bounds (success_rate_lower / throttle_rate_upper) instead of the
+    raw point estimates -- a point must DEMONSTRATE it meets the SLO
+    at the measured sample size, not merely fail to observe a
+    violation. Too few requests then fails closed, the same way a
+    configured-but-unmeasured TTFT SLO does below."""
     if metrics.n == 0:
         return False
-    if metrics.success_rate < success_rate_min:
+    success_rate = metrics.success_rate
+    throttle_rate = metrics.throttle_rate
+    if gate_on_bounds:
+        if metrics.success_rate_lower is None or metrics.throttle_rate_upper is None:
+            return False
+        success_rate = metrics.success_rate_lower
+        throttle_rate = metrics.throttle_rate_upper
+    if success_rate < success_rate_min:
         return False
-    if metrics.throttle_rate > throttle_rate_max:
+    if throttle_rate > throttle_rate_max:
         return False
     # A configured TTFT SLO with no TTFT measurement at all (e.g.
     # stream: false, or every streaming call failed before its first
@@ -48,6 +72,12 @@ def meets_slo(
     if latency_p95_slo_ms is not None and metrics.latency_p95_ms > latency_p95_slo_ms:
         return False
     return True
+
+
+def point_meets_slo(point: SweepPoint, **slo_kwargs) -> bool:
+    return meets_slo(point.metrics, **slo_kwargs) and all(
+        meets_slo(m, **slo_kwargs) for m in point.class_metrics.values()
+    )
 
 
 @dataclass
@@ -69,8 +99,8 @@ def recommend(points: List[SweepPoint], **slo_kwargs) -> Optional[Recommendation
     all -- a real, worth-surfacing result (this workload may not be
     safely servable under this SLO at any of the swept values), not
     silently recommending the least-bad option."""
-    passing = [p for p in points if meets_slo(p.metrics, **slo_kwargs)]
-    failing = [p for p in points if not meets_slo(p.metrics, **slo_kwargs)]
+    passing = [p for p in points if point_meets_slo(p, **slo_kwargs)]
+    failing = [p for p in points if not point_meets_slo(p, **slo_kwargs)]
 
     def sort_key(p: SweepPoint):
         return p.concurrency if p.concurrency is not None else p.rps

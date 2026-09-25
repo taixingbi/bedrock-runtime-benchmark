@@ -1,18 +1,29 @@
-[tool.poetry]
+# Standard [project] metadata (read by poetry-core >= 2 AND plain pip),
+# so local dev and CI install the exact same constraints from one
+# place: `pip install -e ".[dev]"`. Python support is declared once
+# here; .python-version pins the default dev interpreter, and CI's
+# matrix covers every minor version in requires-python.
+[project]
 name = "bedrock-runtime-benchmark"
 version = "0.1.0"
 description = "Characterizes Bedrock model capacity under controlled workloads and derives SLO-aware operating envelopes for runtime admission/concurrency configuration."
-authors = []
 readme = "README.md"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+    "boto3>=1.34,<2.0",
+    "pyyaml>=6.0,<7.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0,<9.0",
+]
+
+[tool.poetry]
 packages = [{ include = "bedrock_benchmark", from = "src" }]
 
-[tool.poetry.dependencies]
-python = ">=3.11,<3.13"
-boto3 = ">=1.34,<2.0"
-pyyaml = ">=6.0,<7.0"
-
-[tool.poetry.group.dev.dependencies]
-pytest = ">=8.0,<9.0"
+[tool.pytest.ini_options]
+testpaths = ["tests"]
 
 [build-system]
 requires = ["poetry-core>=2.0,<3.0"]

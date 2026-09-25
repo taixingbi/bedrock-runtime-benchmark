@@ -1,0 +1,59 @@
+# P2: mixed-workload capacity. Isolated per-class sweeps (token-sweep.yaml)
+# can't be combined into one cross-class number -- a real mix of short
+# and long traffic can exceed safe capacity before either class's own
+# isolated measurement would predict. This sweeps ONE offered rate where
+# every arrival independently draws its class by weight, and a point
+# passes only if the SLO holds for EACH class, not just the blend.
+#
+# The resulting mixed_workloads envelope is valid for THIS mix's shares
+# only -- a different traffic mix needs its own run.
+name: nova-micro-mixed-capacity
+description: |
+  Poisson rate sweep 1..8 rps (straddling the ~6.67 rps RPM ceiling),
+  70% short (512/64) + 30% long_long (4096/512), 90s window + 10s warmup
+  per point (~14 minutes total).
+
+target:
+  model_id: us.amazon.nova-micro-v1:0
+  region: us-east-1
+
+quota_snapshot:
+  rpm: 400
+  tpm: 8000000
+
+slo:
+  ttft_p95_ms: 1000
+  latency_p95_ms: 3000
+  success_rate_min: 0.99
+  throttle_rate_max: 0.001
+
+workloads:
+  - name: short
+    input_tokens: 512
+    output_tokens: 64
+  - name: long_long
+    input_tokens: 4096
+    output_tokens: 512
+
+mix:
+  name: short70_long30
+  weights:
+    short: 0.7
+    long_long: 0.3
+
+warmup_s: 10
+duration_s: 90
+stream: true
+seed: 7
+
+sweep:
+  type: rate
+  values: [1, 2, 3, 4, 5, 6, 7, 8]
+
+provider_headroom: 0.20
+
+transport:
+  max_connections: 64
+  total_max_attempts: 1
+  connect_timeout_s: 5
+  read_timeout_s: 60

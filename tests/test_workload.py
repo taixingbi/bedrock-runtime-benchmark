@@ -1,6 +1,7 @@
+import random
 import unittest
 
-from bedrock_benchmark.workload import WorkloadProfile
+from bedrock_benchmark.workload import WorkloadMix, WorkloadProfile
 
 
 class WorkloadProfileTests(unittest.TestCase):
@@ -27,6 +28,26 @@ class WorkloadProfileTests(unittest.TestCase):
         a = WorkloadProfile(name="a", input_tokens=100, output_tokens=64)
         b = WorkloadProfile(name="b", input_tokens=4096, output_tokens=64)
         self.assertNotEqual(a.prompt(), b.prompt())
+
+
+class WorkloadMixTests(unittest.TestCase):
+    def test_samples_classes_in_proportion_to_weight(self):
+        short = WorkloadProfile(name="short", input_tokens=512, output_tokens=64)
+        long = WorkloadProfile(name="long", input_tokens=4096, output_tokens=512)
+        mix = WorkloadMix(name="m", entries=[(short, 7), (long, 3)])
+        rng = random.Random(0)
+
+        draws = [mix.sample(rng).name for _ in range(5000)]
+
+        self.assertAlmostEqual(draws.count("short") / 5000, 0.7, delta=0.03)
+        self.assertEqual(mix.shares, {"short": 0.7, "long": 0.3})
+
+    def test_rejects_empty_or_nonpositive_weights(self):
+        p = WorkloadProfile(name="p", input_tokens=1, output_tokens=1)
+        with self.assertRaises(ValueError):
+            WorkloadMix(name="m", entries=[])
+        with self.assertRaises(ValueError):
+            WorkloadMix(name="m", entries=[(p, 0)])
 
 
 if __name__ == "__main__":

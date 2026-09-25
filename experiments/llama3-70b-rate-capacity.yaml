@@ -38,6 +38,10 @@ workloads:
     input_tokens: 512
     output_tokens: 64
 
+# warmup_s runs load before the measurement window opens and is never
+# counted; in-flight requests at window close drain and are recorded,
+# but only in-window completions count toward throughput/goodput.
+warmup_s: 10
 duration_s: 120
 stream: true
 

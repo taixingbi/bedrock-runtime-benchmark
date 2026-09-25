@@ -56,5 +56,48 @@ class LoadExperimentTests(unittest.TestCase):
             Path(path).unlink()
 
 
+    def test_measurement_fields_default_and_validate(self):
+        import tempfile
+        from pathlib import Path
+
+        base = (
+            "name: minimal\n"
+            "target: {model_id: m, region: us-east-1}\n"
+            "workloads: [{name: w, input_tokens: 100, output_tokens: 16}]\n"
+            "sweep: {type: concurrency, values: [1]}\n"
+        )
+        cases = [
+            (base, None),
+            (base + "repetitions: 0\n", ValueError),
+            (base + "slo: {confidence: 1.5}\n", ValueError),
+            (base + "mix: {name: x, weights: {nope: 1}}\n", ValueError),
+            (base + "mix: {name: x, weights: {w: 0}}\n", ValueError),
+        ]
+        for text, expected_error in cases:
+            with self.subTest(text=text), tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as f:
+                f.write(text)
+                path = f.name
+            try:
+                if expected_error:
+                    with self.assertRaises(expected_error):
+                        load_experiment(path)
+                else:
+                    spec = load_experiment(path)
+                    self.assertEqual((spec.warmup_s, spec.repetitions, spec.slo.confidence), (0.0, 1, None))
+            finally:
+                Path(path).unlink()
+
+    def test_every_shipped_experiment_loads(self):
+        from pathlib import Path
+        for path in sorted(Path("experiments").glob("*.yaml")):
+            with self.subTest(path=path.name):
+                load_experiment(str(path))
+
+    def test_mixed_capacity_experiment_defines_a_valid_mix(self):
+        spec = load_experiment("experiments/mixed-capacity.yaml")
+        self.assertEqual(spec.mix.weights, {"short": 0.7, "long_long": 0.3})
+        self.assertEqual(spec.workload_validation_tolerance_pct, 10.0)
+
+
 if __name__ == "__main__":
     unittest.main()

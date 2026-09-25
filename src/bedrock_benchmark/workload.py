@@ -6,15 +6,26 @@ this repo never assumes one workload shape represents "the" capacity
 of a model.
 
 `prompt()` generates a real input string of approximately
-input_tokens length using the same ~4-chars-per-token heuristic
+input_tokens length using the same ~4-chars-per-token estimate
 bedrock-runtime-gateway's own usage/token_estimate.py uses -- it only
 needs to be CLOSE, not exact: the real input_tokens actually consumed
 comes back from Bedrock's own response usage block and is what's
-recorded on RequestResult, never this estimate.
+recorded on RequestResult, never this estimate. report.py's
+workload_validation compares that real count against the requested
+shape, so a model whose tokenizer strays far from 4 chars/token is
+flagged rather than silently mislabeled.
+
+WorkloadMix -- a weighted set of profiles for mixed-workload
+experiments: each request independently samples its class, so short
+and long traffic genuinely overlap in flight, which is the only way to
+measure what isolated per-class sweeps can't (see report.py on why no
+global number is ever derived from isolated maxima).
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+import random
+from dataclasses import dataclass, field
+from typing import List, Tuple
 
 _CHARS_PER_TOKEN_ESTIMATE = 4
 _FILLER_WORD = "benchmark "  # 10 chars incl. space -- deliberately plain, no semantic content to bias the model
@@ -42,3 +53,31 @@ class WorkloadProfile:
             f"length. Write approximately {target_words} words of any plausible "
             f"filler content on a neutral topic."
         )
+
+    def sample(self, rng: random.Random) -> "WorkloadProfile":
+        """A single profile is a one-class mix -- lets runners treat
+        both uniformly."""
+        return self
+
+
+@dataclass
+class WorkloadMix:
+    name: str
+    entries: List[Tuple[WorkloadProfile, float]] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if not self.entries:
+            raise ValueError(f"mix {self.name!r} has no entries")
+        if any(w <= 0 for _, w in self.entries):
+            raise ValueError(f"mix {self.name!r} weights must all be > 0")
+
+    @property
+    def shares(self) -> dict:
+        """Normalized weights -- what fraction of offered load each class gets."""
+        total = sum(w for _, w in self.entries)
+        return {p.name: w / total for p, w in self.entries}
+
+    def sample(self, rng: random.Random) -> WorkloadProfile:
+        profiles = [p for p, _ in self.entries]
+        weights = [w for _, w in self.entries]
+        return rng.choices(profiles, weights=weights, k=1)[0]

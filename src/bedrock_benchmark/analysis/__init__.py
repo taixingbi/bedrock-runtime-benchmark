@@ -1,7 +1,11 @@
-from .capacity import Recommendation, SweepPoint, apply_headroom, meets_slo, recommend
-from .metrics import RunMetrics, compute_run_metrics, percentile
+from .capacity import Recommendation, SweepPoint, apply_headroom, meets_slo, point_meets_slo, recommend
+from .metrics import (
+    MeasurementWindow, RunMetrics, compute_run_metrics, min_samples_to_resolve_rate, percentile,
+    wilson_lower, wilson_upper,
+)
 
 __all__ = [
-    "Recommendation", "SweepPoint", "apply_headroom", "meets_slo", "recommend",
-    "RunMetrics", "compute_run_metrics", "percentile",
+    "Recommendation", "SweepPoint", "apply_headroom", "meets_slo", "point_meets_slo", "recommend",
+    "MeasurementWindow", "RunMetrics", "compute_run_metrics", "min_samples_to_resolve_rate", "percentile",
+    "wilson_lower", "wilson_upper",
 ]

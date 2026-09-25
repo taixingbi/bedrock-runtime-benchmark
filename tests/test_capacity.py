@@ -1,6 +1,6 @@
 import unittest
 
-from bedrock_benchmark.analysis.capacity import SweepPoint, apply_headroom, meets_slo, recommend
+from bedrock_benchmark.analysis.capacity import SweepPoint, apply_headroom, meets_slo, point_meets_slo, recommend
 from bedrock_benchmark.analysis.metrics import RunMetrics
 
 
@@ -52,6 +52,33 @@ class MeetsSloTests(unittest.TestCase):
             _metrics(success_rate=1.0, throttle_rate=0.0, ttft_p95_ms=500.0, latency_p95_ms=1000.0),
             ttft_p95_slo_ms=1000.0, latency_p95_slo_ms=3000.0,
         ))
+
+
+class GateOnBoundsTests(unittest.TestCase):
+    def test_clean_point_with_too_few_samples_fails_when_gating_on_bounds(self):
+        m = _metrics(n=540, throttle_rate=0.0, throttle_rate_upper=0.005, success_rate_lower=0.993)
+        self.assertTrue(meets_slo(m, throttle_rate_max=0.001))
+        self.assertFalse(meets_slo(m, throttle_rate_max=0.001, gate_on_bounds=True))
+
+    def test_resolved_point_passes_when_gating_on_bounds(self):
+        m = _metrics(n=3000, throttle_rate=0.0, throttle_rate_upper=0.0009, success_rate_lower=0.999)
+        self.assertTrue(meets_slo(m, throttle_rate_max=0.001, gate_on_bounds=True))
+
+    def test_missing_bounds_fail_closed(self):
+        self.assertFalse(meets_slo(_metrics(), gate_on_bounds=True))
+
+
+class MixedPointTests(unittest.TestCase):
+    def test_a_failing_class_fails_the_point_even_if_the_blend_passes(self):
+        """70/30 short/long: the blended p95 can look fine while the
+        long class alone blows the latency SLO."""
+        point = SweepPoint(
+            concurrency=None, rps=5.0, metrics=_metrics(latency_p95_ms=2500.0),
+            class_metrics={"short": _metrics(latency_p95_ms=800.0), "long": _metrics(latency_p95_ms=4200.0)},
+        )
+        self.assertTrue(meets_slo(point.metrics, latency_p95_slo_ms=3000.0))
+        self.assertFalse(point_meets_slo(point, latency_p95_slo_ms=3000.0))
+        self.assertIsNone(recommend([point], latency_p95_slo_ms=3000.0))
 
 
 class RecommendTests(unittest.TestCase):

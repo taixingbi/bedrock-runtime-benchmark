@@ -5,6 +5,12 @@ name: CI
 # should never do on every push. Tests run entirely against
 # tests/fakes.py's fake bedrock-runtime client -- no AWS credentials
 # needed or used here.
+#
+# Python version policy -- one source each, no drift:
+#   requires-python (pyproject.toml) = supported range -> the test matrix
+#   .python-version                  = default dev interpreter -> pip-audit
+# Dependencies always come from pyproject.toml (`pip install -e ".[dev]"`),
+# the same command local dev uses -- never a hand-listed package set.
 
 on:
   push:
@@ -28,16 +34,17 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
+          cache-dependency-path: pyproject.toml
 
-      - name: Install dependencies
-        run: pip install boto3 pyyaml pytest
+      - name: Install project + dev dependencies
+        run: pip install --upgrade pip && pip install -e ".[dev]"
 
       - name: Run tests
-        run: PYTHONPATH=src python -m pytest tests/ -q
+        run: python -m pytest -q
 
       - name: Verify shipped experiment YAMLs still parse
         run: |
-          PYTHONPATH=src python -c "
+          python -c "
           from bedrock_benchmark.experiments.schema import load_experiment
           import glob
           for path in glob.glob('experiments/*.yaml'):
@@ -52,7 +59,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version-file: .python-version
       - name: Install dependencies
         # setuptools upgraded explicitly: the runner's ambient pip/
         # setuptools (pulled in by actions/setup-python, not a
@@ -60,6 +67,8 @@ jobs:
         # (PYSEC-2026-3447) that isn't fixed by pinning anything in
         # pyproject.toml -- live-caught by this exact job failing on
         # the first real push, not guessed ahead of time.
-        run: pip install --upgrade pip setuptools && pip install boto3 pyyaml pytest pip-audit
+        run: pip install --upgrade pip setuptools && pip install -e ".[dev]" pip-audit
       - name: pip-audit
-        run: pip-audit --desc
+        # --skip-editable: the project itself isn't on PyPI to audit;
+        # its resolved dependencies are.
+        run: pip-audit --desc --skip-editable
