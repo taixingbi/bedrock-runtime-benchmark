@@ -91,6 +91,23 @@ python3.11 -m venv .venv && .venv/bin/pip install -e ".[dev]"   # same install C
 .venv/bin/python scripts/run.py experiments/concurrency-sweep.yaml
 ```
 
+To run every experiment in one go:
+
+```bash
+.venv/bin/python scripts/run_all.py --dry-run     # validate all + time estimate, no AWS calls
+.venv/bin/python scripts/run_all.py               # all experiments/*.yaml (~1.5-2h)
+.venv/bin/python scripts/run_all.py experiments/slo-capacity.yaml experiments/mixed-capacity.yaml
+.venv/bin/python scripts/run_all.py --gateway-config my-gateway.yaml   # + gateway diff at the end
+```
+
+Experiments run strictly one after another -- they share the account's
+Bedrock quota, so running them in parallel would make each measure the
+other's load as throttling. Every file is validated before the first
+call; a failed experiment doesn't stop the rest (`--fail-fast` to
+stop). Artifacts and a `summary.yaml` go to
+`results/run-all-<timestamp>/`; exit code is non-zero if any
+experiment failed or the gateway diff has warn findings.
+
 Writes raw per-request JSONL and a `capacity-profile.yaml` artifact to
 `results/` (gitignored -- these are real measurement outputs, not
 checked-in fixtures). The `capacity-profile.yaml` schema (v3 -- see
