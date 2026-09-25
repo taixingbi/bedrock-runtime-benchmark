@@ -171,6 +171,57 @@ artifact was ever used to actually inform a gateway config:
   RPM/throttling saturation. The canonical "give me the production
   envelope" run.
 
+## Quota-aware experiment design
+
+Picking sane sweep values (especially rate-sweep values) is guesswork
+without knowing the model's real RPM/TPM ceiling first -- a
+concurrency sweep starting at `[1, 2, 4, ...]` is useless if even
+concurrency=1 closed-loop already runs over quota, which turns out to
+be true for some certified models. `scripts/fetch_quota.py` and
+`src/bedrock_benchmark/quota.py` exist to make that ceiling a known
+number before an experiment is written, not a name for it to just do.
+
+```bash
+PYTHONPATH=src .venv/bin/python scripts/fetch_quota.py --model-id us.amazon.nova-pro-v1:0
+```
+
+prints a `quota_snapshot:` block ready to paste into an experiment
+file. It looks up the model's real RPM/TPM in two steps, table first:
+
+1. `gateway-model-quotas-dev`'s `quota#<model_id>` row, if that table
+   happens to be reachable -- a cheap `GetItem` against a value
+   `bedrock-runtime-gateway` already synced from AWS. A soft
+   convenience: this repo doesn't provision that table and doesn't
+   assume it exists.
+2. AWS Service Quotas directly (`service-quotas:ListServiceQuotas`),
+   the actual source of truth, whenever the table lookup fails for
+   any reason (table missing, row missing, no permission, wrong
+   account/region).
+
+If neither source is available it returns `source: unknown` rather
+than raising -- a missing quota number should never block an
+experiment design conversation, it should just make the gap visible.
+This is read-only, design-time context: nothing at runtime checks or
+caps against it (see "Not in scope here" below).
+
+Two experiments were designed this way, from real quota numbers plus
+a live single-request latency check at each model's real ceiling:
+
+- **`nova-pro-rate-capacity.yaml`** -- nova-pro's real quota (50 RPM
+  = 0.83 rps) is far tighter than nova-micro/lite's, and its ~616ms
+  real per-call latency means concurrency=1 closed-loop already runs
+  at ~1.6 rps -- about 2x over quota before a concurrency sweep would
+  even start sweeping. Only a fractional-rps rate sweep (`[0.2, 0.4,
+  0.6, 0.8, 1.2, 1.6, 2.0]`) can resolve where its safe zone actually
+  is.
+- **`llama3-70b-rate-capacity.yaml`** -- llama3-3-70b's real quota (80
+  RPM = 1.33 rps) sits almost exactly at its own concurrency=1
+  closed-loop rate (~1.32 rps, from a ~759ms real per-call latency),
+  and this model has the tightest TPM budget relative to RPM (600,000
+  TPM) of any certified model -- worth watching for whether TPM or
+  RPM saturates first. Same fractional-rps rate-sweep approach,
+  bracketing the ceiling from `[0.4 .. 3.0]`.
+
 ## Not in scope here
 
 AIMD, tenant limiters, global admission control, queueing, fairness --
