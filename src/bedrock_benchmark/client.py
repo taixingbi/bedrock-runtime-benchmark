@@ -32,6 +32,33 @@ class InvokeRequest:
     scheduled_at: float = 0.0
 
 
+@dataclass
+class TransportConfig:
+    """Explicit boto3 networking/retry config -- NOT the SDK's implicit
+    defaults. Two failure modes this exists to prevent:
+
+    1. Connection-pool/thread-pool exhaustion masquerading as model
+       capacity: sweeping concurrency up to 32/64 against boto3's
+       default pool size (10) would measure the SDK's own queueing,
+       not Bedrock's.
+    2. The SDK's own automatic retry silently absorbing a real
+       ThrottlingException (Bedrock 429 -> SDK retries -> eventual 200
+       -> this repo records "success") -- which UNDERSTATES the real
+       throttle rate, exactly the number this repo exists to measure
+       accurately. retry_max_attempts=1 (the default here) means zero
+       SDK-level retries: every throttle is observed and recorded, not
+       silently absorbed.
+
+    Recorded into the capacity-profile.yaml artifact (see report.py)
+    so a measurement is reproducible -- what was actually running when
+    a number was measured, not just the number itself.
+    """
+    max_connections: int = 64
+    retry_max_attempts: int = 1  # 1 = no retries; SDK retry would understate the real throttle rate
+    connect_timeout_s: float = 5.0
+    read_timeout_s: float = 60.0
+
+
 def _client_error_code(exc: Exception) -> Optional[str]:
     response = getattr(exc, "response", None)
     if response is None:
@@ -40,14 +67,24 @@ def _client_error_code(exc: Exception) -> Optional[str]:
 
 
 class BedrockConverseTarget:
-    def __init__(self, *, model_id: str, region: str = "us-east-1", client: Optional[Any] = None):
+    def __init__(self, *, model_id: str, region: str = "us-east-1", client: Optional[Any] = None,
+                 transport: Optional[TransportConfig] = None):
         self.model_id = model_id
         self.region = region
+        self.transport = transport or TransportConfig()
         if client is not None:
             self._client = client
         else:
             import boto3
-            self._client = boto3.client("bedrock-runtime", region_name=region)
+            from botocore.config import Config as BotoConfig
+
+            boto_config = BotoConfig(
+                max_pool_connections=self.transport.max_connections,
+                connect_timeout=self.transport.connect_timeout_s,
+                read_timeout=self.transport.read_timeout_s,
+                retries={"max_attempts": self.transport.retry_max_attempts, "mode": "standard"},
+            )
+            self._client = boto3.client("bedrock-runtime", region_name=region, config=boto_config)
 
     async def invoke(self, request: InvokeRequest) -> RequestResult:
         return await asyncio.to_thread(self._invoke_sync, request)

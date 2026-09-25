@@ -3,9 +3,16 @@
 # directly -- no gateway, no admission control, see this repo's own
 # README on why that boundary matters.
 #
-# quota below is documented context (queried from AWS Service Quotas,
-# same values gateway-model-quotas-dev holds), NOT enforced by this
-# tool -- it only ever measures what actually happens.
+# quota_snapshot below is documented context (queried from AWS Service
+# Quotas, same values gateway-model-quotas-dev holds), NOT enforced by
+# this tool -- it only ever measures what actually happens.
+#
+# transport is explicit and recorded into the resulting
+# capacity-profile.yaml for reproducibility -- retry.max_attempts=1
+# specifically, since the SDK's own automatic retry would silently
+# absorb a real Bedrock 429 into an eventual 200, understating the
+# real throttle rate this sweep exists to measure (see client.py's
+# TransportConfig docstring).
 name: nova-micro-concurrency-sweep
 description: |
   Fixed "short" workload (512 input / 64 output tokens), swept across
@@ -17,13 +24,15 @@ target:
   model_id: us.amazon.nova-micro-v1:0
   region: us-east-1
 
-quota:
+quota_snapshot:
   rpm: 400
   tpm: 8000000
 
 slo:
   ttft_p95_ms: 1000
   latency_p95_ms: 3000
+  success_rate_min: 0.99
+  throttle_rate_max: 0.001
 
 workloads:
   - name: short
@@ -38,3 +47,9 @@ sweep:
   values: [1, 2, 4, 6, 8]
 
 provider_headroom: 0.20
+
+transport:
+  max_connections: 64
+  retry_max_attempts: 1
+  connect_timeout_s: 5
+  read_timeout_s: 60

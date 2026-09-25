@@ -38,7 +38,12 @@ def meets_slo(
         return False
     if metrics.throttle_rate > throttle_rate_max:
         return False
-    if ttft_p95_slo_ms is not None and metrics.ttft_p95_ms is not None and metrics.ttft_p95_ms > ttft_p95_slo_ms:
+    # A configured TTFT SLO with no TTFT measurement at all (e.g.
+    # stream: false, or every streaming call failed before its first
+    # token) is a missing/invalid measurement, not a pass -- same fix
+    # as metrics.py's per-request meets_slo, and for the same reason:
+    # the old form silently skipped the check when ttft_p95_ms was None.
+    if ttft_p95_slo_ms is not None and (metrics.ttft_p95_ms is None or metrics.ttft_p95_ms > ttft_p95_slo_ms):
         return False
     if latency_p95_slo_ms is not None and metrics.latency_p95_ms > latency_p95_slo_ms:
         return False

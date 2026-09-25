@@ -71,6 +71,16 @@ class ComputeRunMetricsTests(unittest.TestCase):
         m = compute_run_metrics(results, duration_s=10.0, ttft_slo_ms=1000.0)
         self.assertEqual(m.slo_goodput_rps, 0.0)
 
+    def test_missing_ttft_with_a_configured_ttft_slo_does_not_count_as_goodput(self):
+        """The real bug: a request with no ttft_ms at all (non-
+        streaming, or a streaming call that never captured one) must
+        NOT count toward slo_goodput_rps just because a TTFT SLO
+        happens to be configured -- a missing measurement is not
+        compliance."""
+        results = [_result(success=True, latency_ms=100.0, ttft_ms=None)]
+        m = compute_run_metrics(results, duration_s=10.0, ttft_slo_ms=1000.0)
+        self.assertEqual(m.slo_goodput_rps, 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()

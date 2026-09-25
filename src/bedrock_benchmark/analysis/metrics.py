@@ -74,7 +74,14 @@ def compute_run_metrics(
                 return False
             if latency_slo_ms is not None and (r.latency_ms is None or r.latency_ms > latency_slo_ms):
                 return False
-            if ttft_slo_ms is not None and r.ttft_ms is not None and r.ttft_ms > ttft_slo_ms:
+            # A TTFT SLO is configured but this result has no TTFT at
+            # all (non-streaming request, or a streaming measurement
+            # that failed to capture one) -- that's a missing/invalid
+            # measurement against a configured SLO, not a pass. The
+            # old `r.ttft_ms is not None and ...` form skipped the
+            # check entirely when ttft_ms was None, silently counting
+            # an unmeasured request as SLO-compliant.
+            if ttft_slo_ms is not None and (r.ttft_ms is None or r.ttft_ms > ttft_slo_ms):
                 return False
             return True
 

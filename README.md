@@ -91,26 +91,73 @@ PYTHONPATH=src python scripts/run.py experiments/concurrency-sweep.yaml
 
 Writes raw per-request JSONL and a `capacity-profile.yaml` artifact to
 `results/` (gitignored -- these are real measurement outputs, not
-checked-in fixtures). The `capacity-profile.yaml` schema:
+checked-in fixtures). The `capacity-profile.yaml` schema (v2 -- see
+"Correctness fixes" below for why `rate` and `concurrency` are always
+kept in separate blocks, and why there's no `global_max_concurrency`):
 
 ```yaml
-schema_version: 1
+schema_version: 2
 model: {provider: bedrock, model_id: ..., region: ...}
-quota: {rpm: ..., tpm: ...}
-slo: {ttft_p95_ms: ..., latency_p95_ms: ...}
-profiles:
-  short: {input_tokens: 512, output_tokens: 64, sustainable_rps: 5.1,
-          recommended_concurrency: 6, saturation_concurrency: 8}
-recommendation:
-  provider_headroom: 0.20
-  gateway:
-    global_min_concurrency: 1
-    global_max_concurrency: 6
-    classes: {short: {max_concurrency: 4}}   # headroom-adjusted
+quota_snapshot: {rpm: 400, tpm: 8000000}
+slo: {ttft_p95_ms: 1000, latency_p95_ms: 3000, success_rate_min: 0.99, throttle_rate_max: 0.001}
+workload_classes:
+  short:                                    # a concurrency-sweep result
+    observed: {input_tokens_p50: 505, output_tokens_p50: 61}
+    concurrency: {measured_best: 6, saturation: 8, production_max: 4}
+  short_rate:                               # a rate-sweep result (same workload, different sweep type)
+    observed: {input_tokens_p50: 505, output_tokens_p50: 61}
+    rate: {measured_sustainable_rps: 5.8, saturation_rps: 7.0, production_rps: 4.64}
+provider: {headroom: 0.20}
+transport: {max_connections: 64, retry_max_attempts: 1, connect_timeout_s: 5, read_timeout_s: 60}
 ```
 
 This is the actual deliverable -- not an HTML report. A gateway's own
-config review reads this file.
+config review reads this file, and decides its own global/tenant/AIMD
+config FROM these per-class envelopes -- this repo never pre-packages
+a gateway control policy itself (see "Not in scope here" below).
+
+## Correctness fixes (schema v2)
+
+A real review caught 5 measurement-correctness bugs before this
+artifact was ever used to actually inform a gateway config:
+
+1. **Rate vs. concurrency saturation were the same field.** A rate
+   sweep's saturation point (an RPS value) used to be written into
+   `saturation_concurrency` -- silently mislabeling e.g. "7 rps" as if
+   it were a concurrency value. `rate` and `concurrency` are now
+   always separate blocks with their own field names
+   (`saturation_rps` vs `saturation`), and `provider_headroom` is
+   applied to whichever one actually ran (`production_rps` is a float,
+   never floored -- `production_max` is an int floor, since fractional
+   concurrency isn't meaningful).
+2. **A missing TTFT measurement counted as meeting a configured TTFT
+   SLO.** `ttft_slo_ms is not None and r.ttft_ms is not None and ...`
+   skipped the check entirely when `ttft_ms` was `None` (e.g.
+   `stream: false` with a TTFT SLO configured anyway) -- silently
+   treating an unmeasured request as SLO-compliant. Fixed to fail
+   closed: a configured-but-unmeasured SLO is a violation.
+3. **`RateRunner`'s `scheduled_at` was captured AFTER its own
+   `asyncio.sleep`**, making it drift to `~= started_at` and destroying
+   the one signal it exists for -- client-side scheduling lag
+   (`started_at - scheduled_at`) when the load generator itself falls
+   behind its own arrival schedule under high offered rate. Now
+   captured before the sleep, from a wall-clock anchor taken at the
+   same instant as the run's own `perf_counter` baseline.
+4. **No explicit boto3 transport/retry config.** Sweeping concurrency
+   up past boto3's default connection pool (10) would measure the
+   SDK's own queueing, not Bedrock's -- and the SDK's automatic retry
+   would silently absorb a real `ThrottlingException` into an eventual
+   200, understating the real throttle rate this repo exists to
+   measure. `TransportConfig` (`client.py`) now sets pool size,
+   timeouts, and `retry_max_attempts=1` (no SDK retries) explicitly,
+   and records the config used into the artifact for reproducibility.
+5. **`global_max_concurrency = max(concurrencies)` across independently
+   swept workload classes was invalid.** There's no scientifically
+   defensible "global" number derivable from isolated per-class
+   maxima -- a real MIXED workload can exceed safe capacity before
+   either class's own isolated measurement would predict. Removed
+   entirely; a real mixed-workload experiment (not yet built) is the
+   only valid way to answer that question.
 
 ## The three MVP experiments
 

@@ -19,13 +19,15 @@ target:
   model_id: us.amazon.nova-micro-v1:0
   region: us-east-1
 
-quota:
+quota_snapshot:
   rpm: 400
   tpm: 8000000
 
 slo:
   ttft_p95_ms: 1000
   latency_p95_ms: 3000
+  success_rate_min: 0.99
+  throttle_rate_max: 0.001
 
 workloads:
   - name: short_short
@@ -49,3 +51,9 @@ sweep:
   values: [1, 2, 4, 6]
 
 provider_headroom: 0.20
+
+transport:
+  max_connections: 64
+  retry_max_attempts: 1
+  connect_timeout_s: 5
+  read_timeout_s: 60

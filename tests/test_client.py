@@ -1,6 +1,7 @@
 import unittest
+from unittest.mock import MagicMock, patch
 
-from bedrock_benchmark.client import BedrockConverseTarget, InvokeRequest
+from bedrock_benchmark.client import BedrockConverseTarget, InvokeRequest, TransportConfig
 
 from .fakes import FakeBedrockRuntimeClient, ThrottlingError
 
@@ -64,6 +65,34 @@ class StreamingTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result.success)
         self.assertTrue(result.throttled)
         self.assertIsNone(result.ttft_ms)
+
+
+class TransportConfigTests(unittest.TestCase):
+    def test_defaults_disable_sdk_retries(self):
+        """The whole point: retry_max_attempts=1 by default, so a real
+        Bedrock throttle is observed and recorded, never silently
+        absorbed by the SDK's own retry into an eventual success (see
+        TransportConfig's own docstring)."""
+        self.assertEqual(TransportConfig().retry_max_attempts, 1)
+
+    def test_real_client_construction_applies_transport_config(self):
+        """Without an injected fake client, BedrockConverseTarget must
+        build its own boto3 client with an explicit botocore Config
+        reflecting the given TransportConfig -- not boto3's implicit
+        defaults (unbounded-ish pooling, automatic retries) that would
+        make a concurrency sweep measure the SDK, not Bedrock."""
+        transport = TransportConfig(max_connections=32, retry_max_attempts=3, connect_timeout_s=2.0, read_timeout_s=30.0)
+        with patch("boto3.client") as mock_boto_client:
+            mock_boto_client.return_value = MagicMock()
+            BedrockConverseTarget(model_id="m", region="us-west-2", transport=transport)
+
+        self.assertEqual(mock_boto_client.call_count, 1)
+        _, kwargs = mock_boto_client.call_args
+        config = kwargs["config"]
+        self.assertEqual(config.max_pool_connections, 32)
+        self.assertEqual(config.connect_timeout, 2.0)
+        self.assertEqual(config.read_timeout, 30.0)
+        self.assertEqual(config.retries["max_attempts"], 3)
 
 
 class ScheduledAtTests(unittest.IsolatedAsyncioTestCase):

@@ -28,6 +28,22 @@ class MeetsSloTests(unittest.TestCase):
     def test_ttft_over_slo_fails(self):
         self.assertFalse(meets_slo(_metrics(ttft_p95_ms=1500.0), ttft_p95_slo_ms=1000.0))
 
+    def test_missing_ttft_with_a_configured_ttft_slo_fails_not_passes(self):
+        """The real bug: a TTFT SLO is configured but ttft_p95_ms is
+        None (e.g. stream: false, or every result failed before its
+        first token) -- this is a missing/invalid measurement against
+        a configured SLO, not automatic compliance. The old code's
+        `metrics.ttft_p95_ms is not None and ...` skipped the check
+        entirely when None, silently passing."""
+        self.assertFalse(meets_slo(_metrics(ttft_p95_ms=None), ttft_p95_slo_ms=1000.0))
+
+    def test_no_ttft_slo_configured_means_missing_ttft_is_fine(self):
+        """Without a configured TTFT SLO, a None ttft_p95_ms (e.g. a
+        non-streaming run that never intended to measure TTFT) must
+        NOT fail -- only a CONFIGURED-but-unmeasured SLO is a
+        violation."""
+        self.assertTrue(meets_slo(_metrics(ttft_p95_ms=None)))
+
     def test_latency_over_slo_fails(self):
         self.assertFalse(meets_slo(_metrics(latency_p95_ms=5000.0), latency_p95_slo_ms=3000.0))
 

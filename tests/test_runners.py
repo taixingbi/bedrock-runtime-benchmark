@@ -1,3 +1,5 @@
+import asyncio
+import time as time_module
 import unittest
 
 from bedrock_benchmark.client import BedrockConverseTarget
@@ -55,6 +57,42 @@ class RateRunnerTests(unittest.IsolatedAsyncioTestCase):
 
         results = await runner.run()
         self.assertEqual(results, [])
+
+    async def test_scheduled_at_reflects_the_intended_arrival_time_not_post_sleep_dispatch(self):
+        """The real bug: scheduled_at used to be set to time.time()
+        AFTER the runner's own asyncio.sleep(delay), making it drift to
+        ~= started_at and destroying the one signal it exists for --
+        client-side scheduling lag under a rate the load generator
+        itself can't keep up with. Verified here by using a rate high
+        enough, and a slow enough fake client, that real queueing MUST
+        occur -- if scheduled_at were captured post-sleep, it would
+        track started_at almost exactly instead of the intended,
+        strictly-increasing arrival schedule."""
+        class SlowFakeTarget(BedrockConverseTarget):
+            async def invoke(self, request):
+                await asyncio.sleep(0.05)  # slower than the offered rate, forces queueing
+                return await super().invoke(request)
+
+        client = FakeBedrockRuntimeClient()
+        target = SlowFakeTarget(model_id="m", client=client)
+        profile = WorkloadProfile(name="short", input_tokens=100, output_tokens=16)
+        run_start = time_module.time()
+        runner = RateRunner(target, profile, rps=50.0, duration_s=0.3, stream=False, seed=0)
+
+        results = await runner.run()
+
+        # Every result's scheduled_at must fall within the run's own
+        # wall-clock window -- a real, sane timestamp, not garbage.
+        self.assertTrue(all(run_start - 1.0 <= r.scheduled_at <= run_start + 5.0 for r in results))
+        # scheduled_at values must be strictly non-decreasing and
+        # span close to the full duration_s -- if they were captured
+        # post-sleep (all serialized behind the slow fake target),
+        # they'd instead cluster near the END of the run, compressed
+        # into a much narrower window than the intended arrival spread.
+        scheduled_ats = [r.scheduled_at for r in results]
+        self.assertEqual(scheduled_ats, sorted(scheduled_ats))
+        spread = scheduled_ats[-1] - scheduled_ats[0]
+        self.assertGreater(spread, 0.15)  # intended arrivals really do spread across ~0.3s
 
 
 if __name__ == "__main__":

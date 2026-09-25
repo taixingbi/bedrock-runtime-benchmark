@@ -12,6 +12,7 @@ from typing import List, Optional
 
 import yaml
 
+from ..client import TransportConfig
 from ..workload import WorkloadProfile
 
 
@@ -22,12 +23,14 @@ class TargetConfig:
 
 
 @dataclass
-class QuotaConfig:
+class QuotaSnapshot:
     """Documented context for the capacity-profile.yaml artifact and
     for a human reading the experiment -- NOT enforced by this repo.
     Real RPM/TPM enforcement is Bedrock's own; this repo only ever
     measures what actually happens, it never simulates or caps against
-    a quota number itself."""
+    a quota number itself. Named "snapshot" (not "config") because it's
+    a point-in-time fact about the account/region, not something this
+    tool configures or controls."""
     rpm: Optional[float] = None
     tpm: Optional[float] = None
 
@@ -36,6 +39,14 @@ class QuotaConfig:
 class SloConfig:
     ttft_p95_ms: Optional[float] = None
     latency_p95_ms: Optional[float] = None
+    # Result-quality gates -- distinct from the two latencies above
+    # (response SPEED), these are about whether responses came back at
+    # all and cleanly. Folded into SloConfig (schema_version 2) rather
+    # than kept as separate top-level ExperimentSpec fields, since
+    # they're conceptually part of "what counts as meeting the SLO"
+    # the same way the two latency thresholds are.
+    success_rate_min: float = 0.99
+    throttle_rate_max: float = 0.001
 
 
 @dataclass
@@ -51,33 +62,33 @@ class ExperimentSpec:
     workloads: List[WorkloadProfile]
     sweep: SweepConfig
     description: str = ""
-    quota: QuotaConfig = field(default_factory=QuotaConfig)
+    quota_snapshot: QuotaSnapshot = field(default_factory=QuotaSnapshot)
     slo: SloConfig = field(default_factory=SloConfig)
     duration_s: float = 60.0
     stream: bool = True
     provider_headroom: float = 0.20
     seed: Optional[int] = None
-    # SLO-gate thresholds passed through to analysis.capacity.meets_slo
-    # beyond the SLO latencies above -- kept separate since these are
-    # about RESULT QUALITY (success/throttle rate), not response speed.
-    success_rate_min: float = 0.99
-    throttle_rate_max: float = 0.001
+    transport: TransportConfig = field(default_factory=TransportConfig)
 
 
 def load_experiment(path: str) -> ExperimentSpec:
     raw = yaml.safe_load(Path(path).read_text())
 
     target = raw["target"]
-    quota = raw.get("quota") or {}
+    # Accepts both `quota_snapshot:` (current) and `quota:` (the
+    # pre-schema_version-2 key) so an old experiment YAML lying around
+    # doesn't silently lose its documented quota context.
+    quota_snapshot = raw.get("quota_snapshot") or raw.get("quota") or {}
     slo = raw.get("slo") or {}
     sweep = raw["sweep"]
+    transport = raw.get("transport") or {}
     workloads = [WorkloadProfile(**w) for w in raw["workloads"]]
 
     return ExperimentSpec(
         name=raw["name"],
         description=raw.get("description", ""),
         target=TargetConfig(**target),
-        quota=QuotaConfig(**quota),
+        quota_snapshot=QuotaSnapshot(**quota_snapshot),
         slo=SloConfig(**slo),
         workloads=workloads,
         duration_s=raw.get("duration_s", 60.0),
@@ -85,6 +96,5 @@ def load_experiment(path: str) -> ExperimentSpec:
         sweep=SweepConfig(**sweep),
         provider_headroom=raw.get("provider_headroom", 0.20),
         seed=raw.get("seed"),
-        success_rate_min=raw.get("success_rate_min", 0.99),
-        throttle_rate_max=raw.get("throttle_rate_max", 0.001),
+        transport=TransportConfig(**transport),
     )

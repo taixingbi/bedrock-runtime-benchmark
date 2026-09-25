@@ -37,7 +37,9 @@ class ExperimentReport:
 
 
 async def run_experiment(spec: ExperimentSpec, *, on_progress: Optional[ProgressCallback] = None) -> ExperimentReport:
-    target = BedrockConverseTarget(model_id=spec.target.model_id, region=spec.target.region)
+    target = BedrockConverseTarget(
+        model_id=spec.target.model_id, region=spec.target.region, transport=spec.transport,
+    )
     report = ExperimentReport(spec=spec)
 
     for profile in spec.workloads:
@@ -75,7 +77,7 @@ async def run_experiment(spec: ExperimentSpec, *, on_progress: Optional[Progress
                 on_progress(profile.name, value, point)
 
         recommendation = recommend(
-            points, success_rate_min=spec.success_rate_min, throttle_rate_max=spec.throttle_rate_max,
+            points, success_rate_min=spec.slo.success_rate_min, throttle_rate_max=spec.slo.throttle_rate_max,
             ttft_p95_slo_ms=spec.slo.ttft_p95_ms, latency_p95_slo_ms=spec.slo.latency_p95_ms,
         )
         report.profiles.append(ProfileReport(workload_name=profile.name, points=points, recommendation=recommendation))
