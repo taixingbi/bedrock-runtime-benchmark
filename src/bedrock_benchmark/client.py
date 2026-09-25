@@ -45,16 +45,27 @@ class TransportConfig:
        ThrottlingException (Bedrock 429 -> SDK retries -> eventual 200
        -> this repo records "success") -- which UNDERSTATES the real
        throttle rate, exactly the number this repo exists to measure
-       accurately. retry_max_attempts=1 (the default here) means zero
-       SDK-level retries: every throttle is observed and recorded, not
-       silently absorbed.
+       accurately. total_max_attempts=1 (the default here) means
+       exactly one attempt, no SDK-level retries: every throttle is
+       observed and recorded, not silently absorbed.
+
+       This MUST be passed to botocore as `total_max_attempts`, not
+       `max_attempts`: botocore's own client-config normalization
+       (botocore/args.py, _compute_retry_max_attempts) treats a
+       `max_attempts` key as meaning *retry* attempts and silently
+       rewrites it to `total_max_attempts = max_attempts + 1` before
+       building the retry handler. So `max_attempts=1` actually means
+       1 initial request + 1 retry = 2 total attempts -- a real 429
+       could still get silently retried into a 200, exactly the
+       failure mode this config exists to prevent. `total_max_attempts`
+       has no such off-by-one: it is the literal total attempt count.
 
     Recorded into the capacity-profile.yaml artifact (see report.py)
     so a measurement is reproducible -- what was actually running when
     a number was measured, not just the number itself.
     """
     max_connections: int = 64
-    retry_max_attempts: int = 1  # 1 = no retries; SDK retry would understate the real throttle rate
+    total_max_attempts: int = 1  # 1 = exactly one attempt, no retries; see docstring above on why not `max_attempts`
     connect_timeout_s: float = 5.0
     read_timeout_s: float = 60.0
 
@@ -82,7 +93,7 @@ class BedrockConverseTarget:
                 max_pool_connections=self.transport.max_connections,
                 connect_timeout=self.transport.connect_timeout_s,
                 read_timeout=self.transport.read_timeout_s,
-                retries={"max_attempts": self.transport.retry_max_attempts, "mode": "standard"},
+                retries={"total_max_attempts": self.transport.total_max_attempts, "mode": "standard"},
             )
             self._client = boto3.client("bedrock-runtime", region_name=region, config=boto_config)
 

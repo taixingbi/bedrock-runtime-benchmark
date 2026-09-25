@@ -54,6 +54,6 @@ provider_headroom: 0.20
 
 transport:
   max_connections: 64
-  retry_max_attempts: 1
+  total_max_attempts: 1
   connect_timeout_s: 5
   read_timeout_s: 60

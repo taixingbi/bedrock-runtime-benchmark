@@ -30,7 +30,7 @@ class LoadExperimentTests(unittest.TestCase):
         for name in ["concurrency-sweep", "token-sweep", "slo-capacity"]:
             with self.subTest(name=name):
                 spec = load_experiment(f"experiments/{name}.yaml")
-                self.assertEqual(spec.transport.retry_max_attempts, 1)
+                self.assertEqual(spec.transport.total_max_attempts, 1)
                 self.assertEqual(spec.transport.max_connections, 64)
 
     def test_transport_defaults_when_not_specified_in_yaml(self):
@@ -51,7 +51,7 @@ class LoadExperimentTests(unittest.TestCase):
             path = f.name
         try:
             spec = load_experiment(path)
-            self.assertEqual(spec.transport.retry_max_attempts, 1)
+            self.assertEqual(spec.transport.total_max_attempts, 1)
         finally:
             Path(path).unlink()
 

@@ -69,11 +69,15 @@ class StreamingTests(unittest.IsolatedAsyncioTestCase):
 
 class TransportConfigTests(unittest.TestCase):
     def test_defaults_disable_sdk_retries(self):
-        """The whole point: retry_max_attempts=1 by default, so a real
+        """The whole point: total_max_attempts=1 by default, so a real
         Bedrock throttle is observed and recorded, never silently
         absorbed by the SDK's own retry into an eventual success (see
-        TransportConfig's own docstring)."""
-        self.assertEqual(TransportConfig().retry_max_attempts, 1)
+        TransportConfig's own docstring). Must be `total_max_attempts`,
+        not `max_attempts` -- botocore's client-config normalization
+        rewrites a `max_attempts` key to `total_max_attempts + 1`,
+        which would silently allow one retry even at the value meant
+        to mean "no retries"."""
+        self.assertEqual(TransportConfig().total_max_attempts, 1)
 
     def test_real_client_construction_applies_transport_config(self):
         """Without an injected fake client, BedrockConverseTarget must
@@ -81,7 +85,7 @@ class TransportConfigTests(unittest.TestCase):
         reflecting the given TransportConfig -- not boto3's implicit
         defaults (unbounded-ish pooling, automatic retries) that would
         make a concurrency sweep measure the SDK, not Bedrock."""
-        transport = TransportConfig(max_connections=32, retry_max_attempts=3, connect_timeout_s=2.0, read_timeout_s=30.0)
+        transport = TransportConfig(max_connections=32, total_max_attempts=3, connect_timeout_s=2.0, read_timeout_s=30.0)
         with patch("boto3.client") as mock_boto_client:
             mock_boto_client.return_value = MagicMock()
             BedrockConverseTarget(model_id="m", region="us-west-2", transport=transport)
@@ -92,7 +96,7 @@ class TransportConfigTests(unittest.TestCase):
         self.assertEqual(config.max_pool_connections, 32)
         self.assertEqual(config.connect_timeout, 2.0)
         self.assertEqual(config.read_timeout, 30.0)
-        self.assertEqual(config.retries["max_attempts"], 3)
+        self.assertEqual(config.retries["total_max_attempts"], 3)
 
 
 class ScheduledAtTests(unittest.IsolatedAsyncioTestCase):

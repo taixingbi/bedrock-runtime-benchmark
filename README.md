@@ -108,7 +108,7 @@ workload_classes:
     observed: {input_tokens_p50: 505, output_tokens_p50: 61}
     rate: {measured_sustainable_rps: 5.8, saturation_rps: 7.0, production_rps: 4.64}
 provider: {headroom: 0.20}
-transport: {max_connections: 64, retry_max_attempts: 1, connect_timeout_s: 5, read_timeout_s: 60}
+transport: {max_connections: 64, total_max_attempts: 1, connect_timeout_s: 5, read_timeout_s: 60}
 ```
 
 This is the actual deliverable -- not an HTML report. A gateway's own
@@ -149,8 +149,8 @@ artifact was ever used to actually inform a gateway config:
    would silently absorb a real `ThrottlingException` into an eventual
    200, understating the real throttle rate this repo exists to
    measure. `TransportConfig` (`client.py`) now sets pool size,
-   timeouts, and `retry_max_attempts=1` (no SDK retries) explicitly,
-   and records the config used into the artifact for reproducibility.
+   timeouts, and retries explicitly, and records the config used into
+   the artifact for reproducibility.
 5. **`global_max_concurrency = max(concurrencies)` across independently
    swept workload classes was invalid.** There's no scientifically
    defensible "global" number derivable from isolated per-class
@@ -158,6 +158,18 @@ artifact was ever used to actually inform a gateway config:
    either class's own isolated measurement would predict. Removed
    entirely; a real mixed-workload experiment (not yet built) is the
    only valid way to answer that question.
+6. **`retries={"max_attempts": 1}` was still a retry, not zero.**
+   botocore's client-config normalization (`botocore/args.py`,
+   `_compute_retry_max_attempts`) treats a `max_attempts` key as
+   meaning *retry* attempts and rewrites it to
+   `total_max_attempts = max_attempts + 1` before building the retry
+   handler -- so the old default actually allowed 1 initial request
+   + 1 retry = 2 total attempts. A real Bedrock 429 could still be
+   silently retried into an eventual 200, understating the exact
+   throttle rate this repo exists to measure. Fixed by passing
+   `total_max_attempts` (botocore's own unambiguous "literal total
+   attempt count" key) instead; `TransportConfig.total_max_attempts`
+   replaces the old `retry_max_attempts` field name.
 
 ## The three MVP experiments
 

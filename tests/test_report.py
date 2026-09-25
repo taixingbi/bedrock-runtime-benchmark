@@ -165,7 +165,7 @@ class BuildCapacityProfileTests(unittest.TestCase):
 
         self.assertEqual(profile["quota_snapshot"]["rpm"], 400)
         self.assertEqual(profile["slo"]["success_rate_min"], 0.99)
-        self.assertEqual(profile["transport"]["retry_max_attempts"], 1)
+        self.assertEqual(profile["transport"]["total_max_attempts"], 1)
         self.assertEqual(profile["provider"]["headroom"], 0.20)
 
 

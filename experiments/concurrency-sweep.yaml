@@ -8,7 +8,7 @@
 # this tool -- it only ever measures what actually happens.
 #
 # transport is explicit and recorded into the resulting
-# capacity-profile.yaml for reproducibility -- retry.max_attempts=1
+# capacity-profile.yaml for reproducibility -- total_max_attempts=1
 # specifically, since the SDK's own automatic retry would silently
 # absorb a real Bedrock 429 into an eventual 200, understating the
 # real throttle rate this sweep exists to measure (see client.py's
@@ -50,6 +50,6 @@ provider_headroom: 0.20
 
 transport:
   max_connections: 64
-  retry_max_attempts: 1
+  total_max_attempts: 1
   connect_timeout_s: 5
   read_timeout_s: 60

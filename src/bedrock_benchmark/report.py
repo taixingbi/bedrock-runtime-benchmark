@@ -122,7 +122,7 @@ def build_capacity_profile(report: ExperimentReport) -> dict:
         # pooling defaults can silently change what a sweep measures).
         "transport": {
             "max_connections": spec.transport.max_connections,
-            "retry_max_attempts": spec.transport.retry_max_attempts,
+            "total_max_attempts": spec.transport.total_max_attempts,
             "connect_timeout_s": spec.transport.connect_timeout_s,
             "read_timeout_s": spec.transport.read_timeout_s,
         },
