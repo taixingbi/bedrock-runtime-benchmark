@@ -28,6 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import yaml  # noqa: E402
 
 from bedrock_benchmark.batch import format_plan, format_summary, plan, run_batch  # noqa: E402
+from bedrock_benchmark.constraints import DEFAULT_QUOTA_FILE, DEFAULT_SLO_FILE  # noqa: E402
 from bedrock_benchmark.models import DEFAULT_MODELS_FILE, load_models  # noqa: E402
 
 
@@ -35,6 +36,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("experiments", nargs="*", help="experiment YAMLs (default: experiments/*.yaml)")
     parser.add_argument("--models-file", default=DEFAULT_MODELS_FILE, help=f"default: {DEFAULT_MODELS_FILE}")
+    parser.add_argument("--slo-file", default=DEFAULT_SLO_FILE, help=f"SLO profiles (default: {DEFAULT_SLO_FILE})")
+    parser.add_argument("--quota-file", default=DEFAULT_QUOTA_FILE, help=f"per-model quotas (default: {DEFAULT_QUOTA_FILE})")
     parser.add_argument("--model", action="append", dest="models", metavar="NAME",
                         help="run only this model (repeatable; default: every enabled model)")
     parser.add_argument("--results-dir", help="batch output dir (default: results/run-all-<timestamp>)")
@@ -44,12 +47,12 @@ def main() -> int:
     args = parser.parse_args()
 
     paths = args.experiments or sorted(str(p) for p in Path("experiments").glob("*.yaml"))
-    models = load_models(args.models_file, names=args.models)
+    models = load_models(args.models_file, names=args.models, quota_file=args.quota_file)
     if not paths or not models:
         print("no experiments or no enabled models", file=sys.stderr)
         return 1
 
-    print(format_plan(plan(paths, models)))
+    print(format_plan(plan(paths, models, slo_file=args.slo_file)))
     if args.dry_run:
         return 0
 
@@ -58,7 +61,8 @@ def main() -> int:
         gateway_config = yaml.safe_load(Path(args.gateway_config).read_text()) or {}
 
     results_dir = Path(args.results_dir or f"results/run-all-{time.strftime('%Y%m%d-%H%M%S')}")
-    batch = run_batch(paths, models, results_dir=results_dir, fail_fast=args.fail_fast, gateway_config=gateway_config)
+    batch = run_batch(paths, models, results_dir=results_dir, fail_fast=args.fail_fast, gateway_config=gateway_config,
+                      slo_file=args.slo_file)
 
     print(f"\n{'=' * 78}\nSUMMARY\n{'=' * 78}")
     print(format_summary(batch))

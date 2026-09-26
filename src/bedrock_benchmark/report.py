@@ -1,4 +1,4 @@
-"""Builds the capacity-profile.yaml artifact (schema_version 4) -- the
+"""Builds the capacity-profile.yaml artifact (schema_version 5) -- the
 one machine-readable thing this repo exists to hand to
 bedrock-runtime-gateway's own control-plane config review, not a
 human-facing HTML report.
@@ -54,6 +54,12 @@ not_reached / unresolved -- a non-monotonic sweep claims no saturation);
 input AND output token validation; per-class SLO profiles; and client
 integrity evidence (`peak_outstanding`, `client_limited_points`,
 `transport.executor_workers`).
+
+schema_version 5 groups the quota snapshot and the SLO profiles under
+one `constraints:` block (quota: what the provider allows; slo: what
+quality we require), mirroring constraints/quota.yaml and
+constraints/slo.yaml -- replacing v4's top-level quota_snapshot/slo/
+slo_profiles.
 
 See this repo's own README for the boundary this draws: this repo
 outputs a safe operating envelope per workload class; it never
@@ -218,7 +224,7 @@ def build_capacity_profile(report: ExperimentReport) -> dict:
             if r.tags.get("workload") == workload.name and r.tags.get("measured", True)
         ]
         entry: dict = {
-            "slo_profile": workload.slo_profile or "default",
+            "slo_profile": workload.slo_profile or spec.slo_default,
             "observed": _observed_tokens(own_results),
             "workload_validation": _workload_validation(workload, own_results, report),
         }
@@ -246,7 +252,7 @@ def build_capacity_profile(report: ExperimentReport) -> dict:
 
     confidence = spec.slo.confidence or DEFAULT_CONFIDENCE
     return {
-        "schema_version": 4,
+        "schema_version": 5,
         "experiment": spec.name,
         "model": {
             "name": spec.model_name,
@@ -254,12 +260,20 @@ def build_capacity_profile(report: ExperimentReport) -> dict:
             "model_id": spec.target.model_id,
             "region": spec.target.region,
         },
-        "quota_snapshot": {
-            "rpm": spec.quota_snapshot.rpm,
-            "tpm": spec.quota_snapshot.tpm,
+        # What every number below was judged against: the provider's
+        # quota (constraints/quota.yaml) and the required SLO
+        # (constraints/slo.yaml; each workload class names its profile).
+        "constraints": {
+            "quota": {
+                "rpm": spec.quota_snapshot.rpm,
+                "tpm": spec.quota_snapshot.tpm,
+                "output_burndown": spec.output_burndown,
+            },
+            "slo": {
+                "default": spec.slo_default,
+                "profiles": {n: _slo_dict(c) for n, c in spec.slo_profiles.items()} or {spec.slo_default: _slo_dict(spec.slo)},
+            },
         },
-        "slo": _slo_dict(spec.slo),
-        **({"slo_profiles": {n: _slo_dict(c) for n, c in spec.slo_profiles.items()}} if spec.slo_profiles else {}),
         "measurement": {
             "warmup_s": spec.warmup_s,
             "window_s": spec.duration_s,

@@ -4,10 +4,11 @@ agnostic workload/sweep definitions; every experiment runs against
 every enabled model listed here, so adding a model means one entry in
 this file, not a new experiment.
 
-Each model carries its own quota snapshot because quotas differ by an
-order of magnitude across models (50 RPM for nova-pro, 1000 for
-qwen3-32b) -- rate sweeps are written as fractions of that quota, so
-the same experiment brackets each model's own ceiling. Refresh the
+The models file says only WHICH models exist and how to reach them.
+Their quotas live in constraints/quota.yaml (see constraints.py) and
+are joined in here by model name -- quotas differ by an order of
+magnitude across models (50 RPM for nova-pro, 1000 for qwen3-32b), and
+quota-relative rate sweeps bracket each model's own ceiling. Check the
 numbers with `scripts/fetch_quota.py --all`.
 """
 from __future__ import annotations
@@ -18,6 +19,8 @@ from pathlib import Path
 from typing import List, Optional
 
 import yaml
+
+from .constraints import DEFAULT_QUOTA_FILE, load_quotas
 
 DEFAULT_MODELS_FILE = "scripts/models.yaml"
 
@@ -44,14 +47,24 @@ class ModelConfig:
 
 def load_models(
     path: str = DEFAULT_MODELS_FILE, *, names: Optional[List[str]] = None, include_disabled: bool = False,
+    quota_file: str = DEFAULT_QUOTA_FILE,
 ) -> List[ModelConfig]:
     """Enabled models in file order (every model with include_disabled);
-    `names` selects specific ones, disabled or not, and must all exist."""
+    `names` selects specific ones, disabled or not, and must all exist.
+    Each model's quota is joined in from quota_file by name."""
     raw = yaml.safe_load(Path(path).read_text()) or {}
+    quotas = load_quotas(quota_file)
     models = []
     for entry in raw.get("models") or []:
-        quota = entry.pop("quota", None) or {}
-        models.append(ModelConfig(**entry, quota_rpm=quota.get("rpm"), quota_tpm=quota.get("tpm")))
+        misplaced = [k for k in ("quota", "output_burndown") if k in entry]
+        if misplaced:
+            raise ValueError(f"{path}: {entry.get('name')}: {misplaced} belong in {quota_file}, not the models file")
+        quota = quotas.get(entry.get("name"))
+        models.append(ModelConfig(
+            **entry,
+            quota_rpm=quota.rpm if quota else None, quota_tpm=quota.tpm if quota else None,
+            output_burndown=quota.output_burndown if quota else 1.0,
+        ))
 
     seen = set()
     for m in models:
@@ -60,6 +73,9 @@ def load_models(
         if m.name in seen:
             raise ValueError(f"duplicate model name {m.name!r} in {path}")
         seen.add(m.name)
+    orphans = sorted(set(quotas) - seen)
+    if orphans:
+        raise ValueError(f"{quota_file}: quotas for models not in {path}: {orphans} (typo?)")
 
     if names:
         unknown = [n for n in names if n not in seen]

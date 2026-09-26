@@ -29,6 +29,7 @@ from typing import List, Optional
 
 import yaml
 
+from .constraints import DEFAULT_SLO_FILE
 from .experiments.schema import load_experiment
 from .gateway_diff import GatewayDiff, diff
 from .models import ModelConfig
@@ -85,14 +86,14 @@ class BatchResult:
         return out
 
 
-def plan(paths: List[str], models: List[ModelConfig]) -> List[PlannedRun]:
+def plan(paths: List[str], models: List[ModelConfig], *, slo_file: str = DEFAULT_SLO_FILE) -> List[PlannedRun]:
     """Binds (and so validates) every pair before any runs -- a typo in
     one file, or a model missing the quota a rate sweep needs, fails in
     the first second, not after an hour of real Bedrock calls."""
     out = []
     for model in models:
         for path in paths:
-            spec = load_experiment(path, model)
+            spec = load_experiment(path, model, slo_file=slo_file)
             out.append(PlannedRun(
                 path=path, experiment=spec.name, model=model,
                 sweep=describe_sweep(spec), estimated_s=estimated_duration_s(spec),
@@ -115,9 +116,10 @@ def format_plan(planned: List[PlannedRun]) -> str:
 def run_batch(
     paths: List[str], models: List[ModelConfig], *, results_dir: Path, fail_fast: bool = False,
     gateway_config: Optional[dict] = None, target_factory: Optional[TargetFactory] = None,
+    slo_file: str = DEFAULT_SLO_FILE,
 ) -> BatchResult:
     batch = BatchResult(results_dir=results_dir)
-    planned = plan(paths, models)
+    planned = plan(paths, models, slo_file=slo_file)
     total = len(planned)
 
     for i, p in enumerate(planned, 1):
@@ -128,7 +130,8 @@ def run_batch(
         print(f"\n{'=' * 78}\n[{i}/{total}] {p.model.name} / {p.experiment}  (est. {p.estimated_s / 60:.0f}m)\n{'=' * 78}")
         start = time.perf_counter()
         try:
-            outcome = run_file(p.path, p.model, results_dir=str(results_dir), target_factory=target_factory)
+            outcome = run_file(p.path, p.model, results_dir=str(results_dir), target_factory=target_factory,
+                               slo_file=slo_file)
         except KeyboardInterrupt:
             raise
         except Exception as exc:  # noqa: BLE001 - one broken run shouldn't sink the batch

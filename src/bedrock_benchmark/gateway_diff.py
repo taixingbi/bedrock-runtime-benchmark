@@ -32,7 +32,7 @@ import math
 from dataclasses import asdict, dataclass, field
 from typing import Dict, Iterable, List, Optional, Tuple
 
-SUPPORTED_SCHEMA_VERSIONS = {3, 4}
+SUPPORTED_SCHEMA_VERSIONS = {3, 4, 5}
 
 
 @dataclass

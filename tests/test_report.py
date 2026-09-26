@@ -43,11 +43,11 @@ class BuildCapacityProfileTests(unittest.TestCase):
         defaults.update(overrides)
         return ExperimentSpec(**defaults)
 
-    def test_schema_version_is_4(self):
+    def test_schema_version_is_5(self):
         spec = self._spec()
         report = ExperimentReport(spec=spec, profiles=[ProfileReport(workload_name="short", recommendation=None)])
         profile = build_capacity_profile(report)
-        self.assertEqual(profile["schema_version"], 4)
+        self.assertEqual(profile["schema_version"], 5)
 
     def test_concurrency_sweep_writes_a_concurrency_block_not_rate(self):
         spec = self._spec(sweep_type="concurrency")
@@ -232,8 +232,11 @@ class BuildCapacityProfileTests(unittest.TestCase):
 
         profile = build_capacity_profile(report)
 
-        self.assertEqual(profile["quota_snapshot"]["rpm"], 400)
-        self.assertEqual(profile["slo"]["success_rate_min"], 0.99)
+        c = profile["constraints"]
+        self.assertEqual((c["quota"]["rpm"], c["quota"]["tpm"], c["quota"]["output_burndown"]), (400, 8_000_000, 1.0))
+        self.assertEqual(c["slo"]["profiles"][c["slo"]["default"]]["success_rate_min"], 0.99)
+        self.assertNotIn("quota_snapshot", profile)
+        self.assertNotIn("slo", profile)
         self.assertEqual(profile["transport"]["total_max_attempts"], 1)
         self.assertEqual(profile["provider"]["headroom"], 0.20)
 

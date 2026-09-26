@@ -1,0 +1,31 @@
+# SLO -- what quality we REQUIRE. One definition, shared by every
+# experiment and every model, so results for the same workload class are
+# always judged the same way and stay comparable.
+#
+# Experiments never define SLO numbers; each workload names a profile
+# (`slo_profile: long_generation`) or gets `default`. An SLO describes a
+# class of traffic, not an experiment: TTFT can be shared, but a
+# 512-token generation can't meet a 64-token reply's end-to-end budget.
+#
+#   ttft_p95_ms        time to first token, p95 (streaming only)
+#   latency_p95_ms     end-to-end latency, p95
+#   success_rate_min   fraction of requests that must succeed
+#   throttle_rate_max  max fraction throttled (429)
+#   confidence         optional, e.g. 0.95: gate success/throttle on
+#                      Wilson bounds instead of point estimates -- needs
+#                      ~2,700 requests per point to resolve 0.1%
+
+default: interactive
+
+profiles:
+  interactive:
+    ttft_p95_ms: 1000
+    latency_p95_ms: 3000
+    success_rate_min: 0.99
+    throttle_rate_max: 0.001
+
+  long_generation:
+    ttft_p95_ms: 1000
+    latency_p95_ms: 10000
+    success_rate_min: 0.99
+    throttle_rate_max: 0.001

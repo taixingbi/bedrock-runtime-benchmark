@@ -14,34 +14,64 @@ def _write(text: str) -> str:
 
 FILE = """
 models:
-  - {name: a, model_id: m.a-v1:0, quota: {rpm: 100, tpm: 1000}}
+  - {name: a, model_id: m.a-v1:0}
   - {name: b, model_id: m.b-v1:0, enabled: false}
   - {name: c, model_id: m.c-v1:0, region: us-west-2}
+"""
+QUOTAS = """
+a: {rpm: 100, tpm: 1000, output_burndown: 5}
+c: {rpm: 50}
 """
 
 
 class LoadModelsTests(unittest.TestCase):
     def setUp(self):
         self.path = _write(FILE)
+        self.quota = _write(QUOTAS)
 
     def tearDown(self):
         Path(self.path).unlink()
+        Path(self.quota).unlink()
 
-    def test_enabled_models_in_file_order_with_quota(self):
-        models = load_models(self.path)
+    def _load(self, **kwargs):
+        return load_models(self.path, quota_file=self.quota, **kwargs)
+
+    def test_enabled_models_in_file_order_with_quota_joined_by_name(self):
+        models = self._load()
         self.assertEqual([m.name for m in models], ["a", "c"])
-        self.assertEqual((models[0].quota_rpm, models[0].quota_tpm), (100, 1000))
+        self.assertEqual((models[0].quota_rpm, models[0].quota_tpm, models[0].output_burndown), (100, 1000, 5))
+        self.assertEqual((models[1].quota_rpm, models[1].quota_tpm, models[1].output_burndown), (50, None, 1.0))
         self.assertEqual(models[1].region, "us-west-2")
 
+    def test_model_without_a_quota_entry_has_no_quota(self):
+        b = self._load(names=["b"])[0]
+        self.assertIsNone(b.quota_rpm)
+
     def test_names_select_models_even_if_disabled(self):
-        self.assertEqual([m.name for m in load_models(self.path, names=["b"])], ["b"])
+        self.assertEqual([m.name for m in self._load(names=["b"])], ["b"])
 
     def test_include_disabled(self):
-        self.assertEqual(len(load_models(self.path, include_disabled=True)), 3)
+        self.assertEqual(len(self._load(include_disabled=True)), 3)
+
+    def test_quota_in_the_models_file_is_rejected(self):
+        path = _write("models: [{name: a, model_id: x, quota: {rpm: 1}}]")
+        try:
+            with self.assertRaisesRegex(ValueError, "belong in"):
+                load_models(path, quota_file=self.quota)
+        finally:
+            Path(path).unlink()
+
+    def test_quota_for_an_unknown_model_is_a_typo_error(self):
+        quota = _write("a: {rpm: 1}\nnova-mikro: {rpm: 400}\n")
+        try:
+            with self.assertRaisesRegex(ValueError, "nova-mikro"):
+                load_models(self.path, quota_file=quota)
+        finally:
+            Path(quota).unlink()
 
     def test_unknown_name_is_an_error(self):
         with self.assertRaisesRegex(ValueError, "unknown model"):
-            load_models(self.path, names=["zzz"])
+            self._load(names=["zzz"])
 
     def test_names_must_be_folder_safe_and_unique(self):
         for text in [
@@ -52,7 +82,7 @@ class LoadModelsTests(unittest.TestCase):
             path = _write(text)
             try:
                 with self.subTest(text=text), self.assertRaises(ValueError):
-                    load_models(path)
+                    load_models(path, quota_file=self.quota)
             finally:
                 Path(path).unlink()
 

@@ -1,0 +1,19 @@
+# Quota -- what capacity the PROVIDER ALLOWS, per model (keyed by the
+# model's `name` in scripts/models.yaml). Every model is swept against
+# its own quota: quota-relative rate sweeps are fractions of the
+# provider ceiling min(RPM/60, TPM / tokens-per-request / 60).
+#
+#   rpm              requests per minute
+#   tpm              tokens per minute (input + max_tokens x output_burndown)
+#   output_burndown  TPM tokens charged per output token (default 1)
+#
+# Point-in-time snapshot of the account/region's real quota -- not
+# enforced by this repo, only designed around. Check it against AWS:
+#   .venv/bin/python scripts/fetch_quota.py --all
+# Values from gateway-model-quotas-dev, fetched 2026-09-25.
+
+nova-micro:   {rpm: 400,  tpm: 8000000}
+nova-lite:    {rpm: 400,  tpm: 8000000}
+nova-pro:     {rpm: 50,   tpm: 2000000}
+llama3-3-70b: {rpm: 80,   tpm: 600000}
+qwen3-32b:    {rpm: 1000, tpm: 100000000}

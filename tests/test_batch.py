@@ -26,7 +26,6 @@ def _experiment(name: str, **extra) -> dict:
         "name": name,
         "workloads": [{"name": "short", "input_tokens": 100, "output_tokens": 16}],
         "sweep": {"type": "rate", "quota_fractions": [1.0]},
-        "slo": {"latency_p95_ms": 3000},
         "warmup_s": 0.02, "duration_s": 0.1, "stream": False, "seed": 1,
     }
     spec.update(extra)
@@ -46,6 +45,10 @@ class BatchTests(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.dir = Path(self._tmp.name)
+        # Non-streaming fakes have no TTFT, so a latency-only SLO file --
+        # also exercises passing a custom SLO file through the batch.
+        self.slo_file = self.dir / "slo.yaml"
+        self.slo_file.write_text("default: fast\nprofiles:\n  fast: {latency_p95_ms: 3000}\n")
 
     def tearDown(self):
         self._tmp.cleanup()
@@ -60,7 +63,7 @@ class BatchTests(unittest.TestCase):
 
     def _run(self, paths, models, **kwargs):
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-            return run_batch(paths, models, results_dir=self.dir / "out", **kwargs)
+            return run_batch(paths, models, results_dir=self.dir / "out", slo_file=str(self.slo_file), **kwargs)
 
     def test_runs_every_model_x_experiment_into_per_model_folders(self):
         paths = self._write(_experiment("a"), _experiment("b"))

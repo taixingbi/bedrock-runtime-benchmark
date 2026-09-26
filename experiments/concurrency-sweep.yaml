@@ -18,12 +18,6 @@ description: |
   Answers: the recommended concurrency for this shape under the SLO,
   and where the saturation edge is.
 
-slo:
-  ttft_p95_ms: 1000
-  latency_p95_ms: 3000
-  success_rate_min: 0.99
-  throttle_rate_max: 0.001
-
 workloads:
   - name: short
     input_tokens: 512

@@ -19,6 +19,7 @@ from .analysis.capacity import SweepPoint
 from .analysis.metrics import DEFAULT_CONFIDENCE, min_samples_to_resolve_rate
 from .client import BedrockConverseTarget
 from .experiments.executor import ExperimentReport, run_experiment
+from .constraints import DEFAULT_SLO_FILE
 from .experiments.schema import ExperimentSpec, load_experiment
 from .models import ModelConfig
 from .report import build_capacity_profile
@@ -122,8 +123,9 @@ def _warn_if_throttle_slo_unresolvable(spec: ExperimentSpec) -> None:
 
 def run_file(
     path: str, model: ModelConfig, *, results_dir: str = "results", target_factory: Optional[TargetFactory] = None,
+    slo_file: str = DEFAULT_SLO_FILE,
 ) -> RunOutcome:
-    spec = load_experiment(path, model)
+    spec = load_experiment(path, model, slo_file=slo_file)
     print(f"running experiment: {spec.name} on {model.name} ({model.model_id})")
     print(f"sweep: {describe_sweep(spec)}")
     for name in spec.subject_names:

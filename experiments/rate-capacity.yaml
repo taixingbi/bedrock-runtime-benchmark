@@ -16,12 +16,6 @@ description: |
   Poisson rate sweep at 0.25x..2.5x of each model's provider ceiling, "short"
   workload, 10s warmup + 90s window per point (~13 min per model).
 
-slo:
-  ttft_p95_ms: 1000
-  latency_p95_ms: 3000
-  success_rate_min: 0.99
-  throttle_rate_max: 0.001
-
 workloads:
   - name: short
     input_tokens: 512

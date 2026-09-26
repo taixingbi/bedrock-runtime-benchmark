@@ -4,28 +4,15 @@
 # evidence for per-tenant-class concurrency config; a single shape
 # doesn't generalize to every class.
 #
+# SLOs come from constraints/slo.yaml: the 512-token-output shapes use
+# long_generation (10s end-to-end), the rest the default (3s).
+#
 # Slow: 4 workloads x 4 points x (10s warmup + 90s window) ~= 27 min per
 # model. Run it for a capacity re-baseline, not on every change.
 name: token-sweep
 description: |
   Concurrency 1/2/4/6 repeated across 4 input/output token shapes.
   One capacity-profile entry per shape.
-
-# Default SLO (interactive). Long generations opt into long_generation:
-# a 512-token reply can't be held to the same end-to-end budget as a
-# 64-token one -- TTFT stays the same, E2E latency doesn't.
-slo:
-  ttft_p95_ms: 1000
-  latency_p95_ms: 3000
-  success_rate_min: 0.99
-  throttle_rate_max: 0.001
-
-slo_profiles:
-  long_generation:
-    ttft_p95_ms: 1000
-    latency_p95_ms: 10000
-    success_rate_min: 0.99
-    throttle_rate_max: 0.001
 
 workloads:
   - name: short_short

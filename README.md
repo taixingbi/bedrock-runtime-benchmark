@@ -85,19 +85,31 @@ Naive throughput says "C=8 is fastest." This repo says "C=6 is the
 recommended concurrency" -- the highest concurrency that still clears
 the configured SLO, which is what a gateway config actually needs.
 
-## Models and experiments
+## Models, experiments and constraints
 
-Two independent inputs, combined at run time:
+Three independent inputs, combined at run time:
 
-- **Models** -- `scripts/models.yaml`: every model to benchmark, each
-  with a short `name` (also its results folder), `model_id`, `region`,
-  and its real `quota` (RPM/TPM). Ships with the five models
-  `bedrock-runtime-gateway` certifies: nova-micro, nova-lite, nova-pro,
-  llama3-3-70b, qwen3-32b. `enabled: false` skips one by default.
+```
+scripts/models.yaml        WHICH models: name (= results folder), model_id, region
+experiments/*.yaml         WHAT load: workloads + sweep -- no model, no SLO, no quota
+constraints/
+  ├─ slo.yaml              SLO:   what quality we REQUIRE  (per traffic class)
+  └─ quota.yaml            quota: what the provider ALLOWS (per model)
+        ↓
+every experiment x every model -> capacity-profile.yaml (judged against the constraints)
+```
+
+- **Models** -- `scripts/models.yaml`: the five models
+  `bedrock-runtime-gateway` certifies (nova-micro, nova-lite, nova-pro,
+  llama3-3-70b, qwen3-32b). `enabled: false` skips one by default.
 - **Experiments** -- `experiments/*.yaml`: model-agnostic workload +
-  sweep definitions. They never name a model (the loader rejects a
-  `target:` or `quota_snapshot:` block), so every experiment runs
-  unchanged against every model.
+  sweep definitions. Every experiment runs unchanged against every model.
+- **Constraints** -- `constraints/`: each number defined exactly once.
+  The loaders reject SLO or quota numbers anywhere else (an experiment
+  with `slo:`/`target:`/`quota:`, a models entry with `quota:`), so no
+  copy can drift and every run of the same workload class is judged
+  the same way. `--slo-file` / `--quota-file` point a run at other
+  constraint files (e.g. a stricter SLO).
 
 Rate sweeps are written as `quota_fractions` of each sweep subject's
 **provider ceiling** -- the request rate the model's quota allows for
@@ -139,7 +151,7 @@ absolute (and may not exceed `transport.max_connections`).
 | `mixed-capacity.yaml` | 0.25x-2.5x quota, 70% short / 30% long_long | ~13 min |
 | `token-sweep.yaml` | 4 input/output shapes x concurrency 1/2/4/6 | ~27 min |
 
-Keep quotas current with `scripts/fetch_quota.py --all` (see
+Keep `constraints/quota.yaml` current with `scripts/fetch_quota.py --all` (see
 "Quota-aware experiment design" below) -- a stale quota shifts every
 rate a quota-relative sweep tests.
 
@@ -182,18 +194,23 @@ findings.
 
 Each run writes raw per-request JSONL and a `capacity-profile.yaml`
 artifact under `results/` (gitignored -- these are real measurement outputs, not
-checked-in fixtures). The `capacity-profile.yaml` schema (v4 -- see
+checked-in fixtures). The `capacity-profile.yaml` schema (v5 -- see
 "Correctness fixes" below for why `rate` and `concurrency` are always
 kept in separate blocks, why the rate block separates offered load
 from goodput, and why there's no `global_max_concurrency`). A
 rate-capacity result:
 
 ```yaml
-schema_version: 4
+schema_version: 5
 experiment: rate-capacity
 model: {name: nova-micro, provider: bedrock, model_id: ..., region: ...}
-quota_snapshot: {rpm: 400, tpm: 8000000}          # from scripts/models.yaml
-slo: {ttft_p95_ms: 1000, latency_p95_ms: 3000, success_rate_min: 0.99, throttle_rate_max: 0.001, confidence: null}
+constraints:                                       # what every number was judged against
+  quota: {rpm: 400, tpm: 8000000, output_burndown: 1.0}                     # constraints/quota.yaml
+  slo:                                                                       # constraints/slo.yaml
+    default: interactive
+    profiles:
+      interactive: {ttft_p95_ms: 1000, latency_p95_ms: 3000, success_rate_min: 0.99, throttle_rate_max: 0.001, confidence: null}
+      long_generation: {ttft_p95_ms: 1000, latency_p95_ms: 10000, ...}
 measurement:
   warmup_s: 10
   window_s: 90
@@ -205,7 +222,7 @@ measurement:
 sweep: {type: rate, quota_fractions: [0.25, ...], relative_to: provider_ceiling}
 workload_classes:
   short:
-    slo_profile: default
+    slo_profile: interactive
     observed: {input_tokens_p50: 505, output_tokens_p50: 61}
     workload_validation: {input: {...}, output: {...}, valid: true}
     provider_constraints: {tokens_per_request: 576.0, ceiling_rps: 6.6667, binding_constraint: rpm, ...}
@@ -330,6 +347,10 @@ artifact was ever used to actually inform a gateway config:
 16. **Input padding trusted 4 chars ≈ 1 token.** Real runs measured
     ~46% of the requested input. Padding is now calibrated per model
     from the provider's own count -- see "Input-token calibration".
+17. **SLO and quota numbers were copied into every file.** The same
+    `slo:` block lived in 4 experiments and quotas in the models list.
+    Both now live once under `constraints/` (schema v5 groups them in
+    the artifact's `constraints:` block); loaders reject copies.
 
 ## Measurement policy
 
@@ -378,11 +399,11 @@ be true for some certified models. `scripts/fetch_quota.py` and
 number before an experiment is written, not a name for it to just do.
 
 ```bash
-.venv/bin/python scripts/fetch_quota.py --all                                 # check every model in scripts/models.yaml
+.venv/bin/python scripts/fetch_quota.py --all                                 # check constraints/quota.yaml
 .venv/bin/python scripts/fetch_quota.py --model-id us.amazon.nova-pro-v1:0    # one model, for a new entry
 ```
 
-`--all` compares each `quota:` in `scripts/models.yaml` with the live
+`--all` compares each entry in `constraints/quota.yaml` with the live
 value and prints a replacement line for any stale one (exit 1 if any
 differ). It looks up the model's real RPM/TPM in two steps, table first:
 
@@ -460,19 +481,22 @@ models legitimately stop a little early).
 
 ## SLO profiles
 
-`slo:` is an experiment's default SLO. `slo_profiles:` adds named ones a
-workload opts into with `slo_profile:` -- TTFT can be shared, but a
-512-token generation can't be held to the same end-to-end budget as a
-64-token reply:
+SLOs live in `constraints/slo.yaml` -- one definition shared by every
+experiment and model. TTFT can be shared, but a 512-token generation
+can't be held to the same end-to-end budget as a 64-token reply, so
+there are named profiles and a default:
 
 ```yaml
-slo:                         # default ("interactive")
-  ttft_p95_ms: 1000
-  latency_p95_ms: 3000
-slo_profiles:
-  long_generation:
-    ttft_p95_ms: 1000
-    latency_p95_ms: 10000
+# constraints/slo.yaml
+default: interactive
+profiles:
+  interactive:     {ttft_p95_ms: 1000, latency_p95_ms: 3000,  success_rate_min: 0.99, throttle_rate_max: 0.001}
+  long_generation: {ttft_p95_ms: 1000, latency_p95_ms: 10000, success_rate_min: 0.99, throttle_rate_max: 0.001}
+```
+
+An experiment's workloads only NAME a profile (or get the default):
+
+```yaml
 workloads:
   - {name: short_short, input_tokens: 512,  output_tokens: 64}
   - {name: long_long,   input_tokens: 4096, output_tokens: 512, slo_profile: long_generation}
@@ -480,9 +504,10 @@ workloads:
 
 Isolated workloads are gated on their own profile. In a mix, every
 request counts toward goodput against its own class's SLO, every class
-is gated on its own profile, and the blend only on the default SLO's
-success/throttle gates. The answer is therefore model + workload class
-+ SLO class + quota -> envelope, never one universal concurrency.
+is gated on its own profile, and the blend only on the default
+profile's success/throttle gates. The answer is therefore model +
+workload class + SLO class + quota -> envelope, never one universal
+concurrency.
 
 ## Mixed workloads
 

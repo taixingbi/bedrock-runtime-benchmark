@@ -15,9 +15,10 @@ magnitude across models and RPM vs TPM binds differently per workload
 shape. Fixed rps values would be far over one model's ceiling and
 nowhere near another's.
 
-SLOs: `slo:` is the default; `slo_profiles:` defines named SLOs a
-workload opts into with `slo_profile:` (e.g. long generations get a
-longer end-to-end latency budget than short ones).
+SLOs come from constraints/slo.yaml, never from the experiment: each
+workload names a profile (`slo_profile: long_generation`) or gets the
+file's default, so the same workload class is judged identically in
+every experiment (see constraints.py).
 """
 from __future__ import annotations
 
@@ -29,6 +30,7 @@ import yaml
 
 from ..ceiling import ProviderCeiling, provider_ceiling
 from ..client import TransportConfig
+from ..constraints import DEFAULT_SLO_FILE, SloConfig, load_slo
 from ..models import ModelConfig
 from ..workload import WorkloadProfile
 
@@ -50,27 +52,6 @@ class QuotaSnapshot:
     tool configures or controls."""
     rpm: Optional[float] = None
     tpm: Optional[float] = None
-
-
-@dataclass
-class SloConfig:
-    ttft_p95_ms: Optional[float] = None
-    latency_p95_ms: Optional[float] = None
-    # Result-quality gates -- distinct from the two latencies above
-    # (response SPEED), these are about whether responses came back at
-    # all and cleanly. Folded into SloConfig (schema_version 2) rather
-    # than kept as separate top-level ExperimentSpec fields, since
-    # they're conceptually part of "what counts as meeting the SLO"
-    # the same way the two latency thresholds are.
-    success_rate_min: float = 0.99
-    throttle_rate_max: float = 0.001
-    # When set (e.g. 0.95), success_rate_min/throttle_rate_max are
-    # gated on one-sided Wilson confidence bounds instead of point
-    # estimates -- a point has to have enough requests to DEMONSTRATE
-    # it meets a 0.1% throttle SLO (~2,700 at 95%), not just happen to
-    # observe zero throttles in a few hundred. None keeps point-
-    # estimate gating (bounds are still computed and reported at 95%).
-    confidence: Optional[float] = None
 
 
 @dataclass
@@ -133,8 +114,11 @@ class ExperimentSpec:
     # tolerance for counted vs requested input tokens.
     token_counting: str = "auto"
     calibration_tolerance_pct: float = 2.0
-    # Named SLOs workloads opt into via WorkloadProfile.slo_profile.
+    output_burndown: float = 1.0  # from constraints/quota.yaml, for the artifact
+    # Every profile from constraints/slo.yaml (workloads opt in via
+    # WorkloadProfile.slo_profile); `slo` above is its default profile.
     slo_profiles: Dict[str, SloConfig] = field(default_factory=dict)
+    slo_default: str = "default"
     # The models-file entry this spec is bound to (None only for specs
     # built directly in code, e.g. tests).
     model_name: Optional[str] = None
@@ -162,19 +146,25 @@ class ExperimentSpec:
 
 
 _MODEL_KEYS = ("target", "quota_snapshot", "quota")
+_SLO_KEYS = ("slo", "slo_profiles")
 
 
-def load_experiment(path: str, model: ModelConfig) -> ExperimentSpec:
+def load_experiment(path: str, model: ModelConfig, *, slo_file: str = DEFAULT_SLO_FILE) -> ExperimentSpec:
     raw = yaml.safe_load(Path(path).read_text())
 
     present = [k for k in _MODEL_KEYS if k in raw]
     if present:
         raise ValueError(
-            f"{path}: experiments are model-agnostic -- remove {present}; models and their quotas "
-            f"live in the models file (scripts/models.yaml)"
+            f"{path}: experiments are model-agnostic -- remove {present}; models live in "
+            f"scripts/models.yaml and quotas in constraints/quota.yaml"
         )
-    slo = raw.get("slo") or {}
-    slo_profiles = {name: SloConfig(**cfg) for name, cfg in (raw.get("slo_profiles") or {}).items()}
+    present = [k for k in _SLO_KEYS if k in raw]
+    if present:
+        raise ValueError(
+            f"{path}: remove {present} -- SLOs are defined once in {slo_file}; "
+            f"give a workload `slo_profile: <name>` to use a non-default one"
+        )
+    slos = load_slo(slo_file)
     sweep = raw["sweep"]
     transport = raw.get("transport") or {}
     workloads = [WorkloadProfile(**w) for w in raw["workloads"]]
@@ -184,7 +174,7 @@ def load_experiment(path: str, model: ModelConfig) -> ExperimentSpec:
         description=raw.get("description", ""),
         target=TargetConfig(model_id=model.model_id, region=model.region),
         quota_snapshot=QuotaSnapshot(rpm=model.quota_rpm, tpm=model.quota_tpm),
-        slo=SloConfig(**slo),
+        slo=slos.get(None),
         workloads=workloads,
         duration_s=raw.get("duration_s", 60.0),
         warmup_s=raw.get("warmup_s", 0.0),
@@ -197,8 +187,10 @@ def load_experiment(path: str, model: ModelConfig) -> ExperimentSpec:
         mix=MixConfig(**raw["mix"]) if raw.get("mix") else None,
         workload_validation_tolerance_pct=raw.get("workload_validation_tolerance_pct", 10.0),
         output_validation_tolerance_pct=raw.get("output_validation_tolerance_pct", 25.0),
-        slo_profiles=slo_profiles,
+        slo_profiles=dict(slos.profiles),
+        slo_default=slos.default,
         token_counting=model.token_counting,
+        output_burndown=model.output_burndown,
         calibration_tolerance_pct=raw.get("calibration_tolerance_pct", 2.0),
         model_name=model.name,
     )
@@ -256,7 +248,7 @@ def _validate(spec: ExperimentSpec) -> None:
         raise ValueError(f"token_counting must be one of {STRATEGIES}, got {spec.token_counting!r}")
     unknown_profiles = sorted({w.slo_profile for w in spec.workloads if w.slo_profile} - set(spec.slo_profiles))
     if unknown_profiles:
-        raise ValueError(f"workloads reference undefined slo_profiles: {unknown_profiles}")
+        raise ValueError(f"workloads reference SLO profiles not in the SLO file: {unknown_profiles}")
     for name, profile in spec.slo_profiles.items():
         if profile.confidence is not None and not 0 < profile.confidence < 1:
             raise ValueError(f"slo_profiles.{name}.confidence must be in (0, 1)")
