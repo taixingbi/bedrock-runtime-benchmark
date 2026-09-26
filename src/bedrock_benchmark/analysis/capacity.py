@@ -14,7 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
-from .metrics import DEFAULT_CONFIDENCE, RunMetrics, min_samples_to_resolve_rate
+from .metrics import DEFAULT_CONFIDENCE, RunMetrics, min_samples_to_resolve_rate, rate_upper, required_samples
 
 
 @dataclass
@@ -48,6 +48,12 @@ class SweepPoint:
 
 PASS, FAIL, INCONCLUSIVE = "PASS", "FAIL", "INCONCLUSIVE"
 
+# A p95 latency SLO "p95 <= T" is the same statement as "at most 5% of
+# requests exceed T" -- judged here as an exceedance PROPORTION with the
+# same exact binomial bound as the throttle / success checks.
+LATENCY_QUANTILE = 0.95
+LATENCY_EXCEEDANCE_MAX = round(1.0 - LATENCY_QUANTILE, 10)
+
 
 @dataclass
 class Check:
@@ -58,6 +64,10 @@ class Check:
     reason: Optional[str] = None
     n: Optional[int] = None
     required_n: Optional[int] = None
+    # Latency checks: requests over the threshold, and the upper bound on
+    # that proportion (the check is PASS when it's <= 5%).
+    exceedances: Optional[int] = None
+    exceedance_rate_upper: Optional[float] = None
 
     def to_dict(self) -> dict:
         return {k: v for k, v in self.__dict__.items() if v is not None}
@@ -106,15 +116,42 @@ def _rate_check(name: str, observed: float, bound: Optional[float], limit: float
                  n=n, required_n=required)
 
 
-def _latency_check(name: str, observed: Optional[float], limit: Optional[float]) -> Optional[Check]:
+def _latency_check(name: str, key: str, metrics: RunMetrics, limit: Optional[float],
+                   confidence: float) -> Optional[Check]:
+    """p95 <= limit, proven rather than just observed: with k of n
+    successful requests over `limit` (a request with no measurement
+    counts as over -- not measured is not compliant):
+
+        k / n > 5%                        -> FAIL (the sample p95 is over)
+        exact upper bound on k / n <= 5%  -> PASS
+        otherwise                         -> INCONCLUSIVE, with required_n
+
+    30 requests all under the limit still bound the exceedance at ~9.5%,
+    so they're INCONCLUSIVE, not a PASS; 59 clean requests resolve it."""
     if limit is None:
         return None
-    # A configured latency SLO with no measurement (non-streaming TTFT,
-    # < 2 output tokens for TPOT) is a missing/invalid measurement -- the
-    # same fail-closed rule as before, not "inconclusive".
-    if observed is None:
-        return Check(name, FAIL, threshold=limit, reason="not_measured")
-    return Check(name, PASS if observed <= limit else FAIL, observed=observed, threshold=limit)
+    observed = {"ttft": metrics.ttft_p95_ms, "tpot": metrics.tpot_p95_ms, "latency": metrics.latency_p95_ms}[key]
+    samples = (metrics.latency_samples or {}).get(key)
+    if samples is None:
+        # Hand-built metrics without per-request samples (tests only --
+        # compute_run_metrics always provides them): sample percentile.
+        if observed is None:
+            return Check(name, FAIL, threshold=limit, reason="not_measured")
+        return Check(name, PASS if observed <= limit else FAIL, observed=observed, threshold=limit)
+    n = len(samples)
+    if n == 0 or all(v is None for v in samples):
+        # A configured latency SLO with no measurement at all (non-
+        # streaming TTFT, < 2 output tokens for TPOT) fails closed.
+        return Check(name, FAIL, threshold=limit, reason="not_measured", n=n)
+    k = sum(1 for v in samples if v is None or v > limit)
+    bound = round(rate_upper(k, n, confidence=confidence), 6)
+    common = dict(observed=observed, threshold=limit, n=n, exceedances=k, exceedance_rate_upper=bound)
+    if k / n > LATENCY_EXCEEDANCE_MAX:
+        return Check(name, FAIL, reason="observed_violation", **common)
+    if bound <= LATENCY_EXCEEDANCE_MAX:
+        return Check(name, PASS, **common)
+    return Check(name, INCONCLUSIVE, reason="insufficient_samples",
+                 required_n=required_samples(k, LATENCY_EXCEEDANCE_MAX, confidence=confidence), **common)
 
 
 def evaluate(
@@ -127,9 +164,9 @@ def evaluate(
     if metrics.n == 0:
         return Verdict(FAIL, [Check("requests", FAIL, observed=0, reason="no_requests", n=0)])
     checks = [c for c in (
-        _latency_check("ttft_p95", metrics.ttft_p95_ms, ttft_p95_slo_ms),
-        _latency_check("tpot_p95", metrics.tpot_p95_ms, tpot_p95_slo_ms),
-        _latency_check("latency_p95", metrics.latency_p95_ms, latency_p95_slo_ms),
+        _latency_check("ttft_p95", "ttft", metrics, ttft_p95_slo_ms, confidence),
+        _latency_check("tpot_p95", "tpot", metrics, tpot_p95_slo_ms, confidence),
+        _latency_check("latency_p95", "latency", metrics, latency_p95_slo_ms, confidence),
     ) if c is not None]
     checks.append(_rate_check("success_rate", metrics.success_rate, metrics.success_rate_lower, success_rate_min,
                               upper=False, n=metrics.n, confidence=confidence))

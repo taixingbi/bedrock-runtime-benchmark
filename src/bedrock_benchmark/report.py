@@ -353,7 +353,7 @@ def build_capacity_profile(report: ExperimentReport) -> dict:
 
     confidence = spec.slo.confidence or DEFAULT_CONFIDENCE
     return {
-        "schema_version": 8,
+        "schema_version": 9,
         "experiment": spec.name,
         "model": {
             "name": spec.model_name,

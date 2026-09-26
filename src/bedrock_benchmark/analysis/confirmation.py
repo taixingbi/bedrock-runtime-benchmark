@@ -47,31 +47,8 @@ import math
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
-from .capacity import FAIL, INCONCLUSIVE, PASS, SweepPoint, Verdict
-from .metrics import rate_upper
-
-
-def required_samples(bad_events: int, max_rate: float, *, confidence: float) -> int:
-    """Smallest n at which `bad_events` observed in n requests gives a
-    exact (Clopper-Pearson) one-sided upper bound <= max_rate. (A success-rate floor is
-    the same question on failures: max_rate = 1 - success_rate_min.)"""
-    if max_rate <= 0:
-        raise ValueError("max_rate must be > 0")
-    if max_rate >= 1:
-        return max(1, bad_events)
-    lo = max(1, bad_events)
-    hi = lo
-    while rate_upper(bad_events, hi, confidence=confidence) > max_rate:
-        hi *= 2
-        if hi > 10**9:
-            raise ValueError("required sample size exceeds 1e9")
-    while lo < hi:  # the bound decreases in n for fixed events
-        mid = (lo + hi) // 2
-        if rate_upper(bad_events, mid, confidence=confidence) <= max_rate:
-            hi = mid
-        else:
-            lo = mid + 1
-    return lo
+from .capacity import FAIL, INCONCLUSIVE, LATENCY_EXCEEDANCE_MAX, PASS, SweepPoint, Verdict
+from .metrics import rate_upper, required_samples  # noqa: F401 -- re-exported
 
 
 @dataclass
@@ -192,6 +169,13 @@ def limits_for(gate_kwargs: dict, class_gate: Optional[Dict[str, dict]], shares:
     each mixed class's (seeing only its share of the requests)."""
     def of(prefix: str, kw: dict, share: float) -> List[RateLimit]:
         out = []
+        # Latency SLOs are exceedance proportions too: P(value > threshold)
+        # <= 5% (see capacity._latency_check). They need far fewer samples
+        # than a 0.1% throttle limit, but the plan must still cover them.
+        for key, name in (("ttft_p95_slo_ms", "ttft_p95"), ("tpot_p95_slo_ms", "tpot_p95"),
+                          ("latency_p95_slo_ms", "latency_p95")):
+            if kw.get(key) is not None:
+                out.append(RateLimit(f"{prefix}{name}", LATENCY_EXCEEDANCE_MAX, share))
         if kw.get("throttle_rate_max", 0) > 0:
             out.append(RateLimit(f"{prefix}throttle_rate", kw["throttle_rate_max"], share))
         if kw.get("success_rate_min", 0) < 1:

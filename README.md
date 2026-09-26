@@ -315,7 +315,7 @@ config review reads this file, and decides its own global/tenant/AIMD
 config FROM these per-class envelopes -- this repo never pre-packages
 a gateway control policy itself (see "Not in scope here" below).
 
-## Correctness fixes (schema v2 -- v8)
+## Correctness fixes (schema v2 -- v9)
 
 A real review caught 5 measurement-correctness bugs before this
 artifact was ever used to actually inform a gateway config:
@@ -443,6 +443,17 @@ artifact was ever used to actually inform a gateway config:
 21. **TTFT + TPOT alone missed user-visible E2E.** Each workload now
     carries its own E2E cap -- see "SLO profiles".
 
+### Schema v9 fixes
+
+27. **Latency SLOs were judged on the sample percentile alone.** "Sample
+    p95 <= 800 ms" says nothing about how sure we are the true p95 is.
+    Each p95 limit is now an exceedance proportion,
+    `P(value > T) <= 5%`, gated by the exact binomial bound like
+    throttle -- PASS / FAIL / INCONCLUSIVE with `exceedances`,
+    `exceedance_rate_upper` and `required_n` on every latency check. The
+    confirmation plan covers latency checks too. SLO definitions are
+    unchanged.
+
 ### Schema v8 fixes
 
 23. **Confirmation reused discovery data.** v7 pooled the confirmation
@@ -498,8 +509,17 @@ to show run-to-run spread.
 Insufficient evidence is not failure. Every check at every point gets a
 verdict (`capacity.py`'s `evaluate`):
 
-- **latency checks** (TTFT / TPOT / E2E p95): PASS or FAIL; a configured
-  SLO with no measurement FAILs (not measured is not compliant).
+- **latency checks** (TTFT / TPOT / E2E p95): a p95 limit T is the
+  statement "at most 5% of requests exceed T", so it's judged as an
+  exceedance PROPORTION with the same exact bound as throttle -- k of n
+  successful requests over T (a request with no measurement counts as
+  over; nothing measured at all FAILs):
+  - k / n > 5% (the sample p95 is over T) -> **FAIL**
+  - exact 95% upper bound on k / n <= 5% -> **PASS**
+  - otherwise -> **INCONCLUSIVE** with `required_n`. A sample p95 under
+    T isn't enough: 30 clean requests still bound the exceedance at
+    9.5%; 59 clean ones resolve it (93 with one slow request). 11 slow of
+    500 is 2.2% observed, 3.6% bound -> PASS.
 - **rate checks** (success, throttle), on EXACT one-sided
   (Clopper-Pearson) bounds at `confidence` (default 95%):
   - observed violation (e.g. throttle rate above the limit) -> **FAIL**

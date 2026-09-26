@@ -9,7 +9,7 @@ that comparison possible at a glance.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from statistics import NormalDist
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -150,6 +150,29 @@ def min_samples_to_resolve_rate(max_rate: float, *, confidence: float = DEFAULT_
     return math.ceil(math.log(1.0 - confidence) / math.log1p(-max_rate))
 
 
+def required_samples(bad_events: int, max_rate: float, *, confidence: float = DEFAULT_CONFIDENCE) -> int:
+    """Smallest n at which `bad_events` observed in n requests gives an
+    exact one-sided upper bound <= max_rate (0 events: min_samples_to_
+    resolve_rate). Used for throttle / failure rates and for latency
+    threshold exceedance alike."""
+    if max_rate <= 0:
+        raise ValueError("max_rate must be > 0")
+    if max_rate >= 1:
+        return max(1, bad_events)
+    lo = hi = max(1, bad_events)
+    while rate_upper(bad_events, hi, confidence=confidence) > max_rate:
+        hi *= 2
+        if hi > 10**9:
+            raise ValueError("required sample size exceeds 1e9")
+    while lo < hi:  # the bound decreases in n for fixed events
+        mid = (lo + hi) // 2
+        if rate_upper(bad_events, mid, confidence=confidence) <= max_rate:
+            hi = mid
+        else:
+            lo = mid + 1
+    return lo
+
+
 def tpot_ms(r: RequestResult) -> Optional[float]:
     """Time per output token for one request: the decode time after the
     first token, spread over the remaining tokens. None unless it's a
@@ -202,6 +225,12 @@ class RunMetrics:
     success_rate_lower: Optional[float] = None
     bound_confidence: Optional[float] = None
     measured_duration_s: Optional[float] = None
+    # Per-request values of the SUCCESSFUL requests in the population
+    # ({"ttft": [...], "tpot": [...], "latency": [...]}, None where a
+    # request has no such measurement). Latency SLOs are judged on these as
+    # threshold-exceedance proportions (capacity.py), not on the sample
+    # percentile alone. None only for hand-built metrics.
+    latency_samples: Optional[Dict[str, List[Optional[float]]]] = field(default=None, repr=False, compare=False)
 
 
 def compute_run_metrics(
@@ -317,4 +346,9 @@ def compute_run_metrics(
         success_rate_lower=round(rate_lower(n_success, n, confidence=confidence), 6),
         bound_confidence=confidence,
         measured_duration_s=round(duration_s, 3),
+        latency_samples={
+            "ttft": [r.ttft_ms for r in population if r.success],
+            "tpot": [tpot_ms(r) for r in population if r.success],
+            "latency": [r.latency_ms for r in population if r.success],
+        },
     )

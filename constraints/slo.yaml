@@ -10,7 +10,10 @@
 # Gated on the two latency components rather than end-to-end latency,
 # so one class stays meaningful whatever the output length:
 #
-#   ttft_p95_ms        time to first token, p95 (streaming only)
+#   ttft_p95_ms        time to first token, p95 (streaming only). Every
+#                      p95 limit T is judged as "P(value > T) <= 5%" with
+#                      an exact bound, like throttle: 59 clean requests to
+#                      PASS, more once any request is over T.
 #   tpot_p95_ms        time per output token after the first, p95:
 #                      (latency - TTFT) / (output_tokens - 1)
 #   (end-to-end latency is NOT set here -- it depends on output length,
