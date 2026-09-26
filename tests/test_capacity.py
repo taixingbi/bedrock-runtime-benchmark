@@ -1,6 +1,8 @@
 import unittest
 
-from bedrock_benchmark.analysis.capacity import SweepPoint, apply_headroom, meets_slo, point_meets_slo, recommend
+from bedrock_benchmark.analysis.capacity import (
+    SweepPoint, analyze_sweep, apply_headroom, meets_slo, point_meets_slo, recommend,
+)
 from bedrock_benchmark.analysis.metrics import RunMetrics
 
 
@@ -79,6 +81,59 @@ class MixedPointTests(unittest.TestCase):
         self.assertTrue(meets_slo(point.metrics, latency_p95_slo_ms=3000.0))
         self.assertFalse(point_meets_slo(point, latency_p95_slo_ms=3000.0))
         self.assertIsNone(recommend([point], latency_p95_slo_ms=3000.0))
+
+
+def _c(c, ok=True, goodput=None):
+    """Concurrency point that passes (ok) or fails via throttling."""
+    return SweepPoint(concurrency=c, rps=None, metrics=_metrics(
+        slo_goodput_rps=goodput if goodput is not None else float(c), throttle_rate=0.0 if ok else 0.2,
+    ))
+
+
+class NonMonotonicSweepTests(unittest.TestCase):
+    def test_clean_sweep_is_resolved_with_saturation_at_the_first_fail(self):
+        rec = recommend([_c(1), _c(2), _c(4), _c(6), _c(8, ok=False)])
+        self.assertEqual(rec.analysis.status, "resolved")
+        self.assertEqual((rec.point.concurrency, rec.saturation_point.concurrency), (6, 8))
+
+    def test_all_passing_is_not_reached(self):
+        rec = recommend([_c(1), _c(2)])
+        self.assertEqual(rec.analysis.status, "not_reached")
+        self.assertIsNone(rec.saturation_point)
+
+    def test_pass_fail_pass_claims_no_saturation_and_recommends_only_below_the_first_fail(self):
+        """The reviewer's case: C1 PASS, C2 PASS, C4 FAIL, C6 PASS, C8
+        FAIL. Old logic: best=C6, saturation=C4 -- contradictory."""
+        rec = recommend([_c(1), _c(2), _c(4, ok=False), _c(6, goodput=9.0), _c(8, ok=False)])
+        a = rec.analysis
+        self.assertEqual(a.status, "unresolved")
+        self.assertIsNone(rec.saturation_point)
+        self.assertEqual((a.stable_pass_max, a.unstable_region, a.confirmed_fail_from), (2, [4, 6], 8))
+        self.assertEqual(rec.point.concurrency, 2)  # never C6, despite its higher goodput
+
+    def test_first_point_failing_then_passing_gives_no_recommendation(self):
+        points = [_c(1, ok=False), _c(2), _c(4, ok=False)]
+        self.assertIsNone(recommend(points))
+        a = analyze_sweep(points)
+        self.assertEqual((a.status, a.stable_pass_max, a.unstable_region), ("unresolved", None, [1, 2]))
+
+    def test_nothing_passing(self):
+        self.assertEqual(analyze_sweep([_c(1, ok=False)]).status, "no_pass")
+
+    def test_client_limited_point_fails_closed(self):
+        limited = SweepPoint(concurrency=4, rps=None, metrics=_metrics(), client_limited=True)
+        self.assertFalse(point_meets_slo(limited))
+        rec = recommend([_c(1), _c(2), limited])
+        self.assertEqual((rec.point.concurrency, rec.saturation_point.concurrency), (2, 4))
+
+    def test_class_slo_overrides_per_class(self):
+        point = SweepPoint(
+            concurrency=None, rps=1.0, metrics=_metrics(),
+            class_metrics={"short": _metrics(latency_p95_ms=900.0), "long": _metrics(latency_p95_ms=6000.0)},
+        )
+        interactive = dict(latency_p95_slo_ms=3000.0)
+        self.assertFalse(point_meets_slo(point, None, **interactive))
+        self.assertTrue(point_meets_slo(point, {"long": dict(latency_p95_slo_ms=10000.0)}, **interactive))
 
 
 class RecommendTests(unittest.TestCase):

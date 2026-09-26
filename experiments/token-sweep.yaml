@@ -11,11 +11,21 @@ description: |
   Concurrency 1/2/4/6 repeated across 4 input/output token shapes.
   One capacity-profile entry per shape.
 
+# Default SLO (interactive). Long generations opt into long_generation:
+# a 512-token reply can't be held to the same end-to-end budget as a
+# 64-token one -- TTFT stays the same, E2E latency doesn't.
 slo:
   ttft_p95_ms: 1000
   latency_p95_ms: 3000
   success_rate_min: 0.99
   throttle_rate_max: 0.001
+
+slo_profiles:
+  long_generation:
+    ttft_p95_ms: 1000
+    latency_p95_ms: 10000
+    success_rate_min: 0.99
+    throttle_rate_max: 0.001
 
 workloads:
   - name: short_short
@@ -24,12 +34,14 @@ workloads:
   - name: short_output_heavy
     input_tokens: 512
     output_tokens: 512
+    slo_profile: long_generation
   - name: long_input_short_output
     input_tokens: 4096
     output_tokens: 64
   - name: long_long
     input_tokens: 4096
     output_tokens: 512
+    slo_profile: long_generation
 
 warmup_s: 10
 duration_s: 90

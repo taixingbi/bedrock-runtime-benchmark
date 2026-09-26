@@ -85,6 +85,20 @@ class ComputeRunMetricsTests(unittest.TestCase):
 
 
 
+class PerClassSloTests(unittest.TestCase):
+    def test_each_request_is_judged_by_its_own_class_slo(self):
+        results = [
+            _result(latency_ms=2500.0, tags={"workload": "short"}),  # within 3s
+            _result(latency_ms=6000.0, tags={"workload": "long"}),   # within 10s
+            _result(latency_ms=6000.0, tags={"workload": "short"}),  # blows 3s
+        ]
+        m = compute_run_metrics(
+            results, duration_s=10.0,
+            slo_by_workload={"short": (None, 3000.0), "long": (None, 10000.0)},
+        )
+        self.assertEqual(m.slo_goodput_rps, 0.2)
+
+
 class MeasurementWindowTests(unittest.TestCase):
     """warmup -> window [100, 110) -> drain."""
     W = MeasurementWindow(start=100.0, end=110.0)

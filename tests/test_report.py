@@ -43,11 +43,11 @@ class BuildCapacityProfileTests(unittest.TestCase):
         defaults.update(overrides)
         return ExperimentSpec(**defaults)
 
-    def test_schema_version_is_3(self):
+    def test_schema_version_is_4(self):
         spec = self._spec()
         report = ExperimentReport(spec=spec, profiles=[ProfileReport(workload_name="short", recommendation=None)])
         profile = build_capacity_profile(report)
-        self.assertEqual(profile["schema_version"], 3)
+        self.assertEqual(profile["schema_version"], 4)
 
     def test_concurrency_sweep_writes_a_concurrency_block_not_rate(self):
         spec = self._spec(sweep_type="concurrency")
@@ -197,20 +197,34 @@ class BuildCapacityProfileTests(unittest.TestCase):
         self.assertIsNotNone(observed["input_tokens_p50"])
         self.assertIsNotNone(observed["output_tokens_p50"])
 
-    def test_workload_validation_compares_requested_vs_bedrock_reported_input(self):
-        spec = self._spec()
+    def test_workload_validation_checks_input_and_output(self):
+        spec = self._spec()  # short: 512 in / 64 out
         report = ExperimentReport(
             spec=spec, profiles=[ProfileReport(workload_name="short", recommendation=None)],
-            all_results=[_result(input_tokens=700), _result(input_tokens=700),
-                         _result(input_tokens=9999, tags={"workload": "short", "measured": False})],
+            all_results=[_result(input_tokens=700, output_tokens=60), _result(input_tokens=700, output_tokens=60),
+                         _result(input_tokens=9999, output_tokens=1, tags={"workload": "short", "measured": False})],
         )
 
         v = build_capacity_profile(report)["workload_classes"]["short"]["workload_validation"]
 
-        self.assertEqual(v["observed_input_tokens_p50"], 700)  # warmup (measured: False) excluded
-        self.assertAlmostEqual(v["deviation_pct"], 36.72, places=2)
-        self.assertFalse(v["valid"])
+        self.assertEqual(v["input"]["observed_p50"], 700)  # warmup (measured: False) excluded
+        self.assertAlmostEqual(v["input"]["deviation_pct"], 36.72, places=2)
+        self.assertFalse(v["input"]["valid"])
+        self.assertEqual(v["output"]["target"], 64)
+        self.assertTrue(v["output"]["valid"])  # 60 vs 64 = -6.25%, within 25%
+        self.assertFalse(v["valid"])  # overall = both
         self.assertEqual(v["padding"], "4_chars_per_token_estimate")
+
+    def test_short_output_is_flagged(self):
+        spec = self._spec()
+        report = ExperimentReport(
+            spec=spec, profiles=[ProfileReport(workload_name="short", recommendation=None)],
+            all_results=[_result(input_tokens=512, output_tokens=20)],
+        )
+        v = build_capacity_profile(report)["workload_classes"]["short"]["workload_validation"]
+        self.assertTrue(v["input"]["valid"])
+        self.assertFalse(v["output"]["valid"])
+        self.assertFalse(v["valid"])
 
     def test_quota_snapshot_and_slo_and_transport_are_recorded(self):
         spec = self._spec()

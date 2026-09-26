@@ -11,7 +11,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from statistics import NormalDist
-from typing import List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence, Tuple
 
 from ..results import RequestResult
 
@@ -120,6 +120,7 @@ def compute_run_metrics(
     windows: Optional[Sequence[MeasurementWindow]] = None,
     ttft_slo_ms: Optional[float] = None, latency_slo_ms: Optional[float] = None,
     offered_rps: Optional[float] = None, confidence: float = DEFAULT_CONFIDENCE,
+    slo_by_workload: Optional[Dict[str, Tuple[Optional[float], Optional[float]]]] = None,
 ) -> RunMetrics:
     """With `windows` (the normal path -- one per repetition), two
     different populations are used, each for the question it answers
@@ -134,6 +135,11 @@ def compute_run_metrics(
       the drain's completions here (the old behavior: every success /
       duration_s) overstates throughput by up to one full concurrency
       level's worth of requests per run.
+
+    `slo_by_workload` ({workload: (ttft_slo_ms, latency_slo_ms)}) judges
+    each request against its own class's SLO -- for a mixed workload,
+    where a long generation and a short reply have different latency
+    budgets. Requests whose class isn't listed use the scalar SLOs.
 
     Without `windows`, falls back to "every result, over duration_s"
     (no warmup/drain distinction) -- kept for ad-hoc re-analysis of
@@ -164,11 +170,15 @@ def compute_run_metrics(
 
     slo_goodput_rps = None
     slo_efficiency = None
-    if ttft_slo_ms is not None or latency_slo_ms is not None:
+    has_class_slo = bool(slo_by_workload) and any(
+        t is not None or lat is not None for t, lat in slo_by_workload.values()
+    )
+    if ttft_slo_ms is not None or latency_slo_ms is not None or has_class_slo:
         def meets_slo(r: RequestResult) -> bool:
             if not r.success:
                 return False
-            if latency_slo_ms is not None and (r.latency_ms is None or r.latency_ms > latency_slo_ms):
+            ttft_slo, latency_slo = (slo_by_workload or {}).get(r.tags.get("workload"), (ttft_slo_ms, latency_slo_ms))
+            if latency_slo is not None and (r.latency_ms is None or r.latency_ms > latency_slo):
                 return False
             # A TTFT SLO is configured but this result has no TTFT at
             # all (non-streaming request, or a streaming measurement
@@ -177,7 +187,7 @@ def compute_run_metrics(
             # old `r.ttft_ms is not None and ...` form skipped the
             # check entirely when ttft_ms was None, silently counting
             # an unmeasured request as SLO-compliant.
-            if ttft_slo_ms is not None and (r.ttft_ms is None or r.ttft_ms > ttft_slo_ms):
+            if ttft_slo is not None and (r.ttft_ms is None or r.ttft_ms > ttft_slo):
                 return False
             return True
 

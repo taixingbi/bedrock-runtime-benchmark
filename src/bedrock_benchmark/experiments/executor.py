@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Union
 
-from ..analysis.capacity import Recommendation, SweepPoint, recommend
+from ..analysis.capacity import Recommendation, SweepAnalysis, SweepPoint, analyze_sweep, recommend
 from ..analysis.metrics import DEFAULT_CONFIDENCE, MeasurementWindow, compute_run_metrics
 from ..client import BedrockConverseTarget
 from ..results import RequestResult
@@ -34,6 +34,9 @@ class ProfileReport:
     recommendation: Optional[Recommendation] = None
     # Normalized class shares when this subject is a WorkloadMix.
     mix_shares: Optional[Dict[str, float]] = None
+    # Always set -- also when there's no recommendation, so the report
+    # can say WHY (never passed vs non-monotonic from the first point).
+    analysis: Optional[SweepAnalysis] = None
 
 
 @dataclass
@@ -43,21 +46,37 @@ class ExperimentReport:
     all_results: List[RequestResult] = field(default_factory=list)
 
 
+def _slo_kwargs(slo, *, latency: bool = True) -> dict:
+    kwargs = dict(success_rate_min=slo.success_rate_min, throttle_rate_max=slo.throttle_rate_max,
+                  gate_on_bounds=slo.confidence is not None)
+    if latency:
+        kwargs.update(ttft_p95_slo_ms=slo.ttft_p95_ms, latency_p95_slo_ms=slo.latency_p95_ms)
+    return kwargs
+
+
 async def run_experiment(
     spec: ExperimentSpec, *, on_progress: Optional[ProgressCallback] = None,
     target: Optional[BedrockConverseTarget] = None,
 ) -> ExperimentReport:
     # `target` is injectable for tests (a fake client) -- never set by the CLI.
+    owns_target = target is None
     if target is None:
         target = BedrockConverseTarget(
             model_id=spec.target.model_id, region=spec.target.region, transport=spec.transport,
         )
+    try:
+        return await _run(spec, target, on_progress)
+    finally:
+        if owns_target:
+            target.close()
+
+
+async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress: Optional[ProgressCallback]) -> ExperimentReport:
     report = ExperimentReport(spec=spec)
     if spec.sweep.type not in ("concurrency", "rate"):
         raise ValueError(f"unknown sweep type: {spec.sweep.type!r} (use 'concurrency' or 'rate')")
 
     profiles = {w.name: w for w in spec.workloads}
-
     subjects: List[Union[WorkloadProfile, WorkloadMix]]
     if spec.mix is not None:
         subjects = [WorkloadMix(
@@ -66,20 +85,34 @@ async def run_experiment(
     else:
         subjects = [profiles[w.name] for w in spec.workloads]
 
-    confidence = spec.slo.confidence or DEFAULT_CONFIDENCE
-    metric_kwargs = dict(
-        ttft_slo_ms=spec.slo.ttft_p95_ms, latency_slo_ms=spec.slo.latency_p95_ms, confidence=confidence,
-    )
-
     for subject in subjects:
-        shares = subject.shares if isinstance(subject, WorkloadMix) else None
+        is_mix = isinstance(subject, WorkloadMix)
+        shares = subject.shares if is_mix else None
+        # SLOs: an isolated workload uses its own (profile or default).
+        # A mix judges each class against ITS SLO -- per-request for
+        # goodput, per-class for the gate -- and the blend only on the
+        # rate gates (success/throttle) of the default SLO.
+        if is_mix:
+            class_slos = {n: spec.slo_for(n) for n in shares}
+            blend_slo = spec.slo
+            metric_slo = dict(slo_by_workload={n: (c.ttft_p95_ms, c.latency_p95_ms) for n, c in class_slos.items()})
+            gate_kwargs = _slo_kwargs(blend_slo, latency=False)
+            class_gate = {n: _slo_kwargs(c) for n, c in class_slos.items()}
+        else:
+            blend_slo = spec.slo_for(subject.name)
+            metric_slo = dict(ttft_slo_ms=blend_slo.ttft_p95_ms, latency_slo_ms=blend_slo.latency_p95_ms)
+            gate_kwargs = _slo_kwargs(blend_slo)
+            class_gate = None
+        confidence = blend_slo.confidence or DEFAULT_CONFIDENCE
+
         points: List[SweepPoint] = []
-        for value in spec.sweep.values:
+        for value in spec.sweep_values(subject.name):
             offered_rps = value if spec.sweep.type == "rate" else None
 
             point_results: List[RequestResult] = []
             windows: List[MeasurementWindow] = []
             per_rep = []
+            peak = 0
             for rep in range(spec.repetitions):
                 # A distinct seed per repetition -- the same seed would
                 # replay one identical arrival pattern R times, which
@@ -96,7 +129,9 @@ async def run_experiment(
                         stream=spec.stream, seed=seed,
                     )
 
+                target.reset_peak()
                 results = await runner.run()
+                peak = max(peak, target.peak_outstanding)
                 window = runner.window
                 for r in results:
                     r.tags.update({
@@ -111,35 +146,40 @@ async def run_experiment(
                     })
                 point_results.extend(results)
                 windows.append(window)
-                per_rep.append(compute_run_metrics(results, windows=[window], offered_rps=offered_rps, **metric_kwargs))
+                per_rep.append(compute_run_metrics(
+                    results, windows=[window], offered_rps=offered_rps, confidence=confidence, **metric_slo,
+                ))
 
             report.all_results.extend(point_results)
             class_metrics = {}
             if shares is not None:
                 for class_name, share in shares.items():
                     own = [r for r in point_results if r.tags.get("workload") == class_name]
+                    c = class_slos[class_name]
                     class_metrics[class_name] = compute_run_metrics(
-                        own, windows=windows,
-                        offered_rps=None if offered_rps is None else offered_rps * share, **metric_kwargs,
+                        own, windows=windows, offered_rps=None if offered_rps is None else offered_rps * share,
+                        ttft_slo_ms=c.ttft_p95_ms, latency_slo_ms=c.latency_p95_ms,
+                        confidence=c.confidence or DEFAULT_CONFIDENCE,
                     )
             point = SweepPoint(
                 concurrency=int(value) if spec.sweep.type == "concurrency" else None,
                 rps=value if spec.sweep.type == "rate" else None,
-                metrics=compute_run_metrics(point_results, windows=windows, offered_rps=offered_rps, **metric_kwargs),
+                metrics=compute_run_metrics(
+                    point_results, windows=windows, offered_rps=offered_rps, confidence=confidence, **metric_slo,
+                ),
                 repetitions=per_rep,
                 class_metrics=class_metrics,
+                peak_outstanding=peak,
+                client_limited=peak > target.executor_workers,
             )
             points.append(point)
             if on_progress is not None:
                 on_progress(subject.name, value, point)
 
-        recommendation = recommend(
-            points, success_rate_min=spec.slo.success_rate_min, throttle_rate_max=spec.slo.throttle_rate_max,
-            ttft_p95_slo_ms=spec.slo.ttft_p95_ms, latency_p95_slo_ms=spec.slo.latency_p95_ms,
-            gate_on_bounds=spec.slo.confidence is not None,
-        )
         report.profiles.append(ProfileReport(
-            workload_name=subject.name, points=points, recommendation=recommendation, mix_shares=shares,
+            workload_name=subject.name, points=points, mix_shares=shares,
+            recommendation=recommend(points, class_gate, **gate_kwargs),
+            analysis=analyze_sweep(points, class_gate, **gate_kwargs),
         ))
 
     return report

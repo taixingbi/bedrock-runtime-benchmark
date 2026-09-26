@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import random
 from dataclasses import dataclass, field
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 _CHARS_PER_TOKEN_ESTIMATE = 4
 _FILLER_WORD = "benchmark "  # 10 chars incl. space -- deliberately plain, no semantic content to bias the model
@@ -36,6 +36,10 @@ class WorkloadProfile:
     name: str
     input_tokens: int
     output_tokens: int  # used as max_tokens on the request -- the model may emit fewer
+    # Named SLO from the experiment's slo_profiles (None = the default
+    # `slo:`) -- a 512-token generation shouldn't be held to the same
+    # end-to-end latency as a 64-token one.
+    slo_profile: Optional[str] = None
 
     def prompt(self) -> str:
         # Explicitly asks for output of roughly the target length --

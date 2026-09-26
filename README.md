@@ -98,11 +98,38 @@ Two independent inputs, combined at run time:
   `target:` or `quota_snapshot:` block), so every experiment runs
   unchanged against every model.
 
-Rate sweeps are written as `quota_fractions` of each model's own RPM
-quota (1.0 = exactly the quota), because quotas differ by an order of
-magnitude -- 50 RPM for nova-pro, 1000 for qwen3-32b. The same
-`[0.25 .. 2.5]` sweep is 0.21-2.08 rps on nova-pro and 4.2-41.7 rps on
-qwen3-32b. Concurrency sweeps stay absolute.
+Rate sweeps are written as `quota_fractions` of each sweep subject's
+**provider ceiling** -- the request rate the model's quota allows for
+that workload's token shape (`ceiling.py`):
+
+```
+rpm_rps = RPM / 60
+tpm_rps = TPM / (input_tokens + max_tokens x output_burndown) / 60
+ceiling = min(rpm_rps, tpm_rps)
+```
+
+Quotas cap requests AND tokens, and which binds depends on the
+workload (a short request on nova-micro is RPM-bound; a long one on a
+tight-TPM model can be TPM-bound). `max_tokens`, not actual output,
+counts because Bedrock reserves input + max_tokens against TPM when a
+request starts. `output_burndown` (models file, default 1) covers models
+that bill output tokens at a multiple. Every class/mix in the artifact
+records it:
+
+```yaml
+provider_constraints:
+  tokens_per_request: 576.0
+  rpm_rps_ceiling: 6.6667
+  tpm_rps_ceiling: 231.4815
+  ceiling_rps: 6.6667
+  binding_constraint: rpm      # or tpm
+sweep_values_rps: [1.6667, 3.3333, ...]
+```
+
+Quotas differ by an order of magnitude (50 RPM for nova-pro, 1000 for
+qwen3-32b), so the same `[0.25 .. 2.5]` sweep is 0.21-2.08 rps on
+nova-pro and 4.2-41.7 rps on qwen3-32b. Concurrency sweeps stay
+absolute (and may not exceed `transport.max_connections`).
 
 | Experiment | Sweep | Per model |
 |---|---|---|
@@ -154,13 +181,14 @@ findings.
 
 Each run writes raw per-request JSONL and a `capacity-profile.yaml`
 artifact under `results/` (gitignored -- these are real measurement outputs, not
-checked-in fixtures). The `capacity-profile.yaml` schema (v3 -- see
+checked-in fixtures). The `capacity-profile.yaml` schema (v4 -- see
 "Correctness fixes" below for why `rate` and `concurrency` are always
 kept in separate blocks, why the rate block separates offered load
-from goodput, and why there's no `global_max_concurrency`):
+from goodput, and why there's no `global_max_concurrency`). A
+rate-capacity result:
 
 ```yaml
-schema_version: 3
+schema_version: 4
 experiment: rate-capacity
 model: {name: nova-micro, provider: bedrock, model_id: ..., region: ...}
 quota_snapshot: {rpm: 400, tpm: 8000000}          # from scripts/models.yaml
@@ -170,32 +198,37 @@ measurement:
   window_s: 90
   repetitions: 1
   window_policy: scheduled_in_window_for_rates__completed_in_window_for_throughput
+  clock: monotonic_durations__wall_clock_timestamps
   gate: point_estimate                      # or confidence_bound when slo.confidence is set
   min_requests_to_resolve_throttle_slo: 2703
-sweep: {type: rate, values: [1.6667, ...], quota_fractions: [0.25, ...]}
+sweep: {type: rate, quota_fractions: [0.25, ...], relative_to: provider_ceiling}
 workload_classes:
-  short:                                    # a concurrency-sweep result
+  short:
+    slo_profile: default
     observed: {input_tokens_p50: 505, output_tokens_p50: 61}
-    concurrency: {measured_best: 6, saturation: 8, production_max: 4, slo_goodput_rps: 5.1}
-    evidence: {n: 612, n_throttled: 0, throttle_rate: 0.0, throttle_rate_upper: 0.0044, ...}
-  short_rate:                               # a rate-sweep result (same workload, different sweep type)
-    observed: {input_tokens_p50: 505, output_tokens_p50: 61}
+    workload_validation: {input: {...}, output: {...}, valid: true}
+    provider_constraints: {tokens_per_request: 576.0, ceiling_rps: 6.6667, binding_constraint: rpm, ...}
+    sweep_values_rps: [1.6667, 3.3333, ...]
     rate:
-      max_safe_offered_rps: 6.0             # the swept offered rate that passed the SLO
-      slo_goodput_rps: 5.8                  # what it actually delivered within SLO
-      saturation_offered_rps: 7.0
-      production_offered_rps: 4.8           # headroom applied to OFFERED rate -- what a gateway limit reads
-    evidence: {...}
+      max_safe_offered_rps: 8.3333          # the swept offered rate that passed the SLO
+      slo_goodput_rps: 8.1                  # what it actually delivered within SLO
+      saturation_offered_rps: 10.0
+      saturation_status: resolved           # or not_reached / unresolved (+ unstable_region)
+      production_offered_rps: 6.6667        # headroom applied to OFFERED rate -- what a gateway limit reads
+    evidence: {n: 745, n_throttled: 0, throttle_rate_upper: 0.0036, peak_outstanding: 9, ...}
 provider: {headroom: 0.20}
-transport: {max_connections: 64, total_max_attempts: 1, connect_timeout_s: 5, read_timeout_s: 60}
+transport: {max_connections: 64, executor_workers: 64, total_max_attempts: 1, connect_timeout_s: 5, read_timeout_s: 60}
 ```
+
+A concurrency sweep writes `concurrency: {measured_best, saturation,
+saturation_status, production_max, slo_goodput_rps}` instead of `rate`.
 
 This is the actual deliverable -- not an HTML report. A gateway's own
 config review reads this file, and decides its own global/tenant/AIMD
 config FROM these per-class envelopes -- this repo never pre-packages
 a gateway control policy itself (see "Not in scope here" below).
 
-## Correctness fixes (schema v2 / v3)
+## Correctness fixes (schema v2 / v3 / v4)
 
 A real review caught 5 measurement-correctness bugs before this
 artifact was ever used to actually inform a gateway config:
@@ -267,7 +300,34 @@ artifact was ever used to actually inform a gateway config:
 9. **A 0.1% throttle SLO was gated on too few samples.** See
    "Statistical resolution" below.
 
-## Measurement policy (schema v3)
+### Schema v4 fixes
+
+10. **`asyncio.to_thread`'s default executor was a hidden capacity
+    limit.** It has min(32, cpu_count + 4) workers -- 14 on a 10-core
+    laptop -- independent of the 64-connection pool, so past ~14
+    in-flight calls requests queued for a Python thread and the
+    benchmark measured the thread pool. The target now owns a
+    `ThreadPoolExecutor` sized `transport.executor_workers` (default =
+    `max_connections`, must be >=), tracks peak outstanding calls per
+    point, and a point that ever exceeded the pool is
+    `client_limited` -- excluded from the recommendation and listed in
+    `client_limited_points`. `executor_workers` is recorded in the
+    artifact.
+11. **Latency/TTFT used the wall clock.** `time.time()` jumps with NTP
+    corrections. Durations now come from `time.perf_counter()`; wall
+    timestamps are one anchor + monotonic deltas.
+12. **Rate sweeps ignored TPM.** See "provider ceiling" above.
+13. **Output tokens weren't validated.** See "Workload validation".
+14. **A non-monotonic sweep produced contradictory results.** PASS,
+    PASS, FAIL, PASS, FAIL reported best=C6 with saturation=C4. Now
+    `saturation_status` is `resolved` (clean pass->fail; saturation =
+    first fail), `not_reached` (all passed), or `unresolved` (a pass
+    after a fail: no saturation claimed; `unstable_region` and
+    `confirmed_fail_from` instead). Only the leading run of passes is
+    eligible for the recommendation.
+15. **One SLO for every workload.** See "SLO profiles".
+
+## Measurement policy
 
 Every sweep point runs **warmup -> measurement window -> drain**:
 
@@ -349,25 +409,50 @@ sweeps span 0.25x-2.5x.
 ## Workload validation
 
 Prompts are padded at a fixed ~4 chars ≈ 1 token (the same estimate
-`bedrock-runtime-gateway` uses). Tokenizers differ per model, so the
-estimate can miss; each class's `workload_validation` compares the
-requested input tokens with the p50 Bedrock actually *reported* during
-the run:
+`bedrock-runtime-gateway` uses), and `max_tokens` is only a cap -- the
+model may emit far less. So each class's `workload_validation` checks
+BOTH sides against what Bedrock actually *reported* during the run:
 
 ```yaml
 workload_validation:
-  requested_input_tokens: 512
   padding: 4_chars_per_token_estimate
-  observed_input_tokens_p50: 507
-  deviation_pct: -0.98
-  tolerance_pct: 10.0
-  valid: true
+  input:  {target: 4096, observed_p50: 4020, deviation_pct: -1.86, tolerance_pct: 10.0, valid: true}
+  output: {target: 512,  observed_p50: 438,  deviation_pct: -14.45, tolerance_pct: 25.0, valid: true}
+  valid: true              # both
 ```
 
 `valid: false` means the envelope describes a different workload shape
-than the class name claims -- `run.py` warns and `gateway_diff.py`
-raises `workload_shape_invalid`. Tolerance is
-`workload_validation_tolerance_pct` (default 10).
+than the class name claims (e.g. "4096 in / 512 out" that really
+emitted 110 tokens) -- `run.py` warns and `gateway_diff.py` raises
+`workload_shape_invalid`. Tolerances: `workload_validation_tolerance_pct`
+(input, default 10) and `output_validation_tolerance_pct` (default 25 --
+models legitimately stop a little early).
+
+## SLO profiles
+
+`slo:` is an experiment's default SLO. `slo_profiles:` adds named ones a
+workload opts into with `slo_profile:` -- TTFT can be shared, but a
+512-token generation can't be held to the same end-to-end budget as a
+64-token reply:
+
+```yaml
+slo:                         # default ("interactive")
+  ttft_p95_ms: 1000
+  latency_p95_ms: 3000
+slo_profiles:
+  long_generation:
+    ttft_p95_ms: 1000
+    latency_p95_ms: 10000
+workloads:
+  - {name: short_short, input_tokens: 512,  output_tokens: 64}
+  - {name: long_long,   input_tokens: 4096, output_tokens: 512, slo_profile: long_generation}
+```
+
+Isolated workloads are gated on their own profile. In a mix, every
+request counts toward goodput against its own class's SLO, every class
+is gated on its own profile, and the blend only on the default SLO's
+success/throttle gates. The answer is therefore model + workload class
++ SLO class + quota -> envelope, never one universal concurrency.
 
 ## Mixed workloads
 

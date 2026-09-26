@@ -35,6 +35,12 @@ class SweepPoint:
     # short/long mix can have a fine aggregate p95 while the long
     # class alone blows its latency SLO.
     class_metrics: Dict[str, RunMetrics] = field(default_factory=dict)
+    # Most calls ever outstanding in the client (running + waiting for
+    # a thread) during this point, and whether that exceeded the thread
+    # pool -- a client_limited point measured client-side queueing, not
+    # Bedrock, and can never be recommended (fails closed).
+    peak_outstanding: Optional[int] = None
+    client_limited: bool = False
 
 
 def meets_slo(
@@ -74,44 +80,92 @@ def meets_slo(
     return True
 
 
-def point_meets_slo(point: SweepPoint, **slo_kwargs) -> bool:
+def point_meets_slo(point: SweepPoint, class_slo: Optional[Dict[str, dict]] = None, **slo_kwargs) -> bool:
+    """The blend (point.metrics) is judged with slo_kwargs; each class of
+    a mixed point with its own entry in class_slo (falling back to
+    slo_kwargs), so every class meets ITS SLO."""
+    if point.client_limited:
+        return False
     return meets_slo(point.metrics, **slo_kwargs) and all(
-        meets_slo(m, **slo_kwargs) for m in point.class_metrics.values()
+        meets_slo(m, **(class_slo or {}).get(name, slo_kwargs)) for name, m in point.class_metrics.items()
+    )
+
+
+@dataclass
+class SweepAnalysis:
+    """Where a sweep crosses from passing to failing -- honest about
+    noise. Real Bedrock sweeps aren't always monotonic (PASS, FAIL,
+    PASS, FAIL can be provider noise or sampling variance), and naming
+    the first failure "saturation" while recommending a point above it
+    would contradict itself. So:
+
+    - not_reached: every point passed -- the sweep never found the edge.
+    - resolved:    passes then fails, cleanly -- saturation = first fail.
+    - unresolved:  a pass after a fail -- no saturation is claimed;
+                   stable_pass_max (end of the leading run of passes),
+                   unstable_region (values between that and the last
+                   pass) and confirmed_fail_from (first of the trailing
+                   run of fails) describe it instead.
+    """
+    status: str  # "not_reached" | "resolved" | "unresolved" | "no_pass"
+    stable_pass_max: Optional[float] = None
+    unstable_region: List[float] = field(default_factory=list)
+    confirmed_fail_from: Optional[float] = None
+
+
+def _key(p: SweepPoint) -> float:
+    return p.concurrency if p.concurrency is not None else p.rps
+
+
+def analyze_sweep(points: List[SweepPoint], class_slo: Optional[Dict[str, dict]] = None, **slo_kwargs) -> SweepAnalysis:
+    ordered = sorted(points, key=_key)
+    passed = [point_meets_slo(p, class_slo, **slo_kwargs) for p in ordered]
+    if not any(passed):
+        return SweepAnalysis(status="no_pass")
+    lead = next((i for i, ok in enumerate(passed) if not ok), len(passed))  # leading passes = ordered[:lead]
+    last_pass = max(i for i, ok in enumerate(passed) if ok)
+    stable_pass_max = _key(ordered[lead - 1]) if lead > 0 else None
+    confirmed = _key(ordered[last_pass + 1]) if last_pass + 1 < len(ordered) else None
+    if lead == len(ordered):
+        return SweepAnalysis(status="not_reached", stable_pass_max=stable_pass_max)
+    if last_pass < lead:
+        return SweepAnalysis(status="resolved", stable_pass_max=stable_pass_max, confirmed_fail_from=confirmed)
+    return SweepAnalysis(
+        status="unresolved", stable_pass_max=stable_pass_max,
+        unstable_region=[_key(p) for p in ordered[lead:last_pass + 1]], confirmed_fail_from=confirmed,
     )
 
 
 @dataclass
 class Recommendation:
     point: SweepPoint
-    # The sweep's own saturation edge -- the smallest point (by
-    # concurrency/rps) that FAILED the SLO, i.e. where things first
-    # broke. None if every swept point passed (the sweep never actually
-    # found the ceiling -- worth re-running with higher values, not
-    # silently treated as "no ceiling exists").
+    # The sweep's saturation edge -- the first point that FAILED the
+    # SLO, set only when the sweep is cleanly monotonic
+    # (analysis.status == "resolved"). None when every point passed
+    # (not_reached: re-run with higher values) or when measurements
+    # were non-monotonic (unresolved: see analysis).
     saturation_point: Optional[SweepPoint]
+    analysis: SweepAnalysis = field(default_factory=lambda: SweepAnalysis(status="resolved"))
 
 
-def recommend(points: List[SweepPoint], **slo_kwargs) -> Optional[Recommendation]:
-    """Among points satisfying meets_slo, picks the one with the
-    highest slo_goodput_rps -- ties broken toward the LOWER
-    concurrency/rps (a conservative choice: no reason to run hotter for
-    the same goodput). Returns None if no swept point meets the SLO at
-    all -- a real, worth-surfacing result (this workload may not be
-    safely servable under this SLO at any of the swept values), not
-    silently recommending the least-bad option."""
-    passing = [p for p in points if point_meets_slo(p, **slo_kwargs)]
-    failing = [p for p in points if not point_meets_slo(p, **slo_kwargs)]
-
-    def sort_key(p: SweepPoint):
-        return p.concurrency if p.concurrency is not None else p.rps
-
-    saturation_point = min(failing, key=sort_key) if failing else None
-
-    if not passing:
+def recommend(points: List[SweepPoint], class_slo: Optional[Dict[str, dict]] = None, **slo_kwargs) -> Optional[Recommendation]:
+    """Among the LEADING run of passing points (everything up to the
+    first failure), picks the highest slo_goodput_rps -- ties broken
+    toward the LOWER concurrency/rps. Points that pass only after an
+    earlier failure are never recommended: a pass above a failure is
+    exactly the noise a conservative envelope must not bet on. Returns
+    None if no leading point passes (including a sweep whose very first
+    point failed) -- see analyze_sweep for the why."""
+    analysis = analyze_sweep(points, class_slo, **slo_kwargs)
+    if analysis.stable_pass_max is None:
         return None
-
-    best = max(passing, key=lambda p: (p.metrics.slo_goodput_rps or 0.0, -(sort_key(p) or 0)))
-    return Recommendation(point=best, saturation_point=saturation_point)
+    ordered = sorted(points, key=_key)
+    stable = [p for p in ordered if _key(p) <= analysis.stable_pass_max]
+    best = max(stable, key=lambda p: (p.metrics.slo_goodput_rps or 0.0, -(_key(p) or 0)))
+    saturation = None
+    if analysis.status == "resolved":
+        saturation = next(p for p in ordered if _key(p) == analysis.confirmed_fail_from)
+    return Recommendation(point=best, saturation_point=saturation, analysis=analysis)
 
 
 def apply_headroom(value: float, *, headroom: float) -> float:

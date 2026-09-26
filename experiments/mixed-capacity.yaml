@@ -5,20 +5,31 @@
 # every arrival independently draws its class by weight, and a point
 # passes only if the SLO holds for EACH class, not just the blend.
 #
-# Rates are quota_fractions of each model's quota.rpm (see
-# rate-capacity.yaml). The mixed_workloads envelope is valid for THIS
+# Rates are quota_fractions of the mix's provider ceiling --
+# min(RPM, TPM / avg tokens per request), see rate-capacity.yaml.
+# Each class is judged against its own SLO profile. The mixed_workloads envelope is valid for THIS
 # mix's shares only -- a different traffic mix needs its own run.
 name: mixed-capacity
 description: |
-  Poisson rate sweep at 0.25x..2.5x of each model's RPM quota,
+  Poisson rate sweep at 0.25x..2.5x of the model's provider ceiling,
   70% short (512/64) + 30% long_long (4096/512), 10s warmup + 90s
   window per point (~13 min per model).
 
+# Default SLO (interactive). long_long opts into long_generation:
+# a 512-token reply can't be held to the same end-to-end budget as a
+# 64-token one -- TTFT stays the same, E2E latency doesn't.
 slo:
   ttft_p95_ms: 1000
   latency_p95_ms: 3000
   success_rate_min: 0.99
   throttle_rate_max: 0.001
+
+slo_profiles:
+  long_generation:
+    ttft_p95_ms: 1000
+    latency_p95_ms: 10000
+    success_rate_min: 0.99
+    throttle_rate_max: 0.001
 
 workloads:
   - name: short
@@ -27,6 +38,7 @@ workloads:
   - name: long_long
     input_tokens: 4096
     output_tokens: 512
+    slo_profile: long_generation
 
 mix:
   name: short70_long30

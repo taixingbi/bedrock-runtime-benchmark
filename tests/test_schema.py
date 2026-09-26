@@ -63,8 +63,8 @@ class ModelBindingTests(unittest.TestCase):
         pro = load_experiment("experiments/rate-capacity.yaml", PRO)
         self.assertEqual(micro.sweep.quota_fractions, pro.sweep.quota_fractions)
         i = micro.sweep.quota_fractions.index(1.0)
-        self.assertAlmostEqual(micro.sweep.values[i], 400 / 60, places=3)  # 1.0x quota
-        self.assertAlmostEqual(pro.sweep.values[i], 50 / 60, places=3)
+        self.assertAlmostEqual(micro.sweep_values("short")[i], 400 / 60, places=3)  # 1.0x ceiling (RPM-bound)
+        self.assertAlmostEqual(pro.sweep_values("short")[i], 50 / 60, places=3)
 
     def test_quota_relative_sweep_without_a_quota_fails_clearly(self):
         with self.assertRaisesRegex(ValueError, "quota.rpm"):
@@ -77,6 +77,15 @@ class ModelBindingTests(unittest.TestCase):
         for key in ("target: {model_id: m}\n", "quota_snapshot: {rpm: 1}\n"):
             with self.subTest(key=key), self.assertRaisesRegex(ValueError, "model-agnostic"):
                 _load_text(MINIMAL + key)
+
+
+class SloProfileTests(unittest.TestCase):
+    def test_workloads_resolve_their_own_slo_profile(self):
+        spec = load_experiment("experiments/token-sweep.yaml", MICRO)
+        self.assertEqual(spec.slo_for("short_short").latency_p95_ms, 3000)
+        self.assertEqual(spec.slo_for("long_long").latency_p95_ms, 10000)
+        self.assertEqual(spec.slo_for("short_output_heavy").latency_p95_ms, 10000)
+        self.assertEqual(spec.slo_for("long_input_short_output").latency_p95_ms, 3000)
 
 
 class ValidationTests(unittest.TestCase):
@@ -95,6 +104,9 @@ class ValidationTests(unittest.TestCase):
             MINIMAL.replace("values: [1]", "values: [1], quota_fractions: [1.0]"),
             MINIMAL.replace("values: [1]", "quota_fractions: [1.0]"),  # concurrency can't be quota-relative
             MINIMAL.replace("{type: concurrency, values: [1]}", "{type: rate}"),
+            MINIMAL.replace("values: [1]", "values: [1, 128]"),  # > transport.max_connections (64)
+            MINIMAL.replace("output_tokens: 16}", "output_tokens: 16, slo_profile: nope}"),
+            MINIMAL + "transport: {max_connections: 64, executor_workers: 8}\n",
         ]
         for text in bad:
             with self.subTest(text=text), self.assertRaises(ValueError):

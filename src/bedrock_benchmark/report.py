@@ -1,4 +1,4 @@
-"""Builds the capacity-profile.yaml artifact (schema_version 3) -- the
+"""Builds the capacity-profile.yaml artifact (schema_version 4) -- the
 one machine-readable thing this repo exists to hand to
 bedrock-runtime-gateway's own control-plane config review, not a
 human-facing HTML report.
@@ -47,6 +47,14 @@ window, repetitions, confidence) and per-class `evidence` (sample
 size, throttle count, confidence bounds), so a reader can tell a
 statistically resolved 0.1% throttle SLO from an unresolved one.
 
+schema_version 4 adds, per sweep subject: `provider_constraints` (RPM-
+vs TPM-bound request ceiling, see ceiling.py) and the rps a quota-
+relative sweep actually resolved to; `saturation_status` (resolved /
+not_reached / unresolved -- a non-monotonic sweep claims no saturation);
+input AND output token validation; per-class SLO profiles; and client
+integrity evidence (`peak_outstanding`, `client_limited_points`,
+`transport.executor_workers`).
+
 See this repo's own README for the boundary this draws: this repo
 outputs a safe operating envelope per workload class; it never
 implements or pre-decides a gateway's global/tenant/AIMD control
@@ -77,12 +85,24 @@ def _observed_tokens(results: List[RequestResult]) -> dict:
     }
 
 
+def _saturation_fields(rec: Recommendation) -> dict:
+    """saturation_status is always stated; for a non-monotonic sweep no
+    saturation value is claimed -- the unstable region is described
+    instead (see analysis/capacity.py's SweepAnalysis)."""
+    a = rec.analysis
+    out: dict = {"saturation_status": a.status}
+    if a.status == "unresolved":
+        out.update(unstable_region=a.unstable_region, confirmed_fail_from=a.confirmed_fail_from)
+    return out
+
+
 def _concurrency_block(rec: Recommendation, *, headroom: float) -> dict:
     saturation = rec.saturation_point.concurrency if rec.saturation_point is not None else None
     production_max = max(1, int(apply_headroom(rec.point.concurrency, headroom=headroom)))
     return {
         "measured_best": rec.point.concurrency,
         "saturation": saturation,
+        **_saturation_fields(rec),
         "production_max": production_max,
         "slo_goodput_rps": rec.point.metrics.slo_goodput_rps,
     }
@@ -94,12 +114,14 @@ def _rate_block(rec: Recommendation, *, headroom: float) -> dict:
         "max_safe_offered_rps": rec.point.rps,
         "slo_goodput_rps": rec.point.metrics.slo_goodput_rps,
         "saturation_offered_rps": saturation_rps,
+        **_saturation_fields(rec),
         "production_offered_rps": apply_headroom(rec.point.rps, headroom=headroom),
     }
 
 
-def _evidence(m: RunMetrics) -> dict:
-    return {
+def _evidence(point) -> dict:
+    m: RunMetrics = point.metrics
+    out = {
         "n": m.n,
         "n_throttled": m.n_throttled,
         "measured_duration_s": m.measured_duration_s,
@@ -108,41 +130,77 @@ def _evidence(m: RunMetrics) -> dict:
         "success_rate": m.success_rate,
         "success_rate_lower": m.success_rate_lower,
         "bound_confidence": m.bound_confidence,
+        "peak_outstanding": point.peak_outstanding,
     }
+    if len(point.repetitions) > 1:
+        out["repetition_slo_goodput_rps"] = [r.slo_goodput_rps for r in point.repetitions]
+    return out
+
+
+def _deviation(observed: Optional[float], target: int, tolerance_pct: float) -> dict:
+    deviation_pct = valid = None
+    if observed is not None and target > 0:
+        deviation_pct = round((observed - target) / target * 100, 2)
+        valid = abs(deviation_pct) <= tolerance_pct
+    return {"target": target, "observed_p50": observed, "deviation_pct": deviation_pct,
+            "tolerance_pct": tolerance_pct, "valid": valid}
 
 
 def _workload_validation(workload: WorkloadProfile, results: List[RequestResult], report: ExperimentReport) -> dict:
     """Did this class actually measure the shape it claims? Compares
-    the REQUESTED input tokens against what Bedrock itself reported
-    during the run -- the check on the 4-chars/token padding estimate."""
+    requested input tokens and the output target (max_tokens) against
+    what Bedrock itself reported during the run. Output matters as much
+    as input: "4096 in / 512 out" that really emitted 110 tokens is a
+    different workload, and its envelope would mislead a gateway config
+    for long generations."""
     spec = report.spec
-    observed = _observed_tokens(results)["input_tokens_p50"]
-    deviation_pct = None
-    valid = None
-    if observed is not None and workload.input_tokens > 0:
-        deviation_pct = round((observed - workload.input_tokens) / workload.input_tokens * 100, 2)
-        valid = abs(deviation_pct) <= spec.workload_validation_tolerance_pct
+    observed = _observed_tokens(results)
+    inp = _deviation(observed["input_tokens_p50"], workload.input_tokens, spec.workload_validation_tolerance_pct)
+    out = _deviation(observed["output_tokens_p50"], workload.output_tokens, spec.output_validation_tolerance_pct)
+    checks = [v for v in (inp["valid"], out["valid"]) if v is not None]
     return {
-        "requested_input_tokens": workload.input_tokens,
         "padding": "4_chars_per_token_estimate",
-        "observed_input_tokens_p50": observed,
-        "deviation_pct": deviation_pct,
-        "tolerance_pct": spec.workload_validation_tolerance_pct,
-        "valid": valid,
+        "input": inp,
+        "output": out,
+        "valid": all(checks) if checks else None,
     }
 
 
-def _envelope(entry: dict, rec: Optional[Recommendation], spec) -> None:
+def _slo_dict(slo) -> dict:
+    return {
+        "ttft_p95_ms": slo.ttft_p95_ms,
+        "latency_p95_ms": slo.latency_p95_ms,
+        "success_rate_min": slo.success_rate_min,
+        "throttle_rate_max": slo.throttle_rate_max,
+        "confidence": slo.confidence,
+    }
+
+
+def _envelope(entry: dict, profile_report, spec) -> None:
+    subject = profile_report.workload_name
+    if subject in spec.provider_ceilings:
+        entry["provider_constraints"] = spec.provider_ceilings[subject].to_dict()
+    if spec.sweep.quota_fractions is not None:
+        entry["sweep_values_rps"] = spec.sweep_values(subject)
+    points = profile_report.points
+    limited = [p.concurrency if p.concurrency is not None else p.rps for p in points if p.client_limited]
+    if limited:
+        entry["client_limited_points"] = limited
+    rec = profile_report.recommendation
     if rec is None:
-        entry["note"] = "no swept value met the configured SLO -- re-run with lower sweep values"
+        analysis = profile_report.analysis
+        if analysis is not None and analysis.status == "unresolved":
+            entry["note"] = ("non-monotonic from the first swept value -- no stable passing region; "
+                             "re-run with repetitions")
+            entry["unstable_region"] = analysis.unstable_region
+        else:
+            entry["note"] = "no swept value met the configured SLO -- re-run with lower sweep values"
         return
     if spec.sweep.type == "concurrency":
         entry["concurrency"] = _concurrency_block(rec, headroom=spec.provider_headroom)
     else:
         entry["rate"] = _rate_block(rec, headroom=spec.provider_headroom)
-    entry["evidence"] = _evidence(rec.point.metrics)
-    if len(rec.point.repetitions) > 1:
-        entry["evidence"]["repetition_slo_goodput_rps"] = [m.slo_goodput_rps for m in rec.point.repetitions]
+    entry["evidence"] = _evidence(rec.point)
 
 
 def build_capacity_profile(report: ExperimentReport) -> dict:
@@ -159,12 +217,13 @@ def build_capacity_profile(report: ExperimentReport) -> dict:
             if r.tags.get("workload") == workload.name and r.tags.get("measured", True)
         ]
         entry: dict = {
+            "slo_profile": workload.slo_profile or "default",
             "observed": _observed_tokens(own_results),
             "workload_validation": _workload_validation(workload, own_results, report),
         }
         profile_report = by_name.get(workload.name)
         if profile_report is not None and profile_report.mix_shares is None:
-            _envelope(entry, profile_report.recommendation, spec)
+            _envelope(entry, profile_report, spec)
         workload_classes[workload.name] = entry
 
     mixed: Dict[str, dict] = {}
@@ -172,8 +231,8 @@ def build_capacity_profile(report: ExperimentReport) -> dict:
         if profile_report.mix_shares is None:
             continue
         entry = {"shares": {k: round(v, 4) for k, v in profile_report.mix_shares.items()}}
+        _envelope(entry, profile_report, spec)
         rec = profile_report.recommendation
-        _envelope(entry, rec, spec)
         if rec is not None:
             entry["classes_at_recommended_point"] = {
                 name: {
@@ -186,7 +245,7 @@ def build_capacity_profile(report: ExperimentReport) -> dict:
 
     confidence = spec.slo.confidence or DEFAULT_CONFIDENCE
     return {
-        "schema_version": 3,
+        "schema_version": 4,
         "experiment": spec.name,
         "model": {
             "name": spec.model_name,
@@ -198,13 +257,8 @@ def build_capacity_profile(report: ExperimentReport) -> dict:
             "rpm": spec.quota_snapshot.rpm,
             "tpm": spec.quota_snapshot.tpm,
         },
-        "slo": {
-            "ttft_p95_ms": spec.slo.ttft_p95_ms,
-            "latency_p95_ms": spec.slo.latency_p95_ms,
-            "success_rate_min": spec.slo.success_rate_min,
-            "throttle_rate_max": spec.slo.throttle_rate_max,
-            "confidence": spec.slo.confidence,
-        },
+        "slo": _slo_dict(spec.slo),
+        **({"slo_profiles": {n: _slo_dict(c) for n, c in spec.slo_profiles.items()}} if spec.slo_profiles else {}),
         "measurement": {
             "warmup_s": spec.warmup_s,
             "window_s": spec.duration_s,
@@ -212,6 +266,7 @@ def build_capacity_profile(report: ExperimentReport) -> dict:
             # rates/percentiles over requests scheduled in the window
             # (drain included); throughput over completions in it.
             "window_policy": "scheduled_in_window_for_rates__completed_in_window_for_throughput",
+            "clock": "monotonic_durations__wall_clock_timestamps",
             "gate": "confidence_bound" if spec.slo.confidence is not None else "point_estimate",
             "min_requests_to_resolve_throttle_slo": min_samples_to_resolve_rate(
                 spec.slo.throttle_rate_max, confidence=confidence,
@@ -219,9 +274,10 @@ def build_capacity_profile(report: ExperimentReport) -> dict:
         },
         "sweep": {
             "type": spec.sweep.type,
-            "values": list(spec.sweep.values),
-            # Set for a quota-relative rate sweep: values = fraction x rpm/60.
-            **({"quota_fractions": spec.sweep.quota_fractions} if spec.sweep.quota_fractions else {}),
+            # Absolute values, or quota_fractions of each subject's
+            # provider ceiling (resolved per class: sweep_values_rps).
+            **({"quota_fractions": spec.sweep.quota_fractions, "relative_to": "provider_ceiling"}
+               if spec.sweep.quota_fractions is not None else {"values": list(spec.sweep.values)}),
         },
         "workload_classes": workload_classes,
         # Only present for a `mix:` experiment -- the one valid source
@@ -233,9 +289,10 @@ def build_capacity_profile(report: ExperimentReport) -> dict:
         # Recorded for reproducibility -- what was actually running
         # when these numbers were measured (see client.py's
         # TransportConfig docstring on why this matters: SDK retry/
-        # pooling defaults can silently change what a sweep measures).
+        # pooling/thread defaults can silently change what a sweep measures).
         "transport": {
             "max_connections": spec.transport.max_connections,
+            "executor_workers": spec.transport.effective_executor_workers,
             "total_max_attempts": spec.transport.total_max_attempts,
             "connect_timeout_s": spec.transport.connect_timeout_s,
             "read_timeout_s": spec.transport.read_timeout_s,

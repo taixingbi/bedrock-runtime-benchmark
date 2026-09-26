@@ -32,7 +32,7 @@ import math
 from dataclasses import asdict, dataclass, field
 from typing import Dict, Iterable, List, Optional, Tuple
 
-SUPPORTED_SCHEMA_VERSIONS = {3}
+SUPPORTED_SCHEMA_VERSIONS = {3, 4}
 
 
 @dataclass
@@ -84,13 +84,22 @@ def _envelopes(profile: dict) -> Tuple[List[Tuple[str, float]], List[Tuple[str, 
 def _quality_findings(model_id: str, profile: dict) -> Iterable[Finding]:
     for name, entry in (profile.get("workload_classes") or {}).items():
         validation = entry.get("workload_validation") or {}
-        if validation.get("valid") is False:
-            yield Finding(
-                "warn", "workload_shape_invalid", model_id,
-                f"class {name} measured input p50 {validation.get('observed_input_tokens_p50')} tokens vs "
-                f"{validation.get('requested_input_tokens')} requested ({validation.get('deviation_pct')}%) -- "
-                f"its envelope describes a different workload than it claims",
-            )
+        if validation.get("valid") is not False:
+            continue
+        # v4 nests input/output checks; v3 had flat input-only fields.
+        sides = [(k, validation[k]) for k in ("input", "output") if isinstance(validation.get(k), dict)]
+        if not sides:
+            sides = [("input", {"valid": False, "observed_p50": validation.get("observed_input_tokens_p50"),
+                                "target": validation.get("requested_input_tokens"),
+                                "deviation_pct": validation.get("deviation_pct")})]
+        detail = "; ".join(
+            f"{side} p50 {c.get('observed_p50')} vs {c.get('target')} ({c.get('deviation_pct')}%)"
+            for side, c in sides if c.get("valid") is False
+        )
+        yield Finding(
+            "warn", "workload_shape_invalid", model_id,
+            f"class {name} measured {detail} -- its envelope describes a different workload than it claims",
+        )
 
     measurement = profile.get("measurement") or {}
     needed = measurement.get("min_requests_to_resolve_throttle_slo")

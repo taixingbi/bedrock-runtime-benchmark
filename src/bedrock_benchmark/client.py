@@ -4,15 +4,29 @@ path at all. That's the entire point of this repo (see README): a
 number measured here is the MODEL's own capacity, not the platform's --
 mixing the two in one measurement makes neither answerable.
 
-boto3's bedrock-runtime client is synchronous; wrapped in
-asyncio.to_thread so ConcurrencyRunner/RateRunner can hold many calls
-in flight without blocking the event loop.
+boto3's bedrock-runtime client is synchronous, so calls run on a
+thread pool the target OWNS -- not asyncio.to_thread's default
+executor, which is min(32, cpu_count + 4) workers (14 on a 10-core
+laptop). Past that many in-flight calls, requests would silently queue
+for a Python thread and the benchmark would measure the thread pool,
+not Bedrock -- the same contamination as boto3's default 10-connection
+pool. The pool is sized from TransportConfig (executor_workers >=
+max_connections), and the target tracks peak outstanding calls so a
+point that ever exceeded the pool is flagged client_limited instead of
+silently reported.
+
+Latency and TTFT are measured with time.perf_counter() (monotonic).
+Wall-clock timestamps (started_at/first_token_at/completed_at) are kept
+for audit and window membership, derived from ONE wall-clock anchor
+plus monotonic deltas, so an NTP/clock adjustment mid-request can't
+distort a measured duration.
 """
 from __future__ import annotations
 
 import asyncio
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -68,6 +82,21 @@ class TransportConfig:
     total_max_attempts: int = 1  # 1 = exactly one attempt, no retries; see docstring above on why not `max_attempts`
     connect_timeout_s: float = 5.0
     read_timeout_s: float = 60.0
+    # Threads running blocking boto3 calls. None = max_connections. Must
+    # be >= max_connections, or connections beyond the thread count are
+    # unreachable and the pool silently becomes the bottleneck.
+    executor_workers: Optional[int] = None
+
+    def __post_init__(self) -> None:
+        if self.executor_workers is not None and self.executor_workers < self.max_connections:
+            raise ValueError(
+                f"transport.executor_workers ({self.executor_workers}) must be >= max_connections "
+                f"({self.max_connections}) -- otherwise the thread pool caps in-flight calls below the connection pool"
+            )
+
+    @property
+    def effective_executor_workers(self) -> int:
+        return self.executor_workers if self.executor_workers is not None else self.max_connections
 
 
 def _client_error_code(exc: Exception) -> Optional[str]:
@@ -75,6 +104,23 @@ def _client_error_code(exc: Exception) -> Optional[str]:
     if response is None:
         return None
     return response.get("Error", {}).get("Code")
+
+
+class _Clock:
+    """One wall-clock anchor + a monotonic baseline taken together:
+    durations come from perf_counter (immune to clock adjustments),
+    wall timestamps are anchor + monotonic delta (consistent with each
+    other and with the measured durations)."""
+
+    def __init__(self) -> None:
+        self.wall_start = time.time()
+        self._mono_start = time.perf_counter()
+
+    def elapsed(self) -> float:
+        return time.perf_counter() - self._mono_start
+
+    def wall_at(self, elapsed: float) -> float:
+        return self.wall_start + elapsed
 
 
 class BedrockConverseTarget:
@@ -96,59 +142,88 @@ class BedrockConverseTarget:
                 retries={"total_max_attempts": self.transport.total_max_attempts, "mode": "standard"},
             )
             self._client = boto3.client("bedrock-runtime", region_name=region, config=boto_config)
+        self.executor_workers = self.transport.effective_executor_workers
+        self._executor = ThreadPoolExecutor(max_workers=self.executor_workers, thread_name_prefix="bedrock-bench")
+        # Outstanding = submitted to the pool and not yet finished (running
+        # OR waiting for a thread). Only touched on the event-loop thread,
+        # so no lock is needed.
+        self._outstanding = 0
+        self.peak_outstanding = 0
+
+    def reset_peak(self) -> None:
+        self.peak_outstanding = self._outstanding
+
+    @property
+    def client_limited(self) -> bool:
+        """True if calls ever queued for a thread since the last
+        reset_peak() -- the measurement then includes client-side
+        queueing and isn't a clean Bedrock measurement."""
+        return self.peak_outstanding > self.executor_workers
+
+    def close(self) -> None:
+        self._executor.shutdown(wait=False)
 
     async def invoke(self, request: InvokeRequest) -> RequestResult:
-        return await asyncio.to_thread(self._invoke_sync, request)
+        loop = asyncio.get_running_loop()
+        self._outstanding += 1
+        self.peak_outstanding = max(self.peak_outstanding, self._outstanding)
+        try:
+            return await loop.run_in_executor(self._executor, self._invoke_sync, request)
+        finally:
+            self._outstanding -= 1
 
     def _invoke_sync(self, request: InvokeRequest) -> RequestResult:
         request_id = str(uuid.uuid4())
         scheduled_at = request.scheduled_at or time.time()
-        started_at = time.time()
+        clock = _Clock()
+        started_at = clock.wall_start
         messages = [{"role": "user", "content": [{"text": request.prompt}]}]
         inference_config = {"maxTokens": request.max_tokens, "temperature": request.temperature}
 
         if request.stream:
-            return self._invoke_stream(request_id, request, messages, inference_config, scheduled_at, started_at)
+            return self._invoke_stream(request_id, request, messages, inference_config, scheduled_at, clock)
 
         try:
             resp = self._client.converse(modelId=self.model_id, messages=messages, inferenceConfig=inference_config)
         except Exception as exc:  # noqa: BLE001 - a failed provider call is a real RequestResult, not a crash
-            return self._failure(request_id, scheduled_at, started_at, exc)
+            return self._failure(request_id, scheduled_at, clock, exc)
 
-        completed_at = time.time()
+        elapsed = clock.elapsed()
         usage = resp.get("usage") or {}
         return RequestResult(
-            request_id=request_id, scheduled_at=scheduled_at, started_at=started_at, completed_at=completed_at,
-            latency_ms=round((completed_at - started_at) * 1000, 2), success=True,
+            request_id=request_id, scheduled_at=scheduled_at, started_at=started_at,
+            completed_at=clock.wall_at(elapsed),
+            latency_ms=round(elapsed * 1000, 2), success=True,
             input_tokens=usage.get("inputTokens"), output_tokens=usage.get("outputTokens"),
         )
 
-    def _invoke_stream(self, request_id, request, messages, inference_config, scheduled_at, started_at) -> RequestResult:
+    def _invoke_stream(self, request_id, request, messages, inference_config, scheduled_at, clock: "_Clock") -> RequestResult:
         try:
             resp = self._client.converse_stream(modelId=self.model_id, messages=messages, inferenceConfig=inference_config)
-            first_token_at: Optional[float] = None
+            first_token_elapsed: Optional[float] = None
             usage: dict = {}
             for event in resp["stream"]:
                 delta = event.get("contentBlockDelta", {}).get("delta", {})
-                if "text" in delta and first_token_at is None:
-                    first_token_at = time.time()
+                if "text" in delta and first_token_elapsed is None:
+                    first_token_elapsed = clock.elapsed()
                 metadata_usage = event.get("metadata", {}).get("usage")
                 if metadata_usage:
                     usage = metadata_usage
         except Exception as exc:  # noqa: BLE001 - see non-streaming branch's own note
-            return self._failure(request_id, scheduled_at, started_at, exc)
+            return self._failure(request_id, scheduled_at, clock, exc)
 
-        completed_at = time.time()
+        elapsed = clock.elapsed()
         return RequestResult(
-            request_id=request_id, scheduled_at=scheduled_at, started_at=started_at, completed_at=completed_at,
-            first_token_at=first_token_at,
-            ttft_ms=round((first_token_at - started_at) * 1000, 2) if first_token_at is not None else None,
-            latency_ms=round((completed_at - started_at) * 1000, 2), success=True,
+            request_id=request_id, scheduled_at=scheduled_at, started_at=clock.wall_start,
+            completed_at=clock.wall_at(elapsed),
+            first_token_at=clock.wall_at(first_token_elapsed) if first_token_elapsed is not None else None,
+            ttft_ms=round(first_token_elapsed * 1000, 2) if first_token_elapsed is not None else None,
+            latency_ms=round(elapsed * 1000, 2), success=True,
             input_tokens=usage.get("inputTokens"), output_tokens=usage.get("outputTokens"),
         )
 
-    def _failure(self, request_id: str, scheduled_at: float, started_at: float, exc: Exception) -> RequestResult:
-        completed_at = time.time()
+    def _failure(self, request_id: str, scheduled_at: float, clock: "_Clock", exc: Exception) -> RequestResult:
+        elapsed = clock.elapsed()
         code = _client_error_code(exc)
         # botocore's own timeout exceptions (ReadTimeoutError/
         # ConnectTimeoutError) have no .response/Error.Code at all --
@@ -157,7 +232,8 @@ class BedrockConverseTarget:
         # worth it for a single boolean.
         timed_out = type(exc).__name__ in ("ReadTimeoutError", "ConnectTimeoutError")
         return RequestResult(
-            request_id=request_id, scheduled_at=scheduled_at, started_at=started_at, completed_at=completed_at,
-            latency_ms=round((completed_at - started_at) * 1000, 2), success=False,
+            request_id=request_id, scheduled_at=scheduled_at, started_at=clock.wall_start,
+            completed_at=clock.wall_at(elapsed),
+            latency_ms=round(elapsed * 1000, 2), success=False,
             error=str(exc), error_code=code, throttled=(code == "ThrottlingException"), timed_out=timed_out,
         )

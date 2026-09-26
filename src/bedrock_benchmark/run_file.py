@@ -44,7 +44,20 @@ def estimated_duration_s(spec: ExperimentSpec) -> float:
     per repetition, per sweep subject (each workload, or one mix).
     Drain time on top depends on real latency, so it isn't counted."""
     subjects = 1 if spec.mix is not None else len(spec.workloads)
-    return subjects * len(spec.sweep.values) * spec.repetitions * (spec.warmup_s + spec.duration_s)
+    return subjects * spec.sweep.point_count * spec.repetitions * (spec.warmup_s + spec.duration_s)
+
+
+def describe_sweep(spec: ExperimentSpec) -> str:
+    """e.g. "concurrency [1, 2, 4]" or "rate 0.25x-2.5x of ceiling:
+    short=6.67rps(rpm)" -- a quota-relative sweep's rps differ per
+    subject, so the ceiling each resolves against is shown."""
+    if spec.sweep.quota_fractions is None:
+        return f"{spec.sweep.type} {spec.sweep.values}"
+    f = spec.sweep.quota_fractions
+    ceilings = ", ".join(
+        f"{name}={c.rps:.4g}rps({c.binding})" for name, c in spec.provider_ceilings.items()
+    )
+    return f"rate {min(f):g}x-{max(f):g}x of ceiling: {ceilings}"
 
 
 def recommendation_summary(report: ExperimentReport) -> List[str]:
@@ -95,7 +108,10 @@ def _warn_if_throttle_slo_unresolvable(spec: ExperimentSpec) -> None:
         print(f"note: resolving throttle_rate_max={spec.slo.throttle_rate_max} at {confidence:.0%} "
               f"needs >= {needed} measured requests per point")
         return
-    short = [v for v in spec.sweep.values if v * spec.duration_s * spec.repetitions < needed]
+    short = sorted({
+        v for name in spec.subject_names for v in spec.sweep_values(name)
+        if v * spec.duration_s * spec.repetitions < needed
+    })
     if short:
         gate = "these points will FAIL the SLO gate" if spec.slo.confidence is not None else \
             "a 0-throttle pass at these points is not statistically meaningful"
@@ -108,9 +124,11 @@ def run_file(
     path: str, model: ModelConfig, *, results_dir: str = "results", target_factory: Optional[TargetFactory] = None,
 ) -> RunOutcome:
     spec = load_experiment(path, model)
-    fractions = f" = {spec.sweep.quota_fractions}x quota" if spec.sweep.quota_fractions else ""
     print(f"running experiment: {spec.name} on {model.name} ({model.model_id})")
-    print(f"sweep: {spec.sweep.type} values={spec.sweep.values}{fractions}")
+    print(f"sweep: {describe_sweep(spec)}")
+    for name in spec.subject_names:
+        if spec.sweep.quota_fractions is not None:
+            print(f"  {name}: {spec.sweep_values(name)} rps")
     if spec.description:
         print(spec.description.strip())
     _warn_if_throttle_slo_unresolvable(spec)
@@ -143,11 +161,18 @@ def run_file(
 
     for name, entry in capacity_profile["workload_classes"].items():
         v = entry["workload_validation"]
-        if v["valid"] is False:
-            print(f"\nwarning: {name} measured input p50 {v['observed_input_tokens_p50']} tokens vs "
-                  f"{v['requested_input_tokens']} requested ({v['deviation_pct']}%, tolerance "
-                  f"{v['tolerance_pct']}%) -- the 4-chars/token padding estimate missed for this model; "
-                  f"its envelope describes a different workload shape")
+        for side, why in (("input", "the 4-chars/token padding estimate missed for this model"),
+                          ("output", "the model stopped well short of max_tokens")):
+            c = v[side]
+            if c["valid"] is False:
+                print(f"\nwarning: {name} {side} p50 {c['observed_p50']} tokens vs target {c['target']} "
+                      f"({c['deviation_pct']}%, tolerance {c['tolerance_pct']}%) -- {why}; "
+                      f"its envelope describes a different workload shape")
+    for subject, entry in {**capacity_profile["workload_classes"], **capacity_profile.get("mixed_workloads", {})}.items():
+        if entry.get("client_limited_points"):
+            print(f"\nwarning: {subject} points {entry['client_limited_points']} queued for client threads "
+                  f"(peak outstanding > executor_workers={capacity_profile['transport']['executor_workers']}) "
+                  f"-- excluded from the recommendation; raise transport.max_connections")
 
     print(f"\nraw results:      {jsonl_path}")
     print(f"capacity profile: {profile_path}")

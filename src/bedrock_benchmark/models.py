@@ -32,6 +32,9 @@ class ModelConfig:
     region: str = "us-east-1"
     quota_rpm: Optional[float] = None
     quota_tpm: Optional[float] = None
+    # How many TPM-quota tokens one output token costs (some models bill
+    # output at a multiple against TPM). See ceiling.py.
+    output_burndown: float = 1.0
     enabled: bool = True
 
 

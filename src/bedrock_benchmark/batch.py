@@ -32,7 +32,7 @@ import yaml
 from .experiments.schema import load_experiment
 from .gateway_diff import GatewayDiff, diff
 from .models import ModelConfig
-from .run_file import TargetFactory, estimated_duration_s, recommendation_summary, run_file
+from .run_file import TargetFactory, describe_sweep, estimated_duration_s, recommendation_summary, run_file
 
 
 @dataclass
@@ -95,7 +95,7 @@ def plan(paths: List[str], models: List[ModelConfig]) -> List[PlannedRun]:
             spec = load_experiment(path, model)
             out.append(PlannedRun(
                 path=path, experiment=spec.name, model=model,
-                sweep=f"{spec.sweep.type} {spec.sweep.values}", estimated_s=estimated_duration_s(spec),
+                sweep=describe_sweep(spec), estimated_s=estimated_duration_s(spec),
             ))
     return out
 
