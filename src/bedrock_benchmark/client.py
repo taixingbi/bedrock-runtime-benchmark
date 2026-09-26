@@ -227,11 +227,13 @@ class BedrockConverseTarget:
 
         elapsed = clock.elapsed()
         usage = resp.get("usage") or {}
+        stop_reason = resp.get("stopReason")
         return RequestResult(
             request_id=request_id, scheduled_at=scheduled_at, started_at=started_at,
             completed_at=clock.wall_at(elapsed),
             latency_ms=round(elapsed * 1000, 2), success=True,
             input_tokens=usage.get("inputTokens"), output_tokens=usage.get("outputTokens"),
+            stop_reason=stop_reason,
         )
 
     def _invoke_stream(self, request_id, request, messages, inference_config, scheduled_at, clock: "_Clock") -> RequestResult:
@@ -239,7 +241,10 @@ class BedrockConverseTarget:
             resp = self._client.converse_stream(modelId=self.model_id, messages=messages, inferenceConfig=inference_config)
             first_token_elapsed: Optional[float] = None
             usage: dict = {}
+            stop_reason: Optional[str] = None
             for event in resp["stream"]:
+                if "messageStop" in event:
+                    stop_reason = event["messageStop"].get("stopReason")
                 delta = event.get("contentBlockDelta", {}).get("delta", {})
                 if "text" in delta and first_token_elapsed is None:
                     first_token_elapsed = clock.elapsed()
@@ -257,6 +262,7 @@ class BedrockConverseTarget:
             ttft_ms=round(first_token_elapsed * 1000, 2) if first_token_elapsed is not None else None,
             latency_ms=round(elapsed * 1000, 2), success=True,
             input_tokens=usage.get("inputTokens"), output_tokens=usage.get("outputTokens"),
+            stop_reason=stop_reason,
         )
 
     def _failure(self, request_id: str, scheduled_at: float, clock: "_Clock", exc: Exception) -> RequestResult:

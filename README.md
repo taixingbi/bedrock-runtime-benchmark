@@ -599,8 +599,16 @@ a model that gains support switches to `count_tokens` automatically.
 ## Workload validation
 
 Calibration sizes the input; `max_tokens` only caps the output -- the
-model may emit far less. So each class's `workload_validation` checks
-BOTH sides against what Bedrock actually *reported* during the run:
+model may emit far less. Asking for "about N words" wasn't enough: on
+nova-micro it produced only 42-50% of the target on every workload, all
+ending `end_turn`. The prompt therefore asks for ~2x the budget and
+forbids wrapping up, so generation ends on `max_tokens` -- measured
+after the fix: 100% of requests hit exactly 64 / 64 / 256 / 1024 output
+tokens across the four token-sweep shapes. Every result records
+Bedrock's `stop_reason` (`max_tokens` vs `end_turn`) in the raw JSONL.
+
+Each class's `workload_validation` still checks BOTH sides against what
+Bedrock actually *reported* during the run:
 
 ```yaml
 workload_validation:

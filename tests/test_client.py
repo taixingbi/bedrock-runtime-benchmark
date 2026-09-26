@@ -41,6 +41,20 @@ class NonStreamingTests(unittest.IsolatedAsyncioTestCase):
 
 
 class StreamingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_stop_reason_is_recorded(self):
+        """max_tokens = the output budget was used; end_turn = the model
+        stopped early, below the workload's output target."""
+        for reason in ("max_tokens", "end_turn"):
+            client = FakeBedrockRuntimeClient(stream_events=[
+                {"contentBlockDelta": {"delta": {"text": "a"}}},
+                {"messageStop": {"stopReason": reason}},
+                {"metadata": {"usage": {"inputTokens": 20, "outputTokens": 10}}},
+            ])
+            target = BedrockConverseTarget(model_id="m", client=client)
+            result = await target.invoke(InvokeRequest(prompt="hello", max_tokens=10, stream=True))
+            self.assertEqual(result.stop_reason, reason)
+            target.close()
+
     async def test_ttft_is_time_of_first_delta_and_usage_comes_from_metadata(self):
         client = FakeBedrockRuntimeClient(stream_events=[
             {"contentBlockDelta": {"delta": {"text": "a"}}},

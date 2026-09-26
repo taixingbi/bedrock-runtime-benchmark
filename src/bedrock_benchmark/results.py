@@ -34,6 +34,10 @@ class RequestResult:
     latency_ms: Optional[float] = None
     input_tokens: Optional[int] = None
     output_tokens: Optional[int] = None
+    # Bedrock's stopReason: "max_tokens" = the output budget was used up
+    # (the workload shape was actually exercised); "end_turn" = the model
+    # chose to stop early, so output_tokens is below the workload's target.
+    stop_reason: Optional[str] = None
     success: bool = True
     error: Optional[str] = None
     # The real boto3/Bedrock ClientError code (e.g. "ThrottlingException")

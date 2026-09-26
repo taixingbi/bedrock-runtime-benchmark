@@ -16,13 +16,18 @@ class WorkloadProfileTests(unittest.TestCase):
         self.assertGreater(estimated_tokens, 400)
         self.assertLess(estimated_tokens, 700)
 
-    def test_prompt_requests_output_of_roughly_the_target_length(self):
+    def test_prompt_asks_for_more_than_the_output_budget(self):
+        """Asking for "about N words" let models stop early (end_turn at
+        42-50% of the target on nova-micro). The prompt must ask for MORE
+        words than the token budget, so generation ends on max_tokens."""
+        def asked(w):
+            return int(w.prompt().split("at least ")[1].split(" words")[0])
+
         short = WorkloadProfile(name="s", input_tokens=100, output_tokens=64)
-        long = WorkloadProfile(name="l", input_tokens=100, output_tokens=512)
-        # The long-output profile's prompt should ask for more words.
-        short_words = int(short.prompt().split("approximately ")[1].split(" words")[0])
-        long_words = int(long.prompt().split("approximately ")[1].split(" words")[0])
-        self.assertGreater(long_words, short_words)
+        long = WorkloadProfile(name="l", input_tokens=100, output_tokens=1024)
+        self.assertGreater(asked(short), short.output_tokens)
+        self.assertGreater(asked(long), long.output_tokens)
+        self.assertIn("do not stop early", long.prompt())
 
     def test_different_profiles_produce_different_prompts(self):
         a = WorkloadProfile(name="a", input_tokens=100, output_tokens=64)
