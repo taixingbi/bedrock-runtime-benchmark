@@ -118,18 +118,6 @@ class BatchTests(unittest.TestCase):
             self._run(paths, [FAST, no_quota], target_factory=factory)
         self.assertEqual(calls, [])
 
-    def test_gateway_diff_runs_over_all_produced_profiles(self):
-        paths = self._write(_experiment("a"))
-
-        batch = self._run(paths, [FAST], target_factory=_fake_factory(), gateway_config={"models": {}})
-
-        # Non-streaming fakes can't statistically confirm a 0.1% throttle SLO
-        # in a 0.1s window, so there's no production value to propose from --
-        # the diff says so instead of comparing an unconfirmed number.
-        self.assertIn("no_confirmed_envelope", {f.kind for f in batch.gateway_diff.findings})
-        self.assertEqual(batch.exit_code, 1)
-        self.assertIn("gateway_diff", yaml.safe_load((self.dir / "out" / "summary.yaml").read_text()))
-
 
 class SloProfileFilterBatchTests(unittest.TestCase):
     def test_plan_marks_skips_and_the_dry_run_shows_them(self):

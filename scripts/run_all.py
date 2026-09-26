@@ -7,7 +7,6 @@ after another, then print a summary table.
     python scripts/run_all.py --model nova-micro --model nova-pro
     python scripts/run_all.py experiments/rate-capacity.yaml   # one experiment, all models
     python scripts/run_all.py --model nova-micro --slo-profile gold   # only gold workloads
-    python scripts/run_all.py --gateway-config my-gateway.yaml
     python scripts/run_all.py --model nova-micro --pilot         # ~30 s smoke test, no batch
 
 Sequential on purpose -- runs share each model's Bedrock quota, so
@@ -15,8 +14,7 @@ parallel runs would throttle each other. A failed run doesn't stop the
 rest (unless --fail-fast). Results go to results/run-all-<timestamp>/
 with one folder per model and a summary.yaml.
 
-Exit code: 0 if every run succeeded and the gateway diff (if requested)
-has no warn findings, else 1.
+Exit code: 0 if every run succeeded, else 1.
 """
 from __future__ import annotations
 
@@ -52,7 +50,6 @@ def main() -> int:
     parser.add_argument("--results-dir", help="batch output dir (default: results/run-all-<timestamp>)")
     parser.add_argument("--dry-run", action="store_true", help="validate + print the plan and time estimate, run nothing")
     parser.add_argument("--fail-fast", action="store_true", help="stop at the first failed run")
-    parser.add_argument("--gateway-config", help="gateway limits snapshot; runs gateway_diff over all produced profiles")
     parser.add_argument("--pilot", action="store_true",
                         help="smoke test only: a few sequential requests per model x workload the plan would use "
                              "(access, workload shape, SLO reachability), then exit without running the batch")
@@ -94,12 +91,9 @@ def main() -> int:
         print(f"\npilot: {summary} -> {pilot_dir / 'pilot.yaml'}")
         return pilot_report.exit_code
 
-    gateway_config = None
-    if args.gateway_config:
-        gateway_config = yaml.safe_load(Path(args.gateway_config).read_text()) or {}
 
     results_dir = Path(args.results_dir or f"results/run-all-{time.strftime('%Y%m%d-%H%M%S')}")
-    batch = run_batch(paths, models, results_dir=results_dir, fail_fast=args.fail_fast, gateway_config=gateway_config,
+    batch = run_batch(paths, models, results_dir=results_dir, fail_fast=args.fail_fast,
                       slo_file=args.slo_file, workloads_file=args.workloads_file, only_slo_profiles=args.slo_profiles)
 
     print(f"\n{'=' * 78}\nSUMMARY\n{'=' * 78}")

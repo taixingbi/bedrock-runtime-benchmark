@@ -16,8 +16,9 @@ other's load as throttling.
 Every pair is bound and validated before the first Bedrock call. One
 failed run (bad credentials, no model access, a crash) doesn't stop the
 batch unless fail_fast is set; the summary records it and the batch
-exits non-zero. Optionally runs a gateway diff over every produced
-capacity profile.
+exits non-zero. The benchmark knows nothing about any gateway: mapping
+the profiles' admission envelopes onto gateway limits is the consumer's
+job (bedrock-runtime-gateway's scripts/capacity_review.py).
 """
 from __future__ import annotations
 
@@ -31,7 +32,6 @@ import yaml
 
 from .constraints import DEFAULT_SLO_FILE
 from .experiments.schema import NoMatchingWorkloads, load_experiment
-from .gateway_diff import GatewayDiff, diff
 from .models import ModelConfig
 from .workload import DEFAULT_WORKLOADS_FILE
 from .run_file import TargetFactory, describe_sweep, estimated_duration_s, recommendation_summary, run_file
@@ -65,27 +65,20 @@ class RunResult:
 class BatchResult:
     results_dir: Path
     results: List[RunResult] = field(default_factory=list)
-    gateway_diff: Optional[GatewayDiff] = None
 
     @property
     def failed(self) -> List[RunResult]:
         return [r for r in self.results if r.status == "failed"]
 
     @property
-    def gateway_warnings(self) -> int:
-        return self.gateway_diff.to_dict()["summary"]["warn"] if self.gateway_diff else 0
-
-    @property
     def exit_code(self) -> int:
-        return 1 if self.failed or self.gateway_warnings else 0
+        return 1 if self.failed else 0
 
     def to_dict(self) -> dict:
         out = {
             "results_dir": str(self.results_dir),
             "runs": [{k: v for k, v in r.__dict__.items() if v not in (None, [])} for r in self.results],
         }
-        if self.gateway_diff is not None:
-            out["gateway_diff"] = self.gateway_diff.to_dict()
         return out
 
 
@@ -131,7 +124,7 @@ def format_plan(planned: List[PlannedRun]) -> str:
 
 def run_batch(
     paths: List[str], models: List[ModelConfig], *, results_dir: Path, fail_fast: bool = False,
-    gateway_config: Optional[dict] = None, target_factory: Optional[TargetFactory] = None,
+    target_factory: Optional[TargetFactory] = None,
     slo_file: str = DEFAULT_SLO_FILE, workloads_file: str = DEFAULT_WORKLOADS_FILE,
     only_slo_profiles: Optional[Collection[str]] = None,
 ) -> BatchResult:
@@ -166,11 +159,6 @@ def run_batch(
             profile_path=str(outcome.profile_path), jsonl_path=str(outcome.jsonl_path),
         ))
 
-    if gateway_config is not None:
-        profiles = [yaml.safe_load(Path(r.profile_path).read_text()) for r in batch.results if r.profile_path]
-        if profiles:
-            batch.gateway_diff = diff(profiles, gateway_config)
-
     results_dir.mkdir(parents=True, exist_ok=True)
     (results_dir / "summary.yaml").write_text(yaml.safe_dump(batch.to_dict(), sort_keys=False, width=120))
     return batch
@@ -184,8 +172,4 @@ def format_summary(batch: BatchResult) -> str:
         lines.extend(f"{'':<53}{line}" for line in rest)
     ok = sum(1 for r in batch.results if r.status == "ok")
     lines.append(f"\n{ok}/{len(batch.results)} succeeded; per-model folders + summary.yaml in {batch.results_dir}")
-    if batch.gateway_diff is not None:
-        s = batch.gateway_diff.to_dict()["summary"]
-        lines.append(f"gateway diff: {s['warn']} warn, {s['info']} info, {s['proposed_changes']} proposed changes "
-                     f"(details in summary.yaml)")
     return "\n".join(lines)

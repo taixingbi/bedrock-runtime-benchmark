@@ -1,1008 +1,161 @@
 # bedrock-runtime-benchmark
 
-`bedrock-runtime-benchmark` empirically characterizes the **SLO-qualified
-operating envelope of a Bedrock inference profile** under controlled
-token workloads and provider constraints, and derives runtime admission
-and concurrency configuration from it.
+Empirically characterizes the **SLO-qualified operating envelope of a
+Bedrock inference profile** under controlled token workloads and
+provider constraints, and turns the statistically confirmed part of it
+into an admission-envelope recommendation.
 
-What it measures is not the bare model but the **Bedrock
-inference-profile operating envelope**: model + Bedrock serving stack +
-inference-profile routing + account/region quota + current provider
-conditions. The numbers it produces (e.g. 6.67 rps, TTFT 700 ms, C=4)
-are properties of that whole stack at measurement time -- never a
-model's intrinsic capacity -- and this README uses "operating envelope"
-in that sense throughout.
+## What problem does this solve?
 
-**The SLO is an input, not a finding.** Gold / silver / bronze
-(`constraints/slo.yaml`) are externally supplied policy requirements;
-the benchmark never derives, tunes or relaxes them from measurements.
-The research question is:
+A gateway in front of Bedrock needs limits -- how many requests in
+flight, how many per second -- per model and per kind of request.
+Guessing them either wastes capacity or lets a model fall over. This
+repo measures them directly against Bedrock and answers:
 
 > Given workload W, provider environment E, quota Q and SLO S, what
-> operating region satisfies S?
+> operating region satisfies S -- observed, statistically confirmed,
+> and safe to configure after headroom?
 
--- not "what should the SLO be?".
+Two framing rules:
 
-It does not test the whole gateway, and it does not do release
-regression -- that's `bedrock-platform-eval`'s job. It answers exactly one
-question:
+- **What is measured is not the bare model** but the Bedrock
+  inference-profile operating envelope: model + Bedrock serving stack +
+  inference-profile routing + account/region quota + provider
+  conditions at measurement time. A result like "6.67 rps, TTFT 700 ms,
+  C=4" describes that whole stack at that time -- never a model's
+  intrinsic capacity.
+- **The SLO is an input, not a finding.** Gold / silver / bronze
+  (`constraints/slo.yaml`) are externally supplied policy; the benchmark
+  never derives, tunes or relaxes them from measurements.
 
-> For a given Bedrock inference profile and workload shape, at a given
-> SLO (policy) and quota, what concurrency/RPS was observed without
-> violations, what has been statistically confirmed to meet the SLO --
-> latency, success and throttle alike -- and what is therefore safe to
-> configure for production, under the provider conditions at
-> measurement time?
-
-```
-workload -> SLO -> quota-aware sweep -> find the boundary -> confirm it
-statistically -> apply headroom + provider ceiling -> capacity-profile.yaml
--> gateway admission-control configuration
-```
-
-## Boundary
-
-Every call in this repo goes **directly to Bedrock** (`boto3`
-Converse/ConverseStream) -- no API Gateway, no auth, no gateway
-admission control, no tenant quota, no gateway queue. Mixing those in
-would measure the *platform's* envelope instead of the *Bedrock
-inference profile's*, and this repo only ever answers the second
-question.
+## Architecture
 
 ```
-              bedrock-runtime-benchmark
-
-      Experiment / Sweep Engine
-      Workload Generator (WorkloadProfile)
-      Concurrency Runner / Rate Runner
-      Bedrock Runtime Client (direct boto3)
-      Metrics + Capacity Analyzer + Recommendation Engine
-                    |
-                    v
-              AWS Bedrock (direct)
+catalog/models.yaml          which models
+catalog/workloads.yaml       which requests (shape + SLO profile)       ─┐
+experiments/*.yaml           how to load them (workload names + sweep)  ─┤
+constraints/slo.yaml         SLO: what quality we require (policy)      ─┤
+constraints/quota.yaml       quota: what the provider allows            ─┤
+                                                                          v
+             discovery sweep ──> adaptive confirmation ──> verdicts (PASS / FAIL / INCONCLUSIVE)
+                                                                          |
+                                                                          v
+                capacity-profile.yaml:  measurement  +  recommendation.admission_envelope
+                                                                          |
+                                          ───────────── contract ─────────┼──────────────
+                                                                          v
+                         bedrock-runtime-gateway  (scripts/capacity_review.py maps the
+                         envelope onto its own global / tenant / quota knobs)
 ```
 
-Three sibling repos, three different questions:
+Every call goes **directly to Bedrock** (`boto3` Converse /
+ConverseStream): no API Gateway, auth, admission control, tenant quota
+or queue in the path. The producer knows nothing about its consumers --
+there is no gateway config schema in this repo.
 
 | Repo | Question |
 |---|---|
-| `bedrock-runtime-gateway` | Is the gateway's own implementation correct? |
+| `bedrock-runtime-gateway` | Is the gateway's own implementation correct? How does it map an envelope onto its limits? |
 | `bedrock-platform-eval` | Does the *deployed platform* (gateway + Bedrock) behave correctly under real workload? |
-| `bedrock-runtime-benchmark` | What's the *Bedrock inference-profile* operating envelope (model + Bedrock serving + routing + quota + current conditions), independent of any gateway? |
+| `bedrock-runtime-benchmark` | What is the Bedrock inference-profile operating envelope, independent of any gateway? |
 
-This repo's output feeds the first two as **input**, not as a replacement
-for either: a gateway's per-tenant-class concurrency config should be
-*informed* by a measured capacity-profile.yaml, not guessed.
-
-## Core abstractions
-
-- **`WorkloadProfile`** (`workload.py`) -- a named input/output token
-  shape (e.g. `short_chat` = 512 in / 64 out), defined once in the
-  catalog `catalog/workloads.yaml`. Capacity depends heavily on
-  this; see `token-sweep.yaml`. Input padding is calibrated per model
-  from the provider's own token count (`calibration.py`).
-- **`WorkloadMix`** (`workload.py`) -- weighted classes for a mixed-
-  workload sweep; each request draws its class independently.
-- **`BedrockConverseTarget`** (`client.py`) -- direct Converse/
-  ConverseStream calls, no gateway in the path.
-- **`RequestResult`** (`results.py`) -- one call, raw (ttft, latency,
-  real token counts, outcome). Kept per-request, not just aggregated,
-  so any new percentile/SLO/breakdown can be recomputed later without
-  spending real Bedrock calls again.
-- **Runners** (`runners/`) -- `ConcurrencyRunner` (fixed N closed-loop
-  workers: "what does concurrency C do") and `RateRunner` (open-loop
-  Poisson at a fixed rps: "what does offered rate R do") -- kept
-  separate because they answer different questions and conflating them
-  produces a confounded measurement.
-- **`analysis/capacity.py`** -- explicit rule-based recommendation, not
-  a black-box score: SLO-filter the swept points, pick the one with the
-  highest `slo_goodput_rps` among survivors, apply `provider_headroom`.
-  Never fits a curve or guesses a number no measured point produced.
-
-## SLO goodput -- the headline metric
-
-Raw throughput is misleading on its own:
-
-```
-C    Throughput   TTFT P95   429%    SLO Goodput
-1       1.8          420ms    0%        1.8
-2       3.1          480ms    0%        3.1
-4       4.7          650ms    0%        4.7
-6       5.2          910ms    0%        5.1
-8       5.4         1600ms    7%        3.9
-```
-
-Naive throughput says "C=8 is fastest." This repo says "C=6 is the
-recommended concurrency" -- the highest concurrency that still clears
-the configured SLO, which is what a gateway config actually needs.
-
-## Models, experiments and constraints
-
-Independent inputs, combined at run time:
-
-```
-catalog/                   WHAT exists -- the benchmark's inputs
-  ├─ models.yaml           which models: name (= results folder), model_id, region
-  └─ workloads.yaml        which requests: workload shapes, each bound to an SLO profile
-constraints/               what every result is JUDGED AGAINST
-  ├─ slo.yaml              SLO:   what quality we REQUIRE  (gold / silver / bronze)
-  └─ quota.yaml            quota: what the provider ALLOWS (per account / region / model)
-experiments/*.yaml         HOW to load: workload names + sweep -- no shapes, no SLO, no quota
-scripts/                   entry points only (run.py, run_all.py, fetch_quota.py, gateway_diff.py)
-        ↓
-every experiment x every model -> capacity-profile.yaml (judged against the constraints)
-```
-
-- **Models** -- `catalog/models.yaml`: the five models
-  `bedrock-runtime-gateway` certifies (nova-micro, nova-lite, nova-pro,
-  llama3-3-70b, qwen3-32b). `enabled: false` skips one by default.
-- **Experiments** -- `experiments/*.yaml`: model-agnostic workload +
-  sweep definitions. Every experiment runs unchanged against every model.
-- **Constraints** -- `constraints/`: each number defined exactly once.
-  The loaders reject SLO or quota numbers anywhere else (an experiment
-  with `slo:`/`target:`/`quota:`, a models entry with `quota:`), so no
-  copy can drift and every run of the same workload class is judged
-  the same way. `--slo-file` / `--quota-file` point a run at other
-  constraint files (e.g. a stricter SLO).
-  - `slo.yaml`: three service classes (`gold`, `silver`, `bronze`) by
-    business criticality of the request, not by model; **no default** --
-    each workload in the catalog binds its profile explicitly.
-  - `quota.yaml`: scoped like Bedrock quotas themselves --
-    `accounts: {<account id>: {<region>: {<model name>: {rpm, tpm}}}}`.
-    The account comes from the live credentials (STS; `--account`
-    overrides) and the region from each model's entry; a run on an
-    account with no quotas listed fails rather than sweeping around
-    another account's numbers. Offline (no credentials), a file with
-    exactly one account is used as-is.
-
-Rate sweeps are written as `quota_fractions` of each sweep subject's
-**provider ceiling** -- the request rate the model's quota allows for
-that workload's token shape (`ceiling.py`):
-
-```
-rpm_rps = RPM / 60
-reservation = input_tokens + max_tokens                         # deducted at admission
-consumption = input_tokens + expected_output x output_burndown  # settled at completion
-tpm_rps = TPM / max(reservation, consumption) / 60
-ceiling = min(rpm_rps, tpm_rps)
-```
-
-Quotas cap requests AND tokens, and which binds depends on the
-workload (a short request on nova-micro is RPM-bound; a long one on a
-tight-TPM model can be TPM-bound). Token pressure has two parts, per
-AWS's quota model: at admission Bedrock deducts **input + max_tokens**
-(no burndown), and at completion adjusts it to **input + actual output
-x burndown**. Reservations are held while requests are in flight and
-consumption is what settles, so the ceiling uses the larger. Expected
-output is `max_tokens` (the prompts elicit the full budget). With
-`output_burndown` 1 -- all current models -- both are input +
-max_tokens; with burndown 5 (some Claude models) 4k in / 1k out
-reserves 5k but consumes 9k. `output_burndown` is set in
-`constraints/quota.yaml` (default 1). Every class/mix in the artifact
-records it:
-
-```yaml
-provider_constraints:
-  tokens_per_request: 576.0         # max(reservation, consumption)
-  reservation_tokens: 576.0
-  consumption_tokens: 576.0
-  token_pressure: reservation       # which of the two binds
-  rpm_rps_ceiling: 6.6667
-  tpm_rps_ceiling: 231.4815
-  ceiling_rps: 6.6667
-  binding_constraint: rpm      # or tpm
-sweep_values_rps: [1.6667, 3.3333, ...]
-```
-
-Quotas differ by an order of magnitude (50 RPM for nova-pro, 1000 for
-qwen3-32b), so the same `[0.25 .. 2.5]` sweep is 0.21-2.08 rps on
-nova-pro and 4.2-41.7 rps on qwen3-32b. Concurrency sweeps stay
-absolute (and may not exceed `transport.max_connections`).
+## Experiments
 
 | Experiment | Sweep | Per model |
 |---|---|---|
-| `concurrency-sweep.yaml` | concurrency 1/2/4/6/8, `short_chat` | ~11 min |
-| `rate-capacity.yaml` | 0.25x-2.5x ceiling, one workload per tier (`short_chat` gold, `rag_answer` silver, `long_generation` bronze), each with adaptive confirmation -- the canonical production-envelope run | ~60 min |
-| `mixed-capacity.yaml` | 0.25x-2.5x ceiling, 60% `short_chat` / 30% `rag_answer` / 10% `long_generation` | ~13 min |
-| `token-sweep.yaml` | 4 most distinct catalog shapes x concurrency 1/2/4/6 | ~27 min |
+| `concurrency-sweep` | concurrency 1/2/4/6/8, `short_chat` | ~11 min |
+| `rate-capacity` | 0.25x-2.5x of the provider ceiling, one workload per tier (`short_chat` gold, `rag_answer` silver, `long_generation` bronze), adaptive confirmation -- the canonical envelope run | ~60 min |
+| `mixed-capacity` | 0.25x-2.5x ceiling, 60% `short_chat` / 30% `rag_answer` / 10% `long_generation` | ~13 min |
+| `token-sweep` | the 4 most distinct catalog shapes x concurrency 1/2/4/6 | ~27 min |
 
-Keep `constraints/quota.yaml` current with `scripts/fetch_quota.py --all` (see
-"Quota-aware experiment design" below) -- a stale quota shifts every
-rate a quota-relative sweep tests.
-
-## Running experiments
+## Quick start
 
 ```bash
-python3.11 -m venv .venv && .venv/bin/pip install -e ".[dev]"   # same install CI uses
-
-# one experiment
-.venv/bin/python scripts/run.py experiments/concurrency-sweep.yaml                     # every enabled model
-.venv/bin/python scripts/run.py experiments/concurrency-sweep.yaml --model nova-micro  # one model
-
-# everything: every experiment x every enabled model
-.venv/bin/python scripts/run_all.py --dry-run          # validate all pairs + time estimate, no AWS calls
-.venv/bin/python scripts/run_all.py                    # 4 experiments x 5 models ~= 5.5h
-.venv/bin/python scripts/run_all.py --model nova-micro --model nova-pro
-.venv/bin/python scripts/run_all.py experiments/rate-capacity.yaml
-.venv/bin/python scripts/run_all.py --model nova-micro --slo-profile gold   # only gold workloads
-.venv/bin/python scripts/run_all.py --gateway-config my-gateway.yaml   # + gateway diff at the end
-.venv/bin/python scripts/run_all.py --model nova-micro --pilot          # ~30 s smoke test, no batch
+python3.11 -m venv .venv && .venv/bin/pip install -e ".[dev]"
+export AWS_PROFILE=<your-profile> AWS_REGION=us-east-1
 ```
 
-`--slo-profile NAME` (repeatable) runs only the workloads bound to that
-profile in `catalog/workloads.yaml`: an isolated sweep keeps its
-matching workloads (`token-sweep --slo-profile gold` runs just
-`short_chat`); a mix runs only if every class matches -- a partial mix
-is a different mix, so it's skipped; an experiment with nothing
-matching is skipped. The plan lists every skip and why.
+Check quotas, then smoke-test, then run (one command at a time):
 
-**Pilot run.** Before a long batch, `--pilot` sends a few sequential
-requests (`--pilot-requests`, default 3) per model x workload the plan
-would use -- after `--model` / `--slo-profile` / experiment filters --
-and checks (`pilot.py`):
-
-| Check | FAIL / WARN when |
-|---|---|
-| access | any non-throttle error (credentials, model access, region, request shape) -> FAIL |
-| shape | input or output p50 outside the workload-validation tolerances (e.g. output stopping early) -> FAIL |
-| slo | an UNLOADED TTFT / TPOT / E2E p50 already over the workload's p95 limit -> WARN (no load level can PASS) |
-| quota | a throttle at one request at a time -> WARN (something else is using the quota) |
-
-Results go to `results/pilot-<timestamp>/pilot.yaml` and are never
-mixed into experiment data; the batch is never started by `--pilot`
-(exit code 1 if anything FAILed). On nova-micro it takes ~30 s:
-
-```
-OK    nova-micro  short_chat                 gold    in 505/512   out 64/64     ttft 455ms  tpot 3.4ms  e2e 672ms
-OK    nova-micro  rag_answer                 silver  in 4093/4096 out 256/256   ttft 404ms  tpot 3.2ms  e2e 1152ms
-OK    nova-micro  long_generation            bronze  in 4095/4096 out 1024/1024 ttft 412ms  tpot 3.1ms  e2e 3614ms
-OK    nova-micro  long_context_short_answer  silver  in 8103/8192 out 64/64     ttft 532ms  tpot 3.2ms  e2e 732ms
+```bash
+.venv/bin/python scripts/fetch_quota.py --all
 ```
 
-Results are grouped by model:
-
-```
-results/run-all-<timestamp>/        # run.py: results/
-  nova-micro/
-    concurrency-sweep-<id>.jsonl
-    concurrency-sweep-<id>-capacity-profile.yaml
-    ...
-  nova-pro/
-    ...
-  summary.yaml
+```bash
+.venv/bin/python scripts/run_all.py --model nova-micro --pilot
 ```
 
-Runs are strictly sequential, grouped by model -- runs against the same
-model share its quota, so parallel runs would measure each other's load
-as throttling. Every (model, experiment) pair is validated before the
-first call; a failed run doesn't stop the rest (`--fail-fast` to stop).
-Exit code is non-zero if any run failed or the gateway diff has warn
-findings.
-
-Each run writes raw per-request JSONL and a `capacity-profile.yaml`
-artifact under `results/` (gitignored -- these are real measurement outputs, not
-checked-in fixtures). The `capacity-profile.yaml` schema (v5 -- see
-"Correctness fixes" below for why `rate` and `concurrency` are always
-kept in separate blocks, why the rate block separates offered load
-from goodput, and why there's no `global_max_concurrency`). A
-rate-capacity result:
-
-```yaml
-schema_version: 5
-experiment: rate-capacity
-model: {name: nova-micro, provider: bedrock, model_id: ..., region: ...}
-constraints:                                       # what every number was judged against
-  quota: {account: "646821141010", region: us-east-1, rpm: 400, tpm: 8000000, output_burndown: 1.0}  # constraints/quota.yaml
-  slo:                                                                       # constraints/slo.yaml -- profiles this run's workloads use
-    profiles:
-      gold: {ttft_p95_ms: 800, tpot_p95_ms: 40, latency_p95_ms: null, success_rate_min: 0.995, throttle_rate_max: 0.001, confidence: null}
-measurement:
-  warmup_s: 10
-  window_s: 90
-  repetitions: 1
-  window_policy: scheduled_in_window_for_rates__completed_in_window_for_throughput
-  clock: monotonic_durations__wall_clock_timestamps
-  gate: pass_fail_inconclusive              # every check is PASS / FAIL / INCONCLUSIVE
-  confidence: 0.95
-  confirmation: {max_looks: 2, max_repetitions: 10, max_requests: 8000, max_duration_s: 1800, candidates: 1}
-  min_requests_to_resolve_throttle_slo: 2995
-sweep: {type: rate, quota_fractions: [0.25, ...], relative_to: provider_ceiling}
-workload_classes:
-  short_chat:
-    slo_profile: gold
-    observed: {input_tokens_p50: 505, output_tokens_p50: 61}
-    workload_validation: {input: {...}, output: {...}, valid: true}
-    provider_constraints: {tokens_per_request: 576.0, ceiling_rps: 6.6667, binding_constraint: rpm, ...}
-    sweep_values_rps: [1.6667, 3.3333, ...]
-    rate:
-      observed_nonfailing_offered_rps: 8.3333      # no FAIL observed before the first failure...
-      observed_verdict: INCONCLUSIVE               # ...but not enough requests to PROVE the SLO
-      observed_inconclusive_checks: [{name: throttle_rate, n: 600, required_n: 2995, ...}]
-      observed_slo_goodput_rps: 8.1
-      statistically_confirmed_offered_rps: 5.0     # strictly PASS at 95% -- null if none
-      confirmed_slo_goodput_rps: 4.9
-      measured_burst_ceiling_rps: 10.0      # highest swept rate that didn't FAIL (may be burst)
-      provider_ceiling_rps: 6.6667          # from the quota
-      saturation_offered_rps: 13.3333
-      saturation_status: resolved           # or not_reached / unresolved (+ unstable_region)
-    recommendation:                         # POLICY, kept apart from the measurement above
-      admission_envelope:                   # null (+ reason) when nothing is statistically confirmed
-        max_inflight: null                  # set by concurrency sweeps
-        sustained_rps: 4.0                  # min(CONFIRMED x 0.8, ceiling x 0.9)
-        source: statistically_confirmed_measurement
-        headroom_fraction: 0.2
-        quota_headroom_fraction: 0.1
-        binding: measurement                # or provider_quota
-        basis: {statistically_confirmed_offered_rps: 5.0, provider_ceiling_rps: 6.6667}
-    sweep_points: [{value: 1.6667, verdict: INCONCLUSIVE, phase: discovery, n: 150, inconclusive: [...]}, ...]
-    evidence: {n: 1740, n_throttled: 0, throttle_rate_upper: 0.0017, verdict: {...}, peak_outstanding: 9, ...}
-recommendation_policy: {headroom_fraction: 0.20, quota_headroom_fraction: 0.10}
-transport: {max_connections: 64, executor_workers: 64, total_max_attempts: 1, connect_timeout_s: 5, read_timeout_s: 60}
+```bash
+caffeinate -i .venv/bin/python scripts/run_all.py --model nova-micro
 ```
 
-A concurrency sweep writes `concurrency: {observed_nonfailing,
-observed_verdict, statistically_confirmed, saturation, saturation_status,
-observed_slo_goodput_rps}` instead of `rate`, and its recommendation sets
-`max_inflight` instead of `sustained_rps` -- likewise from the confirmed
-point only.
-
-This is the actual deliverable -- not an HTML report. A gateway's own
-config review reads this file, and decides its own global/tenant/AIMD
-config FROM these per-class envelopes -- this repo never pre-packages
-a gateway control policy itself (see "Not in scope here" below).
-
-## Correctness fixes (schema v2 -- v11)
-
-A real review caught 5 measurement-correctness bugs before this
-artifact was ever used to actually inform a gateway config:
-
-1. **Rate vs. concurrency saturation were the same field.** A rate
-   sweep's saturation point (an RPS value) used to be written into
-   `saturation_concurrency` -- silently mislabeling e.g. "7 rps" as if
-   it were a concurrency value. `rate` and `concurrency` are now
-   always separate blocks with their own field names
-   (`saturation_rps` vs `saturation`), and `provider_headroom` is
-   applied to whichever one actually ran (`production_rps` is a float,
-   never floored -- `production_max` is an int floor, since fractional
-   concurrency isn't meaningful).
-2. **A missing TTFT measurement counted as meeting a configured TTFT
-   SLO.** `ttft_slo_ms is not None and r.ttft_ms is not None and ...`
-   skipped the check entirely when `ttft_ms` was `None` (e.g.
-   `stream: false` with a TTFT SLO configured anyway) -- silently
-   treating an unmeasured request as SLO-compliant. Fixed to fail
-   closed: a configured-but-unmeasured SLO is a violation.
-3. **`RateRunner`'s `scheduled_at` was captured AFTER its own
-   `asyncio.sleep`**, making it drift to `~= started_at` and destroying
-   the one signal it exists for -- client-side scheduling lag
-   (`started_at - scheduled_at`) when the load generator itself falls
-   behind its own arrival schedule under high offered rate. Now
-   captured before the sleep, from a wall-clock anchor taken at the
-   same instant as the run's own `perf_counter` baseline.
-4. **No explicit boto3 transport/retry config.** Sweeping concurrency
-   up past boto3's default connection pool (10) would measure the
-   SDK's own queueing, not Bedrock's -- and the SDK's automatic retry
-   would silently absorb a real `ThrottlingException` into an eventual
-   200, understating the real throttle rate this repo exists to
-   measure. `TransportConfig` (`client.py`) now sets pool size,
-   timeouts, and retries explicitly, and records the config used into
-   the artifact for reproducibility.
-5. **`global_max_concurrency = max(concurrencies)` across independently
-   swept workload classes was invalid.** There's no scientifically
-   defensible "global" number derivable from isolated per-class
-   maxima -- a real MIXED workload can exceed safe capacity before
-   either class's own isolated measurement would predict. Removed
-   entirely; a real mixed-workload experiment (`mix:`, see "Mixed
-   workloads" below) is the only valid way to answer that question.
-6. **`retries={"max_attempts": 1}` was still a retry, not zero.**
-   botocore's client-config normalization (`botocore/args.py`,
-   `_compute_retry_max_attempts`) treats a `max_attempts` key as
-   meaning *retry* attempts and rewrites it to
-   `total_max_attempts = max_attempts + 1` before building the retry
-   handler -- so the old default actually allowed 1 initial request
-   + 1 retry = 2 total attempts. A real Bedrock 429 could still be
-   silently retried into an eventual 200, understating the exact
-   throttle rate this repo exists to measure. Fixed by passing
-   `total_max_attempts` (botocore's own unambiguous "literal total
-   attempt count" key) instead; `TransportConfig.total_max_attempts`
-   replaces the old `retry_max_attempts` field name.
-
-### Schema v3 fixes
-
-7. **Drain completions inflated throughput.** `ConcurrencyRunner`'s
-   last batch (fired just before `duration_s`) finished after it, yet
-   `throughput = successes / duration_s` counted those completions in
-   the numerator without extending the denominator -- overstating
-   throughput and SLO goodput by up to one concurrency level's worth
-   of requests per point. Fixed by the measurement policy below.
-8. **The rate block mixed goodput with offered load.**
-   `measured_sustainable_rps` was the best point's SLO goodput, and
-   `production_rps` applied headroom to that goodput -- but a gateway
-   admission limit is on offered load. Split into
-   `max_safe_offered_rps` / `slo_goodput_rps` /
-   `production_offered_rps` (v7: `observed_nonfailing_offered_rps` /
-   `statistically_confirmed_offered_rps` / `production_sustained_rps`,
-   quota-capped and derived from the confirmed point only).
-9. **A 0.1% throttle SLO was gated on too few samples.** See
-   "Verdicts" below.
-
-### Schema v4 fixes
-
-10. **`asyncio.to_thread`'s default executor was a hidden capacity
-    limit.** It has min(32, cpu_count + 4) workers -- 14 on a 10-core
-    laptop -- independent of the 64-connection pool, so past ~14
-    in-flight calls requests queued for a Python thread and the
-    benchmark measured the thread pool. The target now owns a
-    `ThreadPoolExecutor` sized `transport.executor_workers` (default =
-    `max_connections`, must be >=), tracks peak outstanding calls per
-    point, and a point that ever exceeded the pool is
-    `client_limited` -- excluded from the recommendation and listed in
-    `client_limited_points`. `executor_workers` is recorded in the
-    artifact.
-11. **Latency/TTFT used the wall clock.** `time.time()` jumps with NTP
-    corrections. Durations now come from `time.perf_counter()`; wall
-    timestamps are one anchor + monotonic deltas.
-12. **Rate sweeps ignored TPM.** See "provider ceiling" above.
-13. **Output tokens weren't validated.** See "Workload validation".
-14. **A non-monotonic sweep produced contradictory results.** PASS,
-    PASS, FAIL, PASS, FAIL reported best=C6 with saturation=C4. Now
-    `saturation_status` is `resolved` (clean pass->fail; saturation =
-    first fail), `not_reached` (all passed), or `unresolved` (a pass
-    after a fail: no saturation claimed; `unstable_region` and
-    `confirmed_fail_from` instead). Only the leading run of passes is
-    eligible for the recommendation.
-15. **One SLO for every workload.** See "SLO profiles".
-16. **Input padding trusted 4 chars ≈ 1 token.** Real runs measured
-    ~46% of the requested input. Padding is now calibrated per model
-    from the provider's own count -- see "Input-token calibration".
-17. **SLO and quota numbers were copied into every file.** The same
-    `slo:` block lived in 4 experiments and quotas in the models list.
-    Both now live once under `constraints/` (schema v5 groups them in
-    the artifact's `constraints:` block); loaders reject copies. SLO
-    profiles are bound explicitly per workload in the workload catalog
-    (no implicit default) and defined by request class, not model;
-    quotas are scoped by account and region, matching how Bedrock
-    actually applies them.
-
-### Schema v6 fixes
-
-18. **The 95% bounds were computed but never gated.** No SLO set
-    `confidence`, so a few hundred clean requests "passed" a 0.1%
-    throttle SLO they couldn't statistically demonstrate. Now every
-    check is PASS / FAIL / INCONCLUSIVE -- see "Verdicts".
-19. **Production rate could exceed quota.** 20% headroom off a rate
-    that passed at 1.8x quota (burst) still recommended 1.44x quota.
-    Production is now also capped by the provider ceiling -- see
-    "Production rate".
-20. **One snapshot per point.** Repetitions defaulted to 1 everywhere.
-    The boundary is now re-measured in a confirmation phase -- see
-    "Two-phase sweep".
-21. **TTFT + TPOT alone missed user-visible E2E.** Each workload now
-    carries its own E2E cap -- see "SLO profiles".
-
-### Schema v11 fixes
-
-31. **Measurement and policy were mixed.** `production_sustained_rps` /
-    `production_max` (headroom applied) sat inside the measurement
-    blocks. They're now `recommendation.admission_envelope`
-    (`max_inflight` / `sustained_rps`, `source`, `headroom_fraction`,
-    `binding`, `basis`) per class/mix, next to -- not inside -- the
-    unchanged confirmed measurement; headroom settings moved to
-    `recommendation_policy`. A max_inflight that floors to 0 is null
-    rather than rounded up.
-32. **TPM reservation vs consumption.** The ceiling used input +
-    max_tokens x burndown for both; AWS reserves input + max_tokens at
-    admission and settles at input + output x burndown. Both are now
-    reported (`reservation_tokens`, `consumption_tokens`,
-    `token_pressure`) and the larger bounds the TPM ceiling. No change
-    for burndown-1 models.
-
-### Schema v10 fixes
-
-28. **Latency verdicts now also report the bound in milliseconds**
-    (`p95_upper_bound`, order-statistic UCB, exactly dual to the
-    exceedance test).
-29. **No provenance.** Profiles now carry `environment` (measured_at,
-    account, region, inference profile, benchmark version, git commit)
-    and `validity`; `scripts/drift.py` compares repeated runs.
-30. **The SLO is marked as policy input** (`constraints.slo.role:
-    policy_input`) -- externally supplied, never derived from results.
-
-### Schema v9 fixes
-
-27. **Latency SLOs were judged on the sample percentile alone.** "Sample
-    p95 <= 800 ms" says nothing about how sure we are the true p95 is.
-    Each p95 limit is now an exceedance proportion,
-    `P(value > T) <= 5%`, gated by the exact binomial bound like
-    throttle -- PASS / FAIL / INCONCLUSIVE with `exceedances`,
-    `exceedance_rate_upper` and `required_n` on every latency check. The
-    confirmation plan covers latency checks too. SLO definitions are
-    unchanged.
-
-### Schema v8 fixes
-
-23. **Confirmation reused discovery data.** v7 pooled the confirmation
-    repetitions with the discovery sample that had selected the point.
-    Confirmation now uses only its own independent data; discovery only
-    selects candidates.
-24. **Unplanned looks.** Adaptive repetitions with a PASS check after
-    each one inflate false PASSes (7.0% vs 5% simulated). PASS is now
-    allowed only at pre-planned sample sizes with Bonferroni-corrected
-    confidence; caps end in INCONCLUSIVE.
-25. **Wilson bounds under-covered at zero events** (~93% real coverage
-    for a stated 95% at gold's limit). Rate checks now use the exact
-    Clopper-Pearson bound: 2,995 requests for 0.1%, not 2,703.
-26. **"Confirmed" skipped INCONCLUSIVE points.** Without a confirmation
-    phase, the confirmed point is now the top of the leading run of
-    strict PASSes (a fixed-sequence test), not the best-goodput PASS
-    anywhere before the first FAIL.
-
-### Schema v7 fixes
-
-22. **"Measured safe" could be INCONCLUSIVE.** v6's
-    `measured_safe_offered_rps` held the best non-failing point even
-    when it was INCONCLUSIVE, and production was derived from it --
-    treating "no violation observed" as "SLO proven". Now:
-    `observed_nonfailing_*` (may be INCONCLUSIVE) ->
-    `statistically_confirmed_*` (PASS only, or null) -> production
-    derived from the confirmed point only (null otherwise).
-
-## Measurement policy
-
-Every sweep point runs **warmup -> measurement window -> drain**:
-
-- **warmup** (`warmup_s`): load is applied but nothing is counted.
-- **window** (`duration_s`): the only span any metric describes.
-- **drain**: load stops at window close; requests still in flight
-  finish and are recorded, so their real latency/outcome is kept.
-
-Two populations, each unbiased for what it measures:
-
-- success/throttle/timeout rates and latency/TTFT percentiles use every
-  request **scheduled** in the window, drained ones included --
-  dropping them would drop exactly the slow tail an SLO catches.
-- throughput, token throughput and SLO goodput use successes
-  **completed** in the window, divided by the window length.
-
-`repetitions: R` runs each point R times back to back (rate sweeps use
-seed+rep, so repetitions are independent Poisson samples). The SLO gate
-reads the pooled windows; per-repetition goodput is kept in `evidence`
-to show run-to-run spread.
-
-### Verdicts: PASS / FAIL / INCONCLUSIVE
-
-Insufficient evidence is not failure. Every check at every point gets a
-verdict (`capacity.py`'s `evaluate`):
-
-- **latency checks** (TTFT / TPOT / E2E p95): a p95 limit T is the
-  statement "at most 5% of requests exceed T", so it's judged as an
-  exceedance PROPORTION with the same exact bound as throttle -- k of n
-  successful requests over T (a request with no measurement counts as
-  over; nothing measured at all FAILs):
-  - k / n > 5% (the sample p95 is over T) -> **FAIL**
-  - exact 95% upper bound on k / n <= 5% -> **PASS**
-  - otherwise -> **INCONCLUSIVE** with `required_n`. A sample p95 under
-    T isn't enough: 30 clean requests still bound the exceedance at
-    9.5%; 59 clean ones resolve it (93 with one slow request). 11 slow of
-    500 is 2.2% observed, 3.6% bound -> PASS.
-
-  This is the distribution-free test of H0: q95 > T vs H1: q95 <= T.
-  Each latency check also reports it in milliseconds as
-  `p95_upper_bound` -- the order-statistic one-sided 95% upper
-  confidence bound on the true p95 (e.g. "p95 estimate 742 ms, UCB
-  796 ms <= 800 ms -> PASS"). The two are exactly dual: PASS <=> UCB <= T
-  (checked on random samples in `tests/test_latency_bounds.py`), so
-  `statistically_confirmed` really means latency, success AND throttle
-  are all statistically confirmed.
-- **rate checks** (success, throttle), on EXACT one-sided
-  (Clopper-Pearson) bounds at `confidence` (default 95%):
-  - observed violation (e.g. throttle rate above the limit) -> **FAIL**
-  - the bound clears the limit -> **PASS**
-  - no violation, but too few requests to prove it -> **INCONCLUSIVE**,
-    with `n` and `required_n` (0 throttles in 540 requests has a 95%
-    upper bound of ~0.55% -- resolving a 0.1% limit needs 2,995)
-
-Exact, not Wilson: these checks sit at 0-2 events, exactly where Wilson
-is anti-conservative. Its 95% bound clears 0.1% after 2,703 clean
-requests, but a service throttling at exactly 0.1% produces 0 throttles
-in 2,703 requests 6.7% of the time -- a stated 95% that is really ~93%.
-Clopper-Pearson (2,995 requests; 0.999^2995 = 0.050) has guaranteed
-coverage.
-
-A point is FAIL if any check fails, else INCONCLUSIVE if any is
-inconclusive, else PASS. Saturation is the first FAIL.
-
-**Not observing a violation is not the same as proving the SLO**, so
-the artifact keeps three numbers apart and never lets one stand in for
-another:
-
-```
-observed_nonfailing          best point before the first FAIL -- may be INCONCLUSIVE
-      |
-statistically_confirmed      best strictly-PASS point before the first FAIL -- or null
-      |
-recommendation.              derived ONLY from the confirmed point, after headroom
-  admission_envelope         (and quota-capped); null when nothing is confirmed
-```
-
-`sweep_points` lists every point's verdict. `gateway_diff` only ever
-proposes limits from confirmed recommendations: an INCONCLUSIVE
-observed point is `envelope_unconfirmed` (info), and a class with no
-confirmed point at all is `no_confirmed_envelope` (warn).
-
-Sample size decides what can be confirmed: at 95%, resolving a limit
-with zero bad events takes 2,995 requests for gold's 0.1% throttle,
-598 for silver's 0.5%, 299 for bronze's 1% -- and more once any event
-occurs (4,742 for gold with one throttle). The confirmation phase below
-exists to collect exactly that, and only that, at the boundary.
-
-### Measurement vs recommendation (admission envelope)
-
-A measured result is not an operational policy, so every workload class
-or mix keeps them in separate blocks:
-
-| Block | Holds | Kind |
-|---|---|---|
-| `rate` / `concurrency` | `observed_nonfailing_*`, `statistically_confirmed_*`, `measured_burst_ceiling_rps`, `provider_ceiling_rps`, saturation, verdicts | measurement |
-| `recommendation.admission_envelope` | the confirmed point after this benchmark's safety headroom | policy |
-
-The recommendation says only: *based on this measured model/workload
-envelope, this is the recommended maximum backend in-flight concurrency
-and/or sustained offered rate after safety headroom*
-(`recommendation.py`):
-
-```
-concurrency sweep   max_inflight  = floor(statistically_confirmed_concurrency x (1 - headroom))
-rate sweep          sustained_rps = min(statistically_confirmed_offered_rps x (1 - headroom),
-                                        provider_ceiling_rps x (1 - quota_headroom))
-```
-
-It fails closed: no statistically confirmed point -> `admission_envelope:
-null` with a `reason`; an observed or INCONCLUSIVE point is never used.
-A `max_inflight` that floors to 0 (e.g. confirmed C=1 with 20% headroom)
-is also null -- 0 would admit nothing, and rounding up would drop the
-headroom. The quota term matters because a rate sweep deliberately goes
-above quota and a short window can pass there on burst allowance --
-observed serving, not a sustainable rate; `binding` says which term won.
-Headroom defaults (20% off the measurement, 10% off the quota) are
-recorded in `recommendation_policy`.
-
-It deliberately emits nothing gateway-specific -- no global or tenant
-concurrency, tenant RPM limits, queue waits, AIMD parameters or tenant
-allocation. Mapping the envelope onto those is `bedrock-runtime-gateway`'s
-decision, which can apply its own margins on top (e.g. more for a
-critical tenant).
-
-### Two phases, two jobs: discovery -> adaptive confirmation
-
-One 90s window per point is a capacity snapshot. With `confirmation:`
-(on in `rate-capacity.yaml`) the sweep has two phases whose data is
-never mixed (`analysis/confirmation.py`):
-
-| Phase | Data | Used for | Never used for |
-|---|---|---|---|
-| **discovery** | every sweep value, `repetitions` each | observed verdicts, saturation, transition region, **choosing candidates** | confirming anything |
-| **confirmation** | fresh repetitions at the candidates only | **the only source of `statistically_confirmed`** (and so of production values) | -- |
-
-Reusing discovery data to confirm the point it selected would be
-double-dipping: the point was picked *because* its discovery sample
-looked good. So confirmation starts from zero.
-
-**Candidates.** The highest point(s) of discovery's leading non-failing
-run -- for a rate sweep, only at or below the provider ceiling
-(production is quota-capped anyway; above it a point passes on burst
-allowance at best). With `candidates: N > 1` they're tested
-lowest-first and stop at the first one not confirmed (a fixed-sequence
-test, which keeps the family-wise error at alpha without splitting it).
-
-**Adaptive, but no peeking.** Repetitions are added one at a time, but
-a PASS can only be declared at `max_looks` sample sizes fixed before any
-confirmation data exists -- look j is where j-1 bad events would still
-clear the limit -- each at confidence `1 - 0.05 / max_looks`
-(Bonferroni). FAIL (an observed violation) stops it at any time.
-Checking the bound after every repetition and stopping on the first
-clear would inflate false PASSes; simulated at a true throttle rate
-exactly at gold's limit (`tests/test_confirmation.py`):
-
-| Procedure | False-PASS rate |
-|---|---|
-| planned looks, exact bound, `max_looks: 2` | 2.75% (<= 5%) |
-| naive peeking after every repetition | 7.0% |
-
-For gold (`max_looks: 2`, per-look 97.5%) the looks are at 3,688 and
-5,570 requests: 7 and 10 repetitions at the 6.67 rps ceiling (~600
-requests each) -- inside the default caps.
-
-**Caps -> INCONCLUSIVE, never a looser SLO.** `max_repetitions`
-(default 10) and `max_requests` (8,000) per candidate, `max_duration_s`
-(1,800) for the phase. A candidate whose next look can't be reached
-within the caps -- estimated from discovery's requests per repetition --
-stops as `unreachable_within_caps` without spending the calls (a gold
-candidate at 1.67 rps: ~150 requests/rep, can't reach 3,688 in 10 reps).
-Each candidate reports `verdict`, `stop_reason` (`confirmed`,
-`observed_violation`, `looks_exhausted`, `max_repetitions`,
-`max_requests`, `max_duration`, `unreachable_within_caps`,
-`not_tested`), `n`, `looks_used` and `next_look_n` under the subject's
-`confirmation` block, next to the `plan` (confidence, per-look
-confidence, look schedule, caps).
-
-Without a confirmation phase, `statistically_confirmed` comes from
-discovery as a fixed-sequence test over the sweep's own ascending order
-(the top of the leading run of strict PASSes);
-`confirmation_source` says which (`confirmation` |
-`discovery_fixed_sequence`).
-
-## Provenance and drift
-
-A profile is ONE snapshot of the Bedrock inference-profile operating
-envelope under the provider conditions at measurement time. The safe
-rate measured today can be 5.0 rps, tomorrow 4.2, tonight 5.8 -- so a
-single `capacity-profile.yaml` is not a permanent fact. Every profile
-records where and when it came from:
-
-```yaml
-environment:
-  measured_at: {start: 2026-09-26T13:39:11+00:00, end: ...}
-  account: "646821141010"
-  region: us-east-1
-  inference_profile: us.amazon.nova-micro-v1:0
-  benchmark_version: 0.1.0
-  git_commit: 451f7d4...
-  git_dirty: false
-  runtime: {python: 3.11.16, boto3: ..., botocore: ...}
-validity:
-  repeated_runs: 1
-  days_observed: 1
-  scope: "single run -- ... compare with scripts/drift.py"
-```
-
-`scripts/drift.py` lines repeated profiles up per (model, experiment,
-workload/mix, sweep kind) and reports runs, days observed, the confirmed
-and production values over time (oldest first), min / median / max,
-their spread, whether the envelope is `stable` (spread <= `--threshold`,
-default 20%), and a `conservative_production` (the minimum across runs):
+Useful variants: `--dry-run` (plan and time estimate, no AWS calls),
+`--slo-profile gold` (only workloads bound to a profile), one experiment
+path instead of all, `scripts/run.py <experiment>` for a single run.
+Results go to `results/run-all-<timestamp>/<model>/`. Compare repeated
+runs over time with:
 
 ```bash
 .venv/bin/python scripts/drift.py results/
 ```
 
-Re-measuring on different days and times of day turns a snapshot into
-evidence about temporal stability -- and into a basis for choosing how
-often an envelope must be re-certified.
+## Output example
 
-## Quota-aware experiment design
-
-Picking sane sweep values (especially rate-sweep values) is guesswork
-without knowing the model's real RPM/TPM ceiling first -- a
-concurrency sweep starting at `[1, 2, 4, ...]` is useless if even
-concurrency=1 closed-loop already runs over quota, which turns out to
-be true for some certified models. `scripts/fetch_quota.py` and
-`src/bedrock_benchmark/quota.py` exist to make that ceiling a known
-number before an experiment is written, not a name for it to just do.
-
-```bash
-.venv/bin/python scripts/fetch_quota.py --all                                 # check constraints/quota.yaml (live account)
-.venv/bin/python scripts/fetch_quota.py --model-id us.amazon.nova-pro-v1:0    # one model, for a new entry
-```
-
-`--all` compares each entry in `constraints/quota.yaml` with the live
-value and prints a replacement line for any stale one (exit 1 if any
-differ). It looks up the model's real RPM/TPM in two steps, table first:
-
-1. `gateway-model-quotas-dev`'s `quota#<model_id>` row, if that table
-   happens to be reachable -- a cheap `GetItem` against a value
-   `bedrock-runtime-gateway` already synced from AWS. A soft
-   convenience: this repo doesn't provision that table and doesn't
-   assume it exists.
-2. AWS Service Quotas directly (`service-quotas:ListServiceQuotas`),
-   the actual source of truth, whenever the table lookup fails for
-   any reason (table missing, row missing, no permission, wrong
-   account/region).
-
-If neither source is available it returns `source: unknown` rather
-than raising -- a missing quota number should never block an
-experiment design conversation, it should just make the gap visible.
-This is read-only, design-time context: nothing at runtime checks or
-caps against it (see "Not in scope here" below).
-
-Why rate sweeps are quota-relative: nova-pro's 50 RPM (0.83 rps) with
-~616ms latency means concurrency=1 closed-loop already runs ~2x over
-quota, and llama3-3-70b's 80 RPM sits right at its C=1 rate -- a
-concurrency sweep can't resolve either inference profile's safe zone, and a fixed
-rps list tuned for one model is useless for another. The first full
-batch found real ceilings between ~1.0x and ~1.9x quota, so the shipped
-sweeps span 0.25x-2.5x.
-
-## Input-token calibration
-
-Prompt padding is sized from the **provider's own token count**, not a
-chars-per-token guess -- the first real batch sent ~236 tokens for
-"512 in", because the repeated filler word tokenizes far denser than
-4 chars/token. Before any load is sent, each model's counter is
-resolved once (`calibration.py`), in preference order:
-
-| Strategy | How | Cost |
-|---|---|---|
-| `count_tokens` | Bedrock `CountTokens` -- used whenever the model supports it | free, no inference |
-| `converse_usage` | fallback: Converse with `maxTokens=1`, read `usage.inputTokens` | one tiny inference per step |
-| `estimate` | last resort (no permission / access): 4 chars ≈ 1 token | -- |
-
-A counter is only accepted if two probes of different length return
-increasing counts. Each workload's padding is then rescaled until the
-counted input is within `calibration_tolerance_pct` (default 2%) of the
-target -- typically 2-4 steps. Calibration runs before warmup and is
-never part of a measurement window. Inference-profile ids
-(`us.`/`eu.`/...) are retried as their base model id for CountTokens.
-
-Per model, `token_counting` in `catalog/models.yaml` can force a strategy
-(`auto` by default). As of 2026-09-25 **none of the five certified
-models support CountTokens** (Bedrock: "The provided model doesn't
-support counting tokens"), so they all calibrate via `converse_usage`;
-a model that gains support switches to `count_tokens` automatically.
-
-## Workload validation
-
-Calibration sizes the input; `max_tokens` only caps the output -- the
-model may emit far less. Asking for "about N words" wasn't enough: on
-nova-micro it produced only 42-50% of the target on every workload, all
-ending `end_turn`. The prompt therefore asks for ~2x the budget and
-forbids wrapping up, so generation ends on `max_tokens` -- measured
-after the fix: 100% of requests hit exactly 64 / 64 / 256 / 1024 output
-tokens across the four token-sweep shapes. Every result records
-Bedrock's `stop_reason` (`max_tokens` vs `end_turn`) in the raw JSONL.
-
-Each class's `workload_validation` still checks BOTH sides against what
-Bedrock actually *reported* during the run:
+Per workload class, measurement and recommendation are separate blocks.
+Abridged, from the 2026-09-26 nova-micro `rate-capacity` run (full schema:
+[docs/capacity-profile-schema.md](docs/capacity-profile-schema.md)):
 
 ```yaml
-workload_validation:
-  token_counting: {method: converse_usage, calibrated_input_tokens: 509, converged: true, iterations: 3}
-  input:  {target: 4096, observed_p50: 4090, deviation_pct: -0.15, tolerance_pct: 10.0, valid: true}
-  output: {target: 512,  observed_p50: 438,  deviation_pct: -14.45, tolerance_pct: 25.0, valid: true}
-  valid: true              # both
+workload_classes:
+  short_chat:
+    slo_profile: gold
+    rate:                                       # MEASUREMENT
+      observed_nonfailing_offered_rps: 8.3333
+      observed_verdict: INCONCLUSIVE            # no violation seen, too few requests to prove it
+      statistically_confirmed_offered_rps: 6.6667
+      provider_ceiling_rps: 6.6667
+      saturation_offered_rps: 10.0
+    confirmation:
+      candidates: [{value: 6.6667, verdict: PASS, stop_reason: confirmed, n: 4173}]
+    recommendation:                             # POLICY
+      admission_envelope:
+        max_inflight: null
+        sustained_rps: 5.3334                   # min(6.6667 x 0.8, 6.6667 x 0.9)
+        source: statistically_confirmed_measurement
+        headroom_fraction: 0.2
+        binding: measurement
 ```
 
-`valid: false` means the envelope describes a different workload shape
-than the class name claims (e.g. "4096 in / 512 out" that really
-emitted 110 tokens) -- `run.py` warns and `gateway_diff.py` raises
-`workload_shape_invalid`. Tolerances: `workload_validation_tolerance_pct`
-(input, default 10) and `output_validation_tolerance_pct` (default 25 --
-models legitimately stop a little early).
+No statistically confirmed point means `admission_envelope: null`: a
+recommendation is never derived from an observed-only or INCONCLUSIVE
+point.
 
-## Workload catalog
+## Not in scope
 
-Every request shape is defined once in `catalog/workloads.yaml` and
-bound there -- explicitly, no default -- to an SLO profile.
-Experiments only list workload names; a shape or SLO inside an
-experiment is rejected.
+AIMD, tenant limiters, global admission control, queueing, fairness,
+and any gateway-specific setting -- all `bedrock-runtime-gateway`'s job.
+This repo outputs a measured, statistically confirmed envelope and an
+admission-envelope recommendation; it never implements, applies or
+pre-decides the runtime policy that enforces it.
 
-```yaml
-# catalog/workloads.yaml
-workloads:
-  tiny_request:              {input_tokens: 256,   output_tokens: 32,   slo_profile: gold,   latency_p95_ms: 2000}
-  short_chat:                {input_tokens: 512,   output_tokens: 64,   slo_profile: gold,   latency_p95_ms: 3000}
-  medium_context:            {input_tokens: 2048,  output_tokens: 128,  slo_profile: silver, latency_p95_ms: 6000}
-  long_context_short_answer: {input_tokens: 8192,  output_tokens: 64,   slo_profile: silver, latency_p95_ms: 8000}
-  rag_answer:                {input_tokens: 4096,  output_tokens: 256,  slo_profile: silver, latency_p95_ms: 10000}
-  long_generation:           {input_tokens: 4096,  output_tokens: 1024, slo_profile: bronze, latency_p95_ms: 60000}
-  very_large_context:        {input_tokens: 16384, output_tokens: 256,  slo_profile: bronze, latency_p95_ms: 20000}
+## Documentation
 
-# experiments/token-sweep.yaml -- the four most distinct shapes
-workloads: [short_chat, long_context_short_answer, rag_answer, long_generation]
-```
-
-The catalog is deliberately broader than any experiment: adding a
-workload sends no traffic, only experiments that list it do.
-`long_context_short_answer` isolates input-side (prefill) pressure and
-`long_generation` output-side (decode) pressure; the former is also
-TPM-bound on low-TPM models (llama3-3-70b: ~1.21 rps by TPM vs 1.33 by
-RPM).
-
-## SLO profiles
-
-SLOs live in `constraints/slo.yaml`, separate from workloads, as three
-service classes by business criticality of the request -- not by
-model. The same model serves every class and gets one envelope per
-class (strict gold -> lower safe rps/concurrency, relaxed bronze ->
-higher), which maps onto a gateway's `request_class -> concurrency /
-rate limit`.
-
-Classes gate on the two latency components -- **TTFT** (time to first
-token) and **TPOT** (time per output token after the first:
-`(latency - TTFT) / (output_tokens - 1)`, per streamed request with
->= 2 output tokens) -- rather than end-to-end latency, so a class stays
-meaningful for a 64-token reply and a 1024-token generation alike. A
-configured TPOT SLO with no TPOT measured fails closed, like TTFT.
-
-| Profile | For | Workload | TTFT p95 | TPOT p95 | Success | Throttle |
-|---|---|---|---|---|---|---|
-| `gold` | real-time, latency-sensitive, business-critical | `short_chat` | 800 ms | 40 ms | 99.5% | 0.1% |
-| `silver` | standard synchronous application | `rag_answer` | 1.5 s | 70 ms | 99% | 0.5% |
-| `bronze` | async, batch, throughput-oriented | `long_generation` | 3 s | 120 ms | 99% | 1% |
-
-**End-to-end latency is workload-level, not profile-level.** TTFT and
-TPOT generalize across output lengths; E2E doesn't -- a 64-, 256- and
-1024-token output can't share one budget, and good TTFT + TPOT can still
-add up to an unacceptable total. So each workload sets its own
-`latency_p95_ms` cap in `catalog/workloads.yaml` (starting values:
-short_chat 3s, rag_answer 10s, long_generation 60s -- set them to what
-each product promises), applied on top of its profile.
-
-Isolated workloads are gated on their own
-profile. In a mix, every request counts toward goodput against its own
-class's profile, every class is gated on its own profile, and the blend
-on the STRICTEST success/throttle gate among its classes' profiles
-(latency always per class). Resolving a throttle limit statistically
-needs 2,995 requests per point for gold's 0.1%, 598 for silver's
-0.5%, 299 for bronze's 1% (exact bound, 95% confidence, zero events).
-
-## Mixed workloads
-
-`experiments/mixed-capacity.yaml` sweeps ONE offered rate where each
-arrival draws its class by weight (60% short_chat / 30% rag_answer /
-10% long_generation), so
-classes genuinely overlap in flight. A point passes only if the SLO
-holds for the blend **and every class** -- a blended p95 can look fine
-while the long class alone blows its latency SLO. The artifact gains:
-
-```yaml
-mixed_workloads:
-  short70_long30:
-    shares: {short_chat: 0.6, rag_answer: 0.3, long_generation: 0.1}
-    rate: {observed_nonfailing_offered_rps: ..., observed_verdict: ..., statistically_confirmed_offered_rps: ...}
-    recommendation: {admission_envelope: {sustained_rps: ..., ...}}
-    evidence: {...}
-    classes_at_recommended_point: {short_chat: {...}, rag_answer: {...}, long_generation: {...}}
-```
-
-It's valid for that mix's shares only -- a different traffic mix
-needs its own run. Classes measured only inside a mix get
-`observed`/`workload_validation`, never an isolated envelope.
-
-## Gateway recommendation diff
-
-```bash
-python scripts/gateway_diff.py --gateway-config examples/gateway-limits.example.yaml \
-    results/run-all-<timestamp>/*/*-capacity-profile.yaml
-```
-
-Compares schema-v3 profiles against a **snapshot** of
-`bedrock-runtime-gateway`'s current limits (a YAML you maintain or
-export -- see `examples/gateway-limits.example.yaml`) and prints
-findings as YAML, warn first; exits 1 on any warn so it can gate a
-config review. It only *proposes* a value where a profile field maps
-directly onto a gateway knob:
-
-| Gateway knob | Compared against | Finding |
-|---|---|---|
-| model `rpm_limit` (`gateway-model-quotas-dev`) | tightest `admission_envelope.sustained_rps x 60` across the model's classes and mixes | warn + proposal if above; warn if unset (fails open) |
-| tenant `rpm_limit` | same envelope | warn + proposal if one tenant alone exceeds it; info if tenants sum past it |
-| `CONCURRENCY_DEFAULT_TENANT_MAX` | tightest `admission_envelope.max_inflight` | warn + proposal if one tenant can exceed it |
-| `CONCURRENCY_GLOBAL_MAX` x processes | tightest `admission_envelope.max_inflight` | info only -- it spans all models |
-
-It also surfaces `workload_shape_invalid` (warn) and
-`throttle_slo_unresolved` (info). It never reads or writes live gateway
-config; the gateway's own review still decides.
-
-## Not in scope here
-
-AIMD, tenant limiters, global admission control, queueing, fairness --
-all `bedrock-runtime-gateway`'s job. This repo outputs a measured,
-statistically confirmed envelope plus an admission-envelope
-recommendation (`max_inflight`, `sustained_rps`) and, at most, an
-advisory diff against a gateway config snapshot; it never implements
-or applies the runtime logic that enforces it.
+| Doc | Covers |
+|---|---|
+| [methodology](docs/methodology.md) | core abstractions, SLO goodput, measurement window, input calibration and workload validation, mixed workloads, provenance and drift |
+| [SLO statistics](docs/slo-statistics.md) | SLO profiles, PASS / FAIL / INCONCLUSIVE, exact bounds for latency / success / throttle, adaptive confirmation and false-PASS control |
+| [quota model](docs/quota-model.md) | provider ceiling, TPM reservation vs consumption, quota-relative sweeps, `fetch_quota.py` |
+| [capacity-profile schema](docs/capacity-profile-schema.md) | the deliverable and its consumer contract, measurement vs recommendation |
+| [experiment design](docs/experiment-design.md) | models, workload catalog, experiments, constraints, running, pilot |
+| [correctness history](docs/correctness-history.md) | every measurement bug found in review, by schema version |
 
 ## Testing
-
-Python 3.11 or 3.12 (`requires-python` in `pyproject.toml`); `.python-version`
-pins 3.11 as the default dev interpreter. CI runs the tests on both
-and installs from `pyproject.toml` exactly as below -- no separate
-dependency list to drift.
 
 ```bash
 .venv/bin/python -m pytest -q
 ```
 
-All runner/metrics/capacity logic is tested against a fake Bedrock
-client (`tests/fakes.py`) -- no real network or AWS credentials needed
-to run the suite.
+Python 3.11 or 3.12 (`requires-python` in `pyproject.toml`);
+`.python-version` pins 3.11. All runner, metrics, statistics and
+recommendation logic is tested against a fake Bedrock client
+(`tests/fakes.py`) -- no network or AWS credentials needed.
