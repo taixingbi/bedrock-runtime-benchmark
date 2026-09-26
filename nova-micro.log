@@ -1,0 +1,141 @@
+#   model          experiment            est.  sweep
+1   nova-micro     concurrency-sweep      11m  concurrency [1, 2, 4, 6, 8]
+2   nova-micro     mixed-capacity         13m  rate [1.6667, 3.3333, 5.0, 6.6667, 8.3333, 10.0, 13.3333, 16.6667]
+3   nova-micro     rate-capacity          13m  rate [1.6667, 3.3333, 5.0, 6.6667, 8.3333, 10.0, 13.3333, 16.6667]
+4   nova-micro     token-sweep            27m  concurrency [1, 2, 4, 6]
+total: 4 runs (1 models), >= 64 min (plus drain time), run sequentially
+
+==============================================================================
+[1/4] nova-micro / concurrency-sweep  (est. 11m)
+==============================================================================
+running experiment: concurrency-sweep on nova-micro (us.amazon.nova-micro-v1:0)
+sweep: concurrency values=[1, 2, 4, 6, 8]
+Fixed "short" workload (512 input / 64 output tokens), concurrency
+1/2/4/6/8, 10s warmup + 120s window per point (~11 min per model).
+Answers: the recommended concurrency for this shape under the SLO,
+and where the saturation edge is.
+note: resolving throttle_rate_max=0.001 at 95% needs >= 2703 measured requests per point
+  [   130s] short        value=1      n=197   success=1.000 throttle=0.0000 (<=0.013548) ttft_p95=603.79ms   latency_p95=858.49ms slo_goodput=1.6333
+  [   261s] short        value=2      n=422   success=1.000 throttle=0.0000 (<=0.00637) ttft_p95=559.83ms   latency_p95=813.32ms slo_goodput=3.5167
+  [   391s] short        value=4      n=873   success=1.000 throttle=0.0000 (<=0.00309) ttft_p95=528.9ms    latency_p95=768.84ms slo_goodput=7.275
+  [   522s] short        value=6      n=2955  success=0.365 throttle=0.6352 (<=0.649631) ttft_p95=530.89ms   latency_p95=665.25ms slo_goodput=9.0
+  [   652s] short        value=8      n=9297  success=0.086 throttle=0.9140 (<=0.918615) ttft_p95=531.42ms   latency_p95=485.61ms slo_goodput=6.6667
+
+-- recommendations --
+  short: recommended=4 slo_goodput_rps=7.275 saturation=6
+
+warning: short measured input p50 236.0 tokens vs 512 requested (-53.91%, tolerance 10.0%) -- the 4-chars/token padding estimate missed for this model; its envelope describes a different workload shape
+
+raw results:      results/run-all-20260925-200659/nova-micro/concurrency-sweep-b8c08340.jsonl
+capacity profile: results/run-all-20260925-200659/nova-micro/concurrency-sweep-b8c08340-capacity-profile.yaml
+
+==============================================================================
+[2/4] nova-micro / mixed-capacity  (est. 13m)
+==============================================================================
+running experiment: mixed-capacity on nova-micro (us.amazon.nova-micro-v1:0)
+sweep: rate values=[1.6667, 3.3333, 5.0, 6.6667, 8.3333, 10.0, 13.3333, 16.6667] = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 2.5]x quota
+Poisson rate sweep at 0.25x..2.5x of each model's RPM quota,
+70% short (512/64) + 30% long_long (4096/512), 10s warmup + 90s
+window per point (~13 min per model).
+warning: rates [1.6667, 3.3333, 5.0, 6.6667, 8.3333, 10.0, 13.3333, 16.6667] expect fewer than 2703 measured requests (duration_s x repetitions too short to resolve throttle_rate_max=0.001 at 95%) -- a 0-throttle pass at these points is not statistically meaningful
+  [   100s] short70_long30 value=1.6667 n=164   success=1.000 throttle=0.0000 (<=0.016229) ttft_p95=523.21ms   latency_p95=1290.01ms slo_goodput=1.8333
+  [   200s] short70_long30 value=3.3333 n=292   success=1.000 throttle=0.0000 (<=0.00918) ttft_p95=543.99ms   latency_p95=1326.36ms slo_goodput=3.2667
+  [   301s] short70_long30 value=5.0    n=463   success=1.000 throttle=0.0000 (<=0.00581) ttft_p95=609.69ms   latency_p95=1385.82ms slo_goodput=5.1778
+  [   401s] short70_long30 value=6.6667 n=616   success=1.000 throttle=0.0000 (<=0.004373) ttft_p95=637.87ms   latency_p95=1419.3ms slo_goodput=6.8111
+  [   502s] short70_long30 value=8.3333 n=757   success=1.000 throttle=0.0000 (<=0.003561) ttft_p95=560.47ms   latency_p95=1349.93ms slo_goodput=8.4111
+  [   602s] short70_long30 value=10.0   n=905   success=0.521 throttle=0.4773 (<=0.504685) ttft_p95=538.68ms   latency_p95=1255.62ms slo_goodput=5.2667
+  [   703s] short70_long30 value=13.3333 n=1215  success=0.356 throttle=0.6444 (<=0.666689) ttft_p95=478.44ms   latency_p95=1206.85ms slo_goodput=4.8111
+  [   803s] short70_long30 value=16.6667 n=1523  success=0.281 throttle=0.7190 (<=0.73752) ttft_p95=489.41ms   latency_p95=1164.56ms slo_goodput=4.7444
+
+-- recommendations --
+  short70_long30: recommended=8.3333 slo_goodput_rps=8.4111 saturation=10.0
+    short: n=526 latency_p95=739.16ms ttft_p95=539.25ms slo_goodput=5.8111
+    long_long: n=231 latency_p95=1521.79ms ttft_p95=572.45ms slo_goodput=2.6
+
+warning: short measured input p50 236.0 tokens vs 512 requested (-53.91%, tolerance 10.0%) -- the 4-chars/token padding estimate missed for this model; its envelope describes a different workload shape
+
+warning: long_long measured input p50 1671.0 tokens vs 4096 requested (-59.2%, tolerance 10.0%) -- the 4-chars/token padding estimate missed for this model; its envelope describes a different workload shape
+
+raw results:      results/run-all-20260925-200659/nova-micro/mixed-capacity-0e957346.jsonl
+capacity profile: results/run-all-20260925-200659/nova-micro/mixed-capacity-0e957346-capacity-profile.yaml
+
+==============================================================================
+[3/4] nova-micro / rate-capacity  (est. 13m)
+==============================================================================
+running experiment: rate-capacity on nova-micro (us.amazon.nova-micro-v1:0)
+sweep: rate values=[1.6667, 3.3333, 5.0, 6.6667, 8.3333, 10.0, 13.3333, 16.6667] = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 2.5]x quota
+Poisson rate sweep at 0.25x..2.5x of each model's RPM quota, "short"
+workload, 10s warmup + 90s window per point (~13 min per model).
+warning: rates [1.6667, 3.3333, 5.0, 6.6667, 8.3333, 10.0, 13.3333, 16.6667] expect fewer than 2703 measured requests (duration_s x repetitions too short to resolve throttle_rate_max=0.001 at 95%) -- a 0-throttle pass at these points is not statistically meaningful
+  [   100s] short        value=1.6667 n=159   success=0.685 throttle=0.3145 (<=0.377707) ttft_p95=424.58ms   latency_p95=635.74ms slo_goodput=1.2111
+  [   200s] short        value=3.3333 n=302   success=0.517 throttle=0.4834 (<=0.53068) ttft_p95=464.69ms   latency_p95=668.1ms slo_goodput=1.7333
+  [   300s] short        value=5.0    n=470   success=0.400 throttle=0.6000 (<=0.636495) ttft_p95=456.67ms   latency_p95=628.01ms slo_goodput=2.1
+  [   401s] short        value=6.6667 n=590   success=0.320 throttle=0.6797 (<=0.710377) ttft_p95=483.86ms   latency_p95=605.24ms slo_goodput=2.1
+  [   501s] short        value=8.3333 n=752   success=0.755 throttle=0.2447 (<=0.271352) ttft_p95=442.63ms   latency_p95=651.49ms slo_goodput=6.2889
+  [   602s] short        value=10.0   n=931   success=0.645 throttle=0.3545 (<=0.380632) ttft_p95=437.82ms   latency_p95=629.98ms slo_goodput=6.6556
+  [   702s] short        value=13.3333 n=1206  success=0.498 throttle=0.5017 (<=0.52531) ttft_p95=449.14ms   latency_p95=630.4ms slo_goodput=6.6556
+  [   803s] short        value=16.6667 n=1466  success=0.410 throttle=0.5900 (<=0.610985) ttft_p95=396.52ms   latency_p95=563.45ms slo_goodput=6.6778
+
+-- recommendations --
+  short: NO swept value met the configured SLO
+
+warning: short measured input p50 236.0 tokens vs 512 requested (-53.91%, tolerance 10.0%) -- the 4-chars/token padding estimate missed for this model; its envelope describes a different workload shape
+
+raw results:      results/run-all-20260925-200659/nova-micro/rate-capacity-61f8c6fc.jsonl
+capacity profile: results/run-all-20260925-200659/nova-micro/rate-capacity-61f8c6fc-capacity-profile.yaml
+
+==============================================================================
+[4/4] nova-micro / token-sweep  (est. 27m)
+==============================================================================
+running experiment: token-sweep on nova-micro (us.amazon.nova-micro-v1:0)
+sweep: concurrency values=[1, 2, 4, 6]
+Concurrency 1/2/4/6 repeated across 4 input/output token shapes.
+One capacity-profile entry per shape.
+note: resolving throttle_rate_max=0.001 at 95% needs >= 2703 measured requests per point
+  [   100s] short_short  value=1      n=191   success=1.000 throttle=0.0000 (<=0.013967) ttft_p95=385.62ms   latency_p95=579.49ms slo_goodput=2.1111
+  [   201s] short_short  value=2      n=396   success=1.000 throttle=0.0000 (<=0.006786) ttft_p95=383.94ms   latency_p95=569.52ms slo_goodput=4.3889
+  [   301s] short_short  value=4      n=776   success=1.000 throttle=0.0000 (<=0.003474) ttft_p95=378.91ms   latency_p95=597.91ms slo_goodput=8.6111
+  [   401s] short_short  value=6      n=4138  success=0.176 throttle=0.8238 (<=0.833357) ttft_p95=360.64ms   latency_p95=465.23ms slo_goodput=8.1333
+  [   503s] short_output_heavy value=1      n=78    success=1.000 throttle=0.0000 (<=0.033524) ttft_p95=459.97ms   latency_p95=1401.82ms slo_goodput=0.8667
+  [   603s] short_output_heavy value=2      n=157   success=1.000 throttle=0.0000 (<=0.016941) ttft_p95=353.63ms   latency_p95=1360.41ms slo_goodput=1.7444
+  [   704s] short_output_heavy value=4      n=319   success=1.000 throttle=0.0000 (<=0.00841) ttft_p95=356.21ms   latency_p95=1333.2ms slo_goodput=3.5444
+  [   805s] short_output_heavy value=6      n=253   success=1.000 throttle=0.0000 (<=0.010581) ttft_p95=1059.7ms   latency_p95=5339.98ms slo_goodput=2.2889
+  [   906s] long_input_short_output value=1      n=183   success=1.000 throttle=0.0000 (<=0.014569) ttft_p95=436.21ms   latency_p95=607.47ms slo_goodput=2.0333
+  [  1006s] long_input_short_output value=2      n=342   success=1.000 throttle=0.0000 (<=0.007849) ttft_p95=474.27ms   latency_p95=645.19ms slo_goodput=3.7889
+  [  1106s] long_input_short_output value=4      n=717   success=1.000 throttle=0.0000 (<=0.003759) ttft_p95=420.33ms   latency_p95=603.47ms slo_goodput=7.9667
+  [  1207s] long_input_short_output value=6      n=4710  success=0.099 throttle=0.9013 (<=0.908194) ttft_p95=456.36ms   latency_p95=481.46ms slo_goodput=5.2
+  [  1308s] long_long    value=1      n=84    success=1.000 throttle=0.0000 (<=0.031204) ttft_p95=402.02ms   latency_p95=1249.34ms slo_goodput=0.9333
+  [  1408s] long_long    value=2      n=836   success=0.133 throttle=0.8672 (<=0.88535) ttft_p95=490.75ms   latency_p95=1150.4ms slo_goodput=1.2556
+  [  1509s] long_long    value=4      n=2329  success=0.081 throttle=0.9193 (<=0.928084) ttft_p95=413.37ms   latency_p95=1052.71ms slo_goodput=2.0889
+  [  1610s] long_long    value=6      n=4436  success=0.050 throttle=0.9497 (<=0.954857) ttft_p95=428.34ms   latency_p95=845.96ms slo_goodput=2.4778
+
+-- recommendations --
+  short_short: recommended=4 slo_goodput_rps=8.6111 saturation=6
+  short_output_heavy: recommended=4 slo_goodput_rps=3.5444 saturation=6
+  long_input_short_output: recommended=4 slo_goodput_rps=7.9667 saturation=6
+  long_long: recommended=1 slo_goodput_rps=0.9333 saturation=2
+
+warning: short_short measured input p50 236.0 tokens vs 512 requested (-53.91%, tolerance 10.0%) -- the 4-chars/token padding estimate missed for this model; its envelope describes a different workload shape
+
+warning: short_output_heavy measured input p50 237.0 tokens vs 512 requested (-53.71%, tolerance 10.0%) -- the 4-chars/token padding estimate missed for this model; its envelope describes a different workload shape
+
+warning: long_input_short_output measured input p50 1670.0 tokens vs 4096 requested (-59.23%, tolerance 10.0%) -- the 4-chars/token padding estimate missed for this model; its envelope describes a different workload shape
+
+warning: long_long measured input p50 1671.0 tokens vs 4096 requested (-59.2%, tolerance 10.0%) -- the 4-chars/token padding estimate missed for this model; its envelope describes a different workload shape
+
+raw results:      results/run-all-20260925-200659/nova-micro/token-sweep-512c5c7e.jsonl
+capacity profile: results/run-all-20260925-200659/nova-micro/token-sweep-512c5c7e-capacity-profile.yaml
+
+==============================================================================
+SUMMARY
+==============================================================================
+model          experiment           status     time  recommendation
+nova-micro     concurrency-sweep    ok        10.9m  short: recommended=4 slo_goodput_rps=7.275 saturation=6
+nova-micro     mixed-capacity       ok        13.4m  short70_long30: recommended=8.3333 slo_goodput_rps=8.4111 saturation=10.0
+nova-micro     rate-capacity        ok        13.4m  short: NO swept value met the configured SLO
+nova-micro     token-sweep          ok        26.8m  short_short: recommended=4 slo_goodput_rps=8.6111 saturation=6
+                                                     short_output_heavy: recommended=4 slo_goodput_rps=3.5444 saturation=6
+                                                     long_input_short_output: recommended=4 slo_goodput_rps=7.9667 saturation=6
+                                                     long_long: recommended=1 slo_goodput_rps=0.9333 saturation=2
+
+4/4 succeeded; per-model folders + summary.yaml in results/run-all-20260925-200659
