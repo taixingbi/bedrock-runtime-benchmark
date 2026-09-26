@@ -198,6 +198,8 @@ python3.11 -m venv .venv && .venv/bin/pip install -e ".[dev]"   # same install C
 .venv/bin/python scripts/run_all.py experiments/rate-capacity.yaml
 .venv/bin/python scripts/run_all.py --model nova-micro --slo-profile gold   # only gold workloads
 .venv/bin/python scripts/run_all.py --gateway-config my-gateway.yaml   # + gateway diff at the end
+.venv/bin/python scripts/run_all.py --model nova-micro --pilot          # ~30 s smoke test, no batch
+.venv/bin/python scripts/run_all.py --model nova-micro --pilot-first    # pilot, then the batch only if it passes
 ```
 
 `--slo-profile NAME` (repeatable) runs only the workloads bound to that
@@ -206,6 +208,29 @@ matching workloads (`token-sweep --slo-profile gold` runs just
 `short_chat`); a mix runs only if every class matches -- a partial mix
 is a different mix, so it's skipped; an experiment with nothing
 matching is skipped. The plan lists every skip and why.
+
+**Pilot run.** Before a long batch, `--pilot` sends a few sequential
+requests (`--pilot-requests`, default 3) per model x workload the plan
+would use -- after `--model` / `--slo-profile` / experiment filters --
+and checks (`pilot.py`):
+
+| Check | FAIL / WARN when |
+|---|---|
+| access | any non-throttle error (credentials, model access, region, request shape) -> FAIL |
+| shape | input or output p50 outside the workload-validation tolerances (e.g. output stopping early) -> FAIL |
+| slo | an UNLOADED TTFT / TPOT / E2E p50 already over the workload's p95 limit -> WARN (no load level can PASS) |
+| quota | a throttle at one request at a time -> WARN (something else is using the quota) |
+
+Results go to `results/pilot-<timestamp>/pilot.yaml` and are never
+mixed into experiment data. `--pilot-first` runs the pilot, then starts
+the batch only if nothing FAILed. On nova-micro it takes ~30 s:
+
+```
+OK    nova-micro  short_chat                 gold    in 505/512   out 64/64     ttft 455ms  tpot 3.4ms  e2e 672ms
+OK    nova-micro  rag_answer                 silver  in 4093/4096 out 256/256   ttft 404ms  tpot 3.2ms  e2e 1152ms
+OK    nova-micro  long_generation            bronze  in 4095/4096 out 1024/1024 ttft 412ms  tpot 3.1ms  e2e 3614ms
+OK    nova-micro  long_context_short_answer  silver  in 8103/8192 out 64/64     ttft 532ms  tpot 3.2ms  e2e 732ms
+```
 
 Results are grouped by model:
 

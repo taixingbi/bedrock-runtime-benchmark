@@ -8,6 +8,8 @@ after another, then print a summary table.
     python scripts/run_all.py experiments/rate-capacity.yaml   # one experiment, all models
     python scripts/run_all.py --model nova-micro --slo-profile gold   # only gold workloads
     python scripts/run_all.py --gateway-config my-gateway.yaml
+    python scripts/run_all.py --model nova-micro --pilot         # ~1 min smoke test only
+    python scripts/run_all.py --model nova-micro --pilot-first   # pilot, then the batch if it passes
 
 Sequential on purpose -- runs share each model's Bedrock quota, so
 parallel runs would throttle each other. A failed run doesn't stop the
@@ -31,6 +33,7 @@ import yaml  # noqa: E402
 from bedrock_benchmark.batch import format_plan, format_summary, plan, run_batch  # noqa: E402
 from bedrock_benchmark.constraints import DEFAULT_QUOTA_FILE, DEFAULT_SLO_FILE, current_account_id  # noqa: E402
 from bedrock_benchmark.models import DEFAULT_MODELS_FILE, load_models  # noqa: E402
+from bedrock_benchmark.pilot import format_check, run_pilot_sync  # noqa: E402
 from bedrock_benchmark.workload import DEFAULT_WORKLOADS_FILE  # noqa: E402
 
 
@@ -51,6 +54,14 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true", help="validate + print the plan and time estimate, run nothing")
     parser.add_argument("--fail-fast", action="store_true", help="stop at the first failed run")
     parser.add_argument("--gateway-config", help="gateway limits snapshot; runs gateway_diff over all produced profiles")
+    pilot = parser.add_mutually_exclusive_group()
+    pilot.add_argument("--pilot", action="store_true",
+                       help="smoke test only: a few sequential requests per model x workload the plan would use "
+                            "(access, workload shape, SLO reachability), then exit")
+    pilot.add_argument("--pilot-first", action="store_true",
+                       help="run the pilot, then the batch only if the pilot has no FAIL")
+    parser.add_argument("--pilot-requests", type=int, default=3, metavar="N",
+                        help="requests per model x workload in the pilot (default: 3)")
     args = parser.parse_args()
 
     paths = args.experiments or sorted(str(p) for p in Path("experiments").glob("*.yaml"))
@@ -65,6 +76,25 @@ def main() -> int:
                            only_slo_profiles=args.slo_profiles)))
     if args.dry_run:
         return 0
+
+    if args.pilot or args.pilot_first:
+        print(f"\n{'=' * 78}\nPILOT: {args.pilot_requests} sequential requests per model x workload\n{'=' * 78}")
+        pilot_report = run_pilot_sync(
+            paths, models, requests_per_workload=args.pilot_requests, slo_file=args.slo_file,
+            workloads_file=args.workloads_file, only_slo_profiles=args.slo_profiles,
+            on_check=lambda c: print(format_check(c), flush=True),
+        )
+        pilot_dir = Path(f"results/pilot-{time.strftime('%Y%m%d-%H%M%S')}")
+        pilot_dir.mkdir(parents=True, exist_ok=True)
+        (pilot_dir / "pilot.yaml").write_text(yaml.safe_dump(pilot_report.to_dict(), sort_keys=False, width=120))
+        summary = pilot_report.to_dict()["summary"]
+        print(f"\npilot: {summary} -> {pilot_dir / 'pilot.yaml'}")
+        if args.pilot:
+            return pilot_report.exit_code
+        if pilot_report.failed:
+            print("pilot has FAIL results -- not starting the batch (fix them, or run without --pilot-first)",
+                  file=sys.stderr)
+            return 1
 
     gateway_config = None
     if args.gateway_config:
