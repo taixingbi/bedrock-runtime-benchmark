@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""CLI entrypoint: python scripts/run.py experiments/<name>.yaml
+"""Run ONE experiment against the models in scripts/models.yaml:
 
-Runs the full sweep, prints a summary table per workload profile (one
-row per swept concurrency/rate value) plus the recommendation, writes
-the raw per-request JSONL to results/<run-id>.jsonl, and writes the
-capacity-profile.yaml artifact to results/<run-id>-capacity-profile.yaml.
-To run every experiment in one go, see scripts/run_all.py.
+    python scripts/run.py experiments/concurrency-sweep.yaml                    # every enabled model
+    python scripts/run.py experiments/concurrency-sweep.yaml --model nova-micro # one model
+
+Prints per-point progress and the recommendation, and writes the raw
+per-request JSONL + capacity-profile.yaml to results/<model>/. To run
+every experiment in one go, see scripts/run_all.py.
 """
 from __future__ import annotations
 
@@ -15,16 +16,25 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from bedrock_benchmark.run_file import run_file  # noqa: E402
+from bedrock_benchmark.batch import format_summary, run_batch  # noqa: E402
+from bedrock_benchmark.models import DEFAULT_MODELS_FILE, load_models  # noqa: E402
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("experiment", help="path to an experiment YAML file")
-    parser.add_argument("--results-dir", default="results", help="where to write JSONL + capacity-profile.yaml")
+    parser.add_argument("--models-file", default=DEFAULT_MODELS_FILE, help=f"default: {DEFAULT_MODELS_FILE}")
+    parser.add_argument("--model", action="append", dest="models", metavar="NAME",
+                        help="run only this model (repeatable; default: every enabled model)")
+    parser.add_argument("--results-dir", default="results", help="output root; files go to <results-dir>/<model>/")
     args = parser.parse_args()
-    run_file(args.experiment, results_dir=args.results_dir)
+
+    models = load_models(args.models_file, names=args.models)
+    batch = run_batch([args.experiment], models, results_dir=Path(args.results_dir))
+    if len(batch.results) > 1:
+        print(f"\n{format_summary(batch)}")
+    return batch.exit_code
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

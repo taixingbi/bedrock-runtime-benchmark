@@ -1,19 +1,20 @@
 #!/usr/bin/env python3
-"""Run every experiment (or the ones given) against real Bedrock, one
+"""Run every experiment against every model in scripts/models.yaml, one
 after another, then print a summary table.
 
-    python scripts/run_all.py --dry-run                     # plan + time estimate, no AWS calls
-    python scripts/run_all.py                               # all experiments/*.yaml
-    python scripts/run_all.py experiments/slo-capacity.yaml experiments/mixed-capacity.yaml
+    python scripts/run_all.py --dry-run                        # plan + time estimate, no AWS calls
+    python scripts/run_all.py                                  # all experiments x all enabled models
+    python scripts/run_all.py --model nova-micro --model nova-pro
+    python scripts/run_all.py experiments/rate-capacity.yaml   # one experiment, all models
     python scripts/run_all.py --gateway-config my-gateway.yaml
 
-Sequential on purpose -- experiments share the account's Bedrock quota,
-so parallel runs would throttle each other. A failed experiment doesn't
-stop the rest (unless --fail-fast). Artifacts go to one batch directory
-(results/run-all-<timestamp>/ by default) with a summary.yaml.
+Sequential on purpose -- runs share each model's Bedrock quota, so
+parallel runs would throttle each other. A failed run doesn't stop the
+rest (unless --fail-fast). Results go to results/run-all-<timestamp>/
+with one folder per model and a summary.yaml.
 
-Exit code: 0 if every experiment succeeded and the gateway diff (if
-requested) has no warn findings, else 1.
+Exit code: 0 if every run succeeded and the gateway diff (if requested)
+has no warn findings, else 1.
 """
 from __future__ import annotations
 
@@ -27,24 +28,28 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import yaml  # noqa: E402
 
 from bedrock_benchmark.batch import format_plan, format_summary, plan, run_batch  # noqa: E402
+from bedrock_benchmark.models import DEFAULT_MODELS_FILE, load_models  # noqa: E402
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("experiments", nargs="*", help="experiment YAMLs (default: experiments/*.yaml)")
+    parser.add_argument("--models-file", default=DEFAULT_MODELS_FILE, help=f"default: {DEFAULT_MODELS_FILE}")
+    parser.add_argument("--model", action="append", dest="models", metavar="NAME",
+                        help="run only this model (repeatable; default: every enabled model)")
     parser.add_argument("--results-dir", help="batch output dir (default: results/run-all-<timestamp>)")
     parser.add_argument("--dry-run", action="store_true", help="validate + print the plan and time estimate, run nothing")
-    parser.add_argument("--fail-fast", action="store_true", help="stop at the first failed experiment")
+    parser.add_argument("--fail-fast", action="store_true", help="stop at the first failed run")
     parser.add_argument("--gateway-config", help="gateway limits snapshot; runs gateway_diff over all produced profiles")
     args = parser.parse_args()
 
     paths = args.experiments or sorted(str(p) for p in Path("experiments").glob("*.yaml"))
-    if not paths:
-        print("no experiment files found", file=sys.stderr)
+    models = load_models(args.models_file, names=args.models)
+    if not paths or not models:
+        print("no experiments or no enabled models", file=sys.stderr)
         return 1
 
-    planned = plan(paths)
-    print(format_plan(planned))
+    print(format_plan(plan(paths, models)))
     if args.dry_run:
         return 0
 
@@ -53,7 +58,7 @@ def main() -> int:
         gateway_config = yaml.safe_load(Path(args.gateway_config).read_text()) or {}
 
     results_dir = Path(args.results_dir or f"results/run-all-{time.strftime('%Y%m%d-%H%M%S')}")
-    batch = run_batch(paths, results_dir=results_dir, fail_fast=args.fail_fast, gateway_config=gateway_config)
+    batch = run_batch(paths, models, results_dir=results_dir, fail_fast=args.fail_fast, gateway_config=gateway_config)
 
     print(f"\n{'=' * 78}\nSUMMARY\n{'=' * 78}")
     print(format_summary(batch))

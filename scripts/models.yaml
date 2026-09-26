@@ -1,0 +1,38 @@
+# Models every experiment runs against (scripts/run.py, scripts/run_all.py).
+# Experiments are model-agnostic; add a model here, not a new experiment.
+#
+#   name      short, filesystem-safe -- also the results folder name:
+#             results/<batch>/<name>/
+#   quota     RPM/TPM snapshot. Rate sweeps are fractions of quota.rpm,
+#             so this must be real. Refresh with:
+#               .venv/bin/python scripts/fetch_quota.py --all
+#   enabled   false = skipped by default (still runnable via --model NAME)
+#
+# The five models bedrock-runtime-gateway certifies (certified_models.yaml);
+# quotas from gateway-model-quotas-dev, fetched 2026-09-25.
+
+models:
+  - name: nova-micro
+    model_id: us.amazon.nova-micro-v1:0
+    region: us-east-1
+    quota: {rpm: 400, tpm: 8000000}
+
+  - name: nova-lite
+    model_id: us.amazon.nova-lite-v1:0
+    region: us-east-1
+    quota: {rpm: 400, tpm: 8000000}
+
+  - name: nova-pro
+    model_id: us.amazon.nova-pro-v1:0
+    region: us-east-1
+    quota: {rpm: 50, tpm: 2000000}
+
+  - name: llama3-3-70b
+    model_id: us.meta.llama3-3-70b-instruct-v1:0
+    region: us-east-1
+    quota: {rpm: 80, tpm: 600000}
+
+  - name: qwen3-32b
+    model_id: qwen.qwen3-32b-v1:0
+    region: us-east-1
+    quota: {rpm: 1000, tpm: 100000000}

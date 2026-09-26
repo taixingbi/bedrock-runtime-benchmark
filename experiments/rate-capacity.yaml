@@ -1,0 +1,43 @@
+# The canonical "give me the production operating envelope" run: an
+# open-loop Poisson RATE sweep straddling the model's own RPM quota --
+# separates latency saturation (concurrency-sweep's job) from
+# RPM/throttling saturation (this one's).
+#
+# Rates are quota_fractions of each model's quota.rpm from
+# scripts/models.yaml (1.0 = exactly the quota), so one sweep brackets
+# every model's ceiling: 0.25x..2.5x is 0.21..2.08 rps for a 50 RPM
+# model and 4.2..41.7 rps for a 1000 RPM one. Replaces the old
+# per-model slo-capacity / nova-pro / llama3 rate experiments; the
+# first batch run showed real ceilings between ~1.0x and ~1.9x quota,
+# so the sweep extends to 2.5x to always find the edge.
+name: rate-capacity
+description: |
+  Poisson rate sweep at 0.25x..2.5x of each model's RPM quota, "short"
+  workload, 10s warmup + 90s window per point (~13 min per model).
+
+slo:
+  ttft_p95_ms: 1000
+  latency_p95_ms: 3000
+  success_rate_min: 0.99
+  throttle_rate_max: 0.001
+
+workloads:
+  - name: short
+    input_tokens: 512
+    output_tokens: 64
+
+warmup_s: 10
+duration_s: 90
+stream: true
+
+sweep:
+  type: rate
+  quota_fractions: [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 2.5]
+
+provider_headroom: 0.20
+
+transport:
+  max_connections: 64
+  total_max_attempts: 1
+  connect_timeout_s: 5
+  read_timeout_s: 60

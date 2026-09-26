@@ -84,32 +84,76 @@ Naive throughput says "C=8 is fastest." This repo says "C=6 is the
 recommended concurrency" -- the highest concurrency that still clears
 the configured SLO, which is what a gateway config actually needs.
 
-## Running an experiment
+## Models and experiments
+
+Two independent inputs, combined at run time:
+
+- **Models** -- `scripts/models.yaml`: every model to benchmark, each
+  with a short `name` (also its results folder), `model_id`, `region`,
+  and its real `quota` (RPM/TPM). Ships with the five models
+  `bedrock-runtime-gateway` certifies: nova-micro, nova-lite, nova-pro,
+  llama3-3-70b, qwen3-32b. `enabled: false` skips one by default.
+- **Experiments** -- `experiments/*.yaml`: model-agnostic workload +
+  sweep definitions. They never name a model (the loader rejects a
+  `target:` or `quota_snapshot:` block), so every experiment runs
+  unchanged against every model.
+
+Rate sweeps are written as `quota_fractions` of each model's own RPM
+quota (1.0 = exactly the quota), because quotas differ by an order of
+magnitude -- 50 RPM for nova-pro, 1000 for qwen3-32b. The same
+`[0.25 .. 2.5]` sweep is 0.21-2.08 rps on nova-pro and 4.2-41.7 rps on
+qwen3-32b. Concurrency sweeps stay absolute.
+
+| Experiment | Sweep | Per model |
+|---|---|---|
+| `concurrency-sweep.yaml` | concurrency 1/2/4/6/8, short workload | ~11 min |
+| `rate-capacity.yaml` | 0.25x-2.5x quota, short workload -- the canonical production-envelope run | ~13 min |
+| `mixed-capacity.yaml` | 0.25x-2.5x quota, 70% short / 30% long_long | ~13 min |
+| `token-sweep.yaml` | 4 input/output shapes x concurrency 1/2/4/6 | ~27 min |
+
+Keep quotas current with `scripts/fetch_quota.py --all` (see
+"Quota-aware experiment design" below) -- a stale quota shifts every
+rate a quota-relative sweep tests.
+
+## Running experiments
 
 ```bash
 python3.11 -m venv .venv && .venv/bin/pip install -e ".[dev]"   # same install CI uses
-.venv/bin/python scripts/run.py experiments/concurrency-sweep.yaml
-```
 
-To run every experiment in one go:
+# one experiment
+.venv/bin/python scripts/run.py experiments/concurrency-sweep.yaml                     # every enabled model
+.venv/bin/python scripts/run.py experiments/concurrency-sweep.yaml --model nova-micro  # one model
 
-```bash
-.venv/bin/python scripts/run_all.py --dry-run     # validate all + time estimate, no AWS calls
-.venv/bin/python scripts/run_all.py               # all experiments/*.yaml (~1.5-2h)
-.venv/bin/python scripts/run_all.py experiments/slo-capacity.yaml experiments/mixed-capacity.yaml
+# everything: every experiment x every enabled model
+.venv/bin/python scripts/run_all.py --dry-run          # validate all pairs + time estimate, no AWS calls
+.venv/bin/python scripts/run_all.py                    # 4 experiments x 5 models ~= 5.5h
+.venv/bin/python scripts/run_all.py --model nova-micro --model nova-pro
+.venv/bin/python scripts/run_all.py experiments/rate-capacity.yaml
 .venv/bin/python scripts/run_all.py --gateway-config my-gateway.yaml   # + gateway diff at the end
 ```
 
-Experiments run strictly one after another -- they share the account's
-Bedrock quota, so running them in parallel would make each measure the
-other's load as throttling. Every file is validated before the first
-call; a failed experiment doesn't stop the rest (`--fail-fast` to
-stop). Artifacts and a `summary.yaml` go to
-`results/run-all-<timestamp>/`; exit code is non-zero if any
-experiment failed or the gateway diff has warn findings.
+Results are grouped by model:
 
-Writes raw per-request JSONL and a `capacity-profile.yaml` artifact to
-`results/` (gitignored -- these are real measurement outputs, not
+```
+results/run-all-<timestamp>/        # run.py: results/
+  nova-micro/
+    concurrency-sweep-<id>.jsonl
+    concurrency-sweep-<id>-capacity-profile.yaml
+    ...
+  nova-pro/
+    ...
+  summary.yaml
+```
+
+Runs are strictly sequential, grouped by model -- runs against the same
+model share its quota, so parallel runs would measure each other's load
+as throttling. Every (model, experiment) pair is validated before the
+first call; a failed run doesn't stop the rest (`--fail-fast` to stop).
+Exit code is non-zero if any run failed or the gateway diff has warn
+findings.
+
+Each run writes raw per-request JSONL and a `capacity-profile.yaml`
+artifact under `results/` (gitignored -- these are real measurement outputs, not
 checked-in fixtures). The `capacity-profile.yaml` schema (v3 -- see
 "Correctness fixes" below for why `rate` and `concurrency` are always
 kept in separate blocks, why the rate block separates offered load
@@ -117,8 +161,9 @@ from goodput, and why there's no `global_max_concurrency`):
 
 ```yaml
 schema_version: 3
-model: {provider: bedrock, model_id: ..., region: ...}
-quota_snapshot: {rpm: 400, tpm: 8000000}
+experiment: rate-capacity
+model: {name: nova-micro, provider: bedrock, model_id: ..., region: ...}
+quota_snapshot: {rpm: 400, tpm: 8000000}          # from scripts/models.yaml
 slo: {ttft_p95_ms: 1000, latency_p95_ms: 3000, success_rate_min: 0.99, throttle_rate_max: 0.001, confidence: null}
 measurement:
   warmup_s: 10
@@ -127,6 +172,7 @@ measurement:
   window_policy: scheduled_in_window_for_rates__completed_in_window_for_throughput
   gate: point_estimate                      # or confidence_bound when slo.confidence is set
   min_requests_to_resolve_throttle_slo: 2703
+sweep: {type: rate, values: [1.6667, ...], quota_fractions: [0.25, ...]}
 workload_classes:
   short:                                    # a concurrency-sweep result
     observed: {input_tokens_p50: 505, output_tokens_p50: 61}
@@ -257,18 +303,6 @@ Every point therefore records `throttle_rate_upper` /
   fails closed. Raise `duration_s` x `repetitions` to match (e.g.
   6 rps needs ~450s of pooled window).
 
-## The three MVP experiments
-
-- **`concurrency-sweep.yaml`** -- one workload, concurrency 1/2/4/6/8.
-  The fast, everyday one (~10 min).
-- **`token-sweep.yaml`** -- the 2x2 input/output token grid (short-short
-  / output-heavy / input-heavy / long-long), each concurrency-swept.
-  Slow (~24 min); run occasionally, not on every change.
-- **`slo-capacity.yaml`** -- a *rate* sweep (not concurrency) straddling
-  the model's real RPM ceiling, to separate latency saturation from
-  RPM/throttling saturation. The canonical "give me the production
-  envelope" run.
-
 ## Quota-aware experiment design
 
 Picking sane sweep values (especially rate-sweep values) is guesswork
@@ -280,11 +314,13 @@ be true for some certified models. `scripts/fetch_quota.py` and
 number before an experiment is written, not a name for it to just do.
 
 ```bash
-.venv/bin/python scripts/fetch_quota.py --model-id us.amazon.nova-pro-v1:0
+.venv/bin/python scripts/fetch_quota.py --all                                 # check every model in scripts/models.yaml
+.venv/bin/python scripts/fetch_quota.py --model-id us.amazon.nova-pro-v1:0    # one model, for a new entry
 ```
 
-prints a `quota_snapshot:` block ready to paste into an experiment
-file. It looks up the model's real RPM/TPM in two steps, table first:
+`--all` compares each `quota:` in `scripts/models.yaml` with the live
+value and prints a replacement line for any stale one (exit 1 if any
+differ). It looks up the model's real RPM/TPM in two steps, table first:
 
 1. `gateway-model-quotas-dev`'s `quota#<model_id>` row, if that table
    happens to be reachable -- a cheap `GetItem` against a value
@@ -302,23 +338,13 @@ experiment design conversation, it should just make the gap visible.
 This is read-only, design-time context: nothing at runtime checks or
 caps against it (see "Not in scope here" below).
 
-Two experiments were designed this way, from real quota numbers plus
-a live single-request latency check at each model's real ceiling:
-
-- **`nova-pro-rate-capacity.yaml`** -- nova-pro's real quota (50 RPM
-  = 0.83 rps) is far tighter than nova-micro/lite's, and its ~616ms
-  real per-call latency means concurrency=1 closed-loop already runs
-  at ~1.6 rps -- about 2x over quota before a concurrency sweep would
-  even start sweeping. Only a fractional-rps rate sweep (`[0.2, 0.4,
-  0.6, 0.8, 1.2, 1.6, 2.0]`) can resolve where its safe zone actually
-  is.
-- **`llama3-70b-rate-capacity.yaml`** -- llama3-3-70b's real quota (80
-  RPM = 1.33 rps) sits almost exactly at its own concurrency=1
-  closed-loop rate (~1.32 rps, from a ~759ms real per-call latency),
-  and this model has the tightest TPM budget relative to RPM (600,000
-  TPM) of any certified model -- worth watching for whether TPM or
-  RPM saturates first. Same fractional-rps rate-sweep approach,
-  bracketing the ceiling from `[0.4 .. 3.0]`.
+Why rate sweeps are quota-relative: nova-pro's 50 RPM (0.83 rps) with
+~616ms latency means concurrency=1 closed-loop already runs ~2x over
+quota, and llama3-3-70b's 80 RPM sits right at its C=1 rate -- a
+concurrency sweep can't resolve either model's safe zone, and a fixed
+rps list tuned for one model is useless for another. The first full
+batch found real ceilings between ~1.0x and ~1.9x quota, so the shipped
+sweeps span 0.25x-2.5x.
 
 ## Workload validation
 
@@ -368,7 +394,7 @@ needs its own run. Classes measured only inside a mix get
 
 ```bash
 python scripts/gateway_diff.py --gateway-config examples/gateway-limits.example.yaml \
-    results/*-capacity-profile.yaml
+    results/run-all-<timestamp>/*/*-capacity-profile.yaml
 ```
 
 Compares schema-v3 profiles against a **snapshot** of

@@ -1,8 +1,17 @@
-"""ExperimentSpec -- the YAML-loadable description of a sweep:
-one model target, one or more workload profiles, and a sweep dimension
-(concurrency OR rate -- see runners/ for why these are kept separate,
-not combined into one experiment). One YAML file == one
-`python scripts/run.py <file>.yaml` invocation.
+"""ExperimentSpec -- the YAML-loadable description of a sweep: one or
+more workload profiles and a sweep dimension (concurrency OR rate --
+see runners/ for why these are kept separate, not combined into one
+experiment).
+
+Experiment files are MODEL-AGNOSTIC: no `target:`, no quota, no model
+name. `load_experiment(path, model)` binds one file to one model from
+the models file (see models.py), filling in the target and quota --
+so the same experiment runs unchanged against every model.
+
+Rate sweeps are written as `quota_fractions` of the bound model's own
+RPM quota (1.0 = exactly the quota), because quotas differ by an order
+of magnitude across models -- fixed rps values would be far over one
+model's ceiling and nowhere near another's.
 """
 from __future__ import annotations
 
@@ -13,6 +22,7 @@ from typing import Dict, List, Optional
 import yaml
 
 from ..client import TransportConfig
+from ..models import ModelConfig
 from ..workload import WorkloadProfile
 
 
@@ -59,7 +69,12 @@ class SloConfig:
 @dataclass
 class SweepConfig:
     type: str  # "concurrency" | "rate"
+    # Absolute values: concurrency levels, or rps. Resolved from
+    # quota_fractions at bind time for a quota-relative rate sweep.
     values: List[float] = field(default_factory=list)
+    # Rate sweeps only: fractions of the model's quota RPM
+    # (value_rps = fraction * rpm / 60).
+    quota_fractions: Optional[List[float]] = None
 
 
 @dataclass
@@ -75,7 +90,7 @@ class MixConfig:
 
 @dataclass
 class ExperimentSpec:
-    name: str
+    name: str  # the experiment's name -- never contains a model name
     target: TargetConfig
     workloads: List[WorkloadProfile]
     sweep: SweepConfig
@@ -99,16 +114,23 @@ class ExperimentSpec:
     # Outside this, the class's workload_validation is valid: false
     # (the 4-chars/token padding estimate missed for this model).
     workload_validation_tolerance_pct: float = 10.0
+    # The models-file entry this spec is bound to (None only for specs
+    # built directly in code, e.g. tests).
+    model_name: Optional[str] = None
 
 
-def load_experiment(path: str) -> ExperimentSpec:
+_MODEL_KEYS = ("target", "quota_snapshot", "quota")
+
+
+def load_experiment(path: str, model: ModelConfig) -> ExperimentSpec:
     raw = yaml.safe_load(Path(path).read_text())
 
-    target = raw["target"]
-    # Accepts both `quota_snapshot:` (current) and `quota:` (the
-    # pre-schema_version-2 key) so an old experiment YAML lying around
-    # doesn't silently lose its documented quota context.
-    quota_snapshot = raw.get("quota_snapshot") or raw.get("quota") or {}
+    present = [k for k in _MODEL_KEYS if k in raw]
+    if present:
+        raise ValueError(
+            f"{path}: experiments are model-agnostic -- remove {present}; models and their quotas "
+            f"live in the models file (scripts/models.yaml)"
+        )
     slo = raw.get("slo") or {}
     sweep = raw["sweep"]
     transport = raw.get("transport") or {}
@@ -117,23 +139,47 @@ def load_experiment(path: str) -> ExperimentSpec:
     spec = ExperimentSpec(
         name=raw["name"],
         description=raw.get("description", ""),
-        target=TargetConfig(**target),
-        quota_snapshot=QuotaSnapshot(**quota_snapshot),
+        target=TargetConfig(model_id=model.model_id, region=model.region),
+        quota_snapshot=QuotaSnapshot(rpm=model.quota_rpm, tpm=model.quota_tpm),
         slo=SloConfig(**slo),
         workloads=workloads,
         duration_s=raw.get("duration_s", 60.0),
         warmup_s=raw.get("warmup_s", 0.0),
         repetitions=raw.get("repetitions", 1),
         stream=raw.get("stream", True),
-        sweep=SweepConfig(**sweep),
+        sweep=_resolve_sweep(SweepConfig(**sweep), model, path),
         provider_headroom=raw.get("provider_headroom", 0.20),
         seed=raw.get("seed"),
         transport=TransportConfig(**transport),
         mix=MixConfig(**raw["mix"]) if raw.get("mix") else None,
         workload_validation_tolerance_pct=raw.get("workload_validation_tolerance_pct", 10.0),
+        model_name=model.name,
     )
     _validate(spec)
     return spec
+
+
+def _resolve_sweep(sweep: SweepConfig, model: ModelConfig, path: str) -> SweepConfig:
+    if sweep.quota_fractions is None:
+        if not sweep.values:
+            raise ValueError(f"{path}: sweep needs `values` or (rate only) `quota_fractions`")
+        return sweep
+    if sweep.values:
+        raise ValueError(f"{path}: sweep takes `values` OR `quota_fractions`, not both")
+    if sweep.type != "rate":
+        raise ValueError(f"{path}: quota_fractions only applies to rate sweeps")
+    if not sweep.quota_fractions or any(f <= 0 for f in sweep.quota_fractions):
+        raise ValueError(f"{path}: quota_fractions must be non-empty and all > 0")
+    if not model.quota_rpm:
+        raise ValueError(
+            f"{path}: quota-relative rate sweep needs quota.rpm for model {model.name!r} in the models file "
+            f"(scripts/fetch_quota.py --all)"
+        )
+    rps = model.quota_rpm / 60.0
+    return SweepConfig(
+        type=sweep.type, values=[round(f * rps, 4) for f in sweep.quota_fractions],
+        quota_fractions=list(sweep.quota_fractions),
+    )
 
 
 def _validate(spec: ExperimentSpec) -> None:

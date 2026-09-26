@@ -42,14 +42,16 @@ jobs:
       - name: Run tests
         run: python -m pytest -q
 
-      - name: Verify shipped experiment YAMLs still parse
+      - name: Verify every experiment binds to every model
         run: |
           python -c "
-          from bedrock_benchmark.experiments.schema import load_experiment
           import glob
-          for path in glob.glob('experiments/*.yaml'):
-              load_experiment(path)
-              print(f'ok: {path}')
+          from bedrock_benchmark.experiments.schema import load_experiment
+          from bedrock_benchmark.models import load_models
+          for model in load_models(include_disabled=True):
+              for path in sorted(glob.glob('experiments/*.yaml')):
+                  load_experiment(path, model)
+                  print(f'ok: {model.name} x {path}')
           "
 
   pip-audit:

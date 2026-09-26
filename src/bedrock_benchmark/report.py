@@ -187,7 +187,9 @@ def build_capacity_profile(report: ExperimentReport) -> dict:
     confidence = spec.slo.confidence or DEFAULT_CONFIDENCE
     return {
         "schema_version": 3,
+        "experiment": spec.name,
         "model": {
+            "name": spec.model_name,
             "provider": "bedrock",
             "model_id": spec.target.model_id,
             "region": spec.target.region,
@@ -214,6 +216,12 @@ def build_capacity_profile(report: ExperimentReport) -> dict:
             "min_requests_to_resolve_throttle_slo": min_samples_to_resolve_rate(
                 spec.slo.throttle_rate_max, confidence=confidence,
             ),
+        },
+        "sweep": {
+            "type": spec.sweep.type,
+            "values": list(spec.sweep.values),
+            # Set for a quota-relative rate sweep: values = fraction x rpm/60.
+            **({"quota_fractions": spec.sweep.quota_fractions} if spec.sweep.quota_fractions else {}),
         },
         "workload_classes": workload_classes,
         # Only present for a `mix:` experiment -- the one valid source

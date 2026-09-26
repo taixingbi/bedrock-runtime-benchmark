@@ -1,7 +1,8 @@
-"""Run one experiment YAML end to end -- load, sweep, print progress and
-recommendations, write the raw JSONL + capacity-profile.yaml. Shared by
-scripts/run.py (one file) and scripts/run_all.py (a batch), so both
-produce identical output and artifacts.
+"""Run one experiment YAML against one model end to end -- bind, sweep,
+print progress and recommendations, write the raw JSONL +
+capacity-profile.yaml into <results_dir>/<model name>/. Shared by
+scripts/run.py and scripts/run_all.py, so both produce identical
+output and artifacts.
 """
 from __future__ import annotations
 
@@ -19,6 +20,7 @@ from .analysis.metrics import DEFAULT_CONFIDENCE, min_samples_to_resolve_rate
 from .client import BedrockConverseTarget
 from .experiments.executor import ExperimentReport, run_experiment
 from .experiments.schema import ExperimentSpec, load_experiment
+from .models import ModelConfig
 from .report import build_capacity_profile
 from .storage import write_jsonl
 
@@ -102,9 +104,13 @@ def _warn_if_throttle_slo_unresolvable(spec: ExperimentSpec) -> None:
               f"{spec.slo.throttle_rate_max} at {confidence:.0%}) -- {gate}")
 
 
-def run_file(path: str, *, results_dir: str = "results", target_factory: Optional[TargetFactory] = None) -> RunOutcome:
-    spec = load_experiment(path)
-    print(f"running experiment: {spec.name} (sweep={spec.sweep.type} values={spec.sweep.values})")
+def run_file(
+    path: str, model: ModelConfig, *, results_dir: str = "results", target_factory: Optional[TargetFactory] = None,
+) -> RunOutcome:
+    spec = load_experiment(path, model)
+    fractions = f" = {spec.sweep.quota_fractions}x quota" if spec.sweep.quota_fractions else ""
+    print(f"running experiment: {spec.name} on {model.name} ({model.model_id})")
+    print(f"sweep: {spec.sweep.type} values={spec.sweep.values}{fractions}")
     if spec.description:
         print(spec.description.strip())
     _warn_if_throttle_slo_unresolvable(spec)
@@ -126,7 +132,7 @@ def run_file(path: str, *, results_dir: str = "results", target_factory: Optiona
                   f"slo_goodput={m.slo_goodput_rps}")
 
     run_id = str(uuid.uuid4())[:8]
-    out_dir = Path(results_dir)
+    out_dir = Path(results_dir) / model.name
     jsonl_path = out_dir / f"{spec.name}-{run_id}.jsonl"
     profile_path = out_dir / f"{spec.name}-{run_id}-capacity-profile.yaml"
 

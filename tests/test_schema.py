@@ -1,102 +1,104 @@
+import tempfile
 import unittest
+from pathlib import Path
 
 from bedrock_benchmark.experiments.schema import load_experiment
+from bedrock_benchmark.models import ModelConfig, load_models
+
+MICRO = ModelConfig(name="nova-micro", model_id="us.amazon.nova-micro-v1:0", quota_rpm=400, quota_tpm=8_000_000)
+PRO = ModelConfig(name="nova-pro", model_id="us.amazon.nova-pro-v1:0", quota_rpm=50, quota_tpm=2_000_000)
+NO_QUOTA = ModelConfig(name="mystery", model_id="x.y-v1:0")
+
+MINIMAL = (
+    "name: minimal\n"
+    "workloads: [{name: w, input_tokens: 100, output_tokens: 16}]\n"
+    "sweep: {type: concurrency, values: [1]}\n"
+)
 
 
-class LoadExperimentTests(unittest.TestCase):
-    def test_loads_the_three_shipped_experiments_without_error(self):
-        for name in ["concurrency-sweep", "token-sweep", "slo-capacity"]:
-            with self.subTest(name=name):
-                spec = load_experiment(f"experiments/{name}.yaml")
-                self.assertTrue(spec.workloads)
-                self.assertIn(spec.sweep.type, ("concurrency", "rate"))
+def _load_text(text: str, model: ModelConfig = MICRO):
+    with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as f:
+        f.write(text)
+        path = f.name
+    try:
+        return load_experiment(path, model)
+    finally:
+        Path(path).unlink()
 
-    def test_concurrency_sweep_has_real_quota_and_slo(self):
-        spec = load_experiment("experiments/concurrency-sweep.yaml")
-        self.assertEqual(spec.quota_snapshot.rpm, 400)
-        self.assertEqual(spec.quota_snapshot.tpm, 8000000)
-        self.assertEqual(spec.slo.ttft_p95_ms, 1000)
-        self.assertEqual(spec.slo.success_rate_min, 0.99)
+
+class ShippedExperimentTests(unittest.TestCase):
+    def test_every_shipped_experiment_binds_to_every_shipped_model(self):
+        for path in sorted(Path("experiments").glob("*.yaml")):
+            for model in load_models(include_disabled=True):
+                with self.subTest(experiment=path.name, model=model.name):
+                    spec = load_experiment(str(path), model)
+                    self.assertEqual(spec.target.model_id, model.model_id)
+                    self.assertEqual(spec.model_name, model.name)
+                    self.assertEqual(spec.transport.total_max_attempts, 1)
+
+    def test_experiment_files_never_name_a_model(self):
+        model_words = {m.name for m in load_models(include_disabled=True)} | {"nova", "llama", "qwen"}
+        for path in sorted(Path("experiments").glob("*.yaml")):
+            spec = load_experiment(str(path), MICRO)
+            with self.subTest(path=path.name):
+                self.assertFalse(any(w in spec.name for w in model_words), spec.name)
+                self.assertFalse(any(w in path.stem for w in model_words), path.stem)
 
     def test_token_sweep_has_four_workload_shapes(self):
-        spec = load_experiment("experiments/token-sweep.yaml")
-        self.assertEqual(len(spec.workloads), 4)
+        self.assertEqual(len(load_experiment("experiments/token-sweep.yaml", MICRO).workloads), 4)
 
-    def test_slo_capacity_is_a_rate_sweep(self):
-        spec = load_experiment("experiments/slo-capacity.yaml")
-        self.assertEqual(spec.sweep.type, "rate")
-
-    def test_all_three_have_explicit_transport_config(self):
-        for name in ["concurrency-sweep", "token-sweep", "slo-capacity"]:
-            with self.subTest(name=name):
-                spec = load_experiment(f"experiments/{name}.yaml")
-                self.assertEqual(spec.transport.total_max_attempts, 1)
-                self.assertEqual(spec.transport.max_connections, 64)
-
-    def test_transport_defaults_when_not_specified_in_yaml(self):
-        """A minimal experiment YAML with no transport: block at all
-        must still get safe, explicit defaults (not boto3's own
-        implicit ones) -- see client.py's TransportConfig docstring."""
-        import tempfile
-        from pathlib import Path
-
-        minimal = """
-        name: minimal
-        target: {model_id: m, region: us-east-1}
-        workloads: [{name: w, input_tokens: 100, output_tokens: 16}]
-        sweep: {type: concurrency, values: [1]}
-        """
-        with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as f:
-            f.write(minimal)
-            path = f.name
-        try:
-            spec = load_experiment(path)
-            self.assertEqual(spec.transport.total_max_attempts, 1)
-        finally:
-            Path(path).unlink()
-
-
-    def test_measurement_fields_default_and_validate(self):
-        import tempfile
-        from pathlib import Path
-
-        base = (
-            "name: minimal\n"
-            "target: {model_id: m, region: us-east-1}\n"
-            "workloads: [{name: w, input_tokens: 100, output_tokens: 16}]\n"
-            "sweep: {type: concurrency, values: [1]}\n"
-        )
-        cases = [
-            (base, None),
-            (base + "repetitions: 0\n", ValueError),
-            (base + "slo: {confidence: 1.5}\n", ValueError),
-            (base + "mix: {name: x, weights: {nope: 1}}\n", ValueError),
-            (base + "mix: {name: x, weights: {w: 0}}\n", ValueError),
-        ]
-        for text, expected_error in cases:
-            with self.subTest(text=text), tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as f:
-                f.write(text)
-                path = f.name
-            try:
-                if expected_error:
-                    with self.assertRaises(expected_error):
-                        load_experiment(path)
-                else:
-                    spec = load_experiment(path)
-                    self.assertEqual((spec.warmup_s, spec.repetitions, spec.slo.confidence), (0.0, 1, None))
-            finally:
-                Path(path).unlink()
-
-    def test_every_shipped_experiment_loads(self):
-        from pathlib import Path
-        for path in sorted(Path("experiments").glob("*.yaml")):
-            with self.subTest(path=path.name):
-                load_experiment(str(path))
-
-    def test_mixed_capacity_experiment_defines_a_valid_mix(self):
-        spec = load_experiment("experiments/mixed-capacity.yaml")
+    def test_mixed_capacity_defines_a_valid_mix(self):
+        spec = load_experiment("experiments/mixed-capacity.yaml", MICRO)
         self.assertEqual(spec.mix.weights, {"short": 0.7, "long_long": 0.3})
+
+
+class ModelBindingTests(unittest.TestCase):
+    def test_target_and_quota_come_from_the_model(self):
+        spec = load_experiment("experiments/concurrency-sweep.yaml", PRO)
+        self.assertEqual((spec.target.model_id, spec.target.region), ("us.amazon.nova-pro-v1:0", "us-east-1"))
+        self.assertEqual((spec.quota_snapshot.rpm, spec.quota_snapshot.tpm), (50, 2_000_000))
+
+    def test_quota_fractions_resolve_against_each_models_own_quota(self):
+        micro = load_experiment("experiments/rate-capacity.yaml", MICRO)
+        pro = load_experiment("experiments/rate-capacity.yaml", PRO)
+        self.assertEqual(micro.sweep.quota_fractions, pro.sweep.quota_fractions)
+        i = micro.sweep.quota_fractions.index(1.0)
+        self.assertAlmostEqual(micro.sweep.values[i], 400 / 60, places=3)  # 1.0x quota
+        self.assertAlmostEqual(pro.sweep.values[i], 50 / 60, places=3)
+
+    def test_quota_relative_sweep_without_a_quota_fails_clearly(self):
+        with self.assertRaisesRegex(ValueError, "quota.rpm"):
+            load_experiment("experiments/rate-capacity.yaml", NO_QUOTA)
+
+    def test_concurrency_sweep_needs_no_quota(self):
+        load_experiment("experiments/concurrency-sweep.yaml", NO_QUOTA)
+
+    def test_experiment_files_with_a_model_are_rejected(self):
+        for key in ("target: {model_id: m}\n", "quota_snapshot: {rpm: 1}\n"):
+            with self.subTest(key=key), self.assertRaisesRegex(ValueError, "model-agnostic"):
+                _load_text(MINIMAL + key)
+
+
+class ValidationTests(unittest.TestCase):
+    def test_defaults(self):
+        spec = _load_text(MINIMAL)
+        self.assertEqual((spec.warmup_s, spec.repetitions, spec.slo.confidence), (0.0, 1, None))
+        self.assertEqual(spec.transport.total_max_attempts, 1)
         self.assertEqual(spec.workload_validation_tolerance_pct, 10.0)
+
+    def test_invalid_specs_are_rejected(self):
+        bad = [
+            MINIMAL + "repetitions: 0\n",
+            MINIMAL + "slo: {confidence: 1.5}\n",
+            MINIMAL + "mix: {name: x, weights: {nope: 1}}\n",
+            MINIMAL + "mix: {name: x, weights: {w: 0}}\n",
+            MINIMAL.replace("values: [1]", "values: [1], quota_fractions: [1.0]"),
+            MINIMAL.replace("values: [1]", "quota_fractions: [1.0]"),  # concurrency can't be quota-relative
+            MINIMAL.replace("{type: concurrency, values: [1]}", "{type: rate}"),
+        ]
+        for text in bad:
+            with self.subTest(text=text), self.assertRaises(ValueError):
+                _load_text(text)
 
 
 if __name__ == "__main__":

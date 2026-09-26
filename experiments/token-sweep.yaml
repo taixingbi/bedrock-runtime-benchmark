@@ -1,27 +1,15 @@
-# Core experiment #2: does capacity depend on workload SHAPE, not just
-# rate? The 2x2 input/output grid this repo's README describes --
-# short-short, output-heavy, input-heavy, long-long. A single
-# concurrency-sweep.yaml result for one shape does NOT generalize to
-# every tenant-class in a real gateway; this is what tells you it
-# doesn't.
+# Does capacity depend on workload SHAPE, not just load? The 2x2
+# input/output grid -- short-short, output-heavy, input-heavy,
+# long-long -- each concurrency-swept. One result per shape is the
+# evidence for per-tenant-class concurrency config; a single shape
+# doesn't generalize to every class.
 #
-# Deliberately long-running: 4 workloads x 4 concurrency values x 90s
-# = 24 minutes. Run this occasionally (a real capacity re-baseline),
-# not on every change -- concurrency-sweep.yaml is the fast one.
-name: nova-micro-token-sweep
+# Slow: 4 workloads x 4 points x (10s warmup + 90s window) ~= 27 min per
+# model. Run it for a capacity re-baseline, not on every change.
+name: token-sweep
 description: |
-  Same concurrency sweep (1/2/4/6), repeated across 4 input/output
-  token shapes. Produces one capacity-profile.yaml entry per shape --
-  the actual evidence for a gateway's per-tenant-class concurrency
-  config, not one number applied uniformly to every workload.
-
-target:
-  model_id: us.amazon.nova-micro-v1:0
-  region: us-east-1
-
-quota_snapshot:
-  rpm: 400
-  tpm: 8000000
+  Concurrency 1/2/4/6 repeated across 4 input/output token shapes.
+  One capacity-profile entry per shape.
 
 slo:
   ttft_p95_ms: 1000
@@ -43,9 +31,6 @@ workloads:
     input_tokens: 4096
     output_tokens: 512
 
-# warmup_s runs load before the measurement window opens and is never
-# counted; in-flight requests at window close drain and are recorded,
-# but only in-window completions count toward throughput/goodput.
 warmup_s: 10
 duration_s: 90
 stream: true

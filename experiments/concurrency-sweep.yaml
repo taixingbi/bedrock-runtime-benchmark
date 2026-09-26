@@ -1,32 +1,22 @@
-# Core experiment #1: how does throughput/TTFT/error rate change as
-# concurrency increases, for one workload shape? Talks to Bedrock
-# directly -- no gateway, no admission control, see this repo's own
-# README on why that boundary matters.
+# How do throughput / TTFT / throttling change as concurrency rises, for
+# one workload shape? Closed-loop: N workers, each firing its next
+# request as soon as the previous one returns. Runs against every model
+# in scripts/models.yaml -- this file never names a model.
 #
-# quota_snapshot below is documented context (queried from AWS Service
-# Quotas, same values gateway-model-quotas-dev holds), NOT enforced by
-# this tool -- it only ever measures what actually happens.
+# Concurrency is absolute (not quota-relative): it's a property of the
+# caller, not the quota. For a low-quota model (e.g. 50 RPM) even C=1
+# can already exceed quota -- that's a real result (no recommendation),
+# and rate-capacity.yaml is the sweep that resolves such a model.
 #
-# transport is explicit and recorded into the resulting
-# capacity-profile.yaml for reproducibility -- total_max_attempts=1
-# specifically, since the SDK's own automatic retry would silently
-# absorb a real Bedrock 429 into an eventual 200, understating the
-# real throttle rate this sweep exists to measure (see client.py's
-# TransportConfig docstring).
-name: nova-micro-concurrency-sweep
+# transport.total_max_attempts=1: the SDK must never retry, or a real
+# Bedrock 429 would be absorbed into an eventual 200 and the measured
+# throttle rate understated (see client.py's TransportConfig).
+name: concurrency-sweep
 description: |
-  Fixed "short" workload (512 input / 64 output tokens), swept across
-  concurrency 1/2/4/6/8, 120s per point (~10 minutes total). Answers:
-  what's the recommended concurrency for this workload shape under the
-  configured SLO, and where's the saturation edge?
-
-target:
-  model_id: us.amazon.nova-micro-v1:0
-  region: us-east-1
-
-quota_snapshot:
-  rpm: 400
-  tpm: 8000000
+  Fixed "short" workload (512 input / 64 output tokens), concurrency
+  1/2/4/6/8, 10s warmup + 120s window per point (~11 min per model).
+  Answers: the recommended concurrency for this shape under the SLO,
+  and where the saturation edge is.
 
 slo:
   ttft_p95_ms: 1000
