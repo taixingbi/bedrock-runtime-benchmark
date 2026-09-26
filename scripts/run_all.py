@@ -65,6 +65,13 @@ def main() -> int:
     args = parser.parse_args()
 
     paths = args.experiments or sorted(str(p) for p in Path("experiments").glob("*.yaml"))
+    missing = [p for p in paths if not Path(p).is_file()]
+    if missing:
+        hint = ""
+        if any(m.startswith("#") for m in missing):
+            hint = ("\n  (a '#' was passed as an argument -- interactive zsh doesn't treat '#' as a comment "
+                    "unless `setopt interactivecomments` is on; drop the trailing comment)")
+        parser.error(f"experiment file(s) not found: {missing}{hint}")
     models = load_models(args.models_file, names=args.models, quota_file=args.quota_file,
                          account=args.account or current_account_id())
     if not paths or not models:

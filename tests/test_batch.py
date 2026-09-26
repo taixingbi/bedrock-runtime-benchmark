@@ -202,6 +202,15 @@ class CliTests(unittest.TestCase):
         for name in ("nova-micro", "qwen3-32b", "rate-capacity", "run sequentially"):
             self.assertIn(name, proc.stdout)
 
+    def test_unknown_experiment_paths_are_a_clear_error_not_a_traceback(self):
+        """A trailing `# comment` in interactive zsh arrives as arguments."""
+        proc = subprocess.run([sys.executable, "scripts/run_all.py", "--dry-run", "#", "smoke"],
+                              capture_output=True, text=True)
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn("experiment file(s) not found", proc.stderr)
+        self.assertIn("interactivecomments", proc.stderr)
+        self.assertNotIn("Traceback", proc.stderr)
+
     def test_model_filter(self):
         proc = subprocess.run(
             [sys.executable, "scripts/run_all.py", "--dry-run", "--model", "nova-pro"], capture_output=True, text=True,
