@@ -198,3 +198,16 @@ artifact was ever used to actually inform a gateway config:
     reported (`reservation_tokens`, `consumption_tokens`,
     `token_pressure`) and the larger bounds the TPM ceiling. No change
     for burndown-1 models.
+33. **Discovery-only sweeps could never confirm anything.** Only
+    `rate-capacity` had a confirmation phase; `concurrency-sweep`,
+    `token-sweep` and `mixed-capacity` judged one window per point, and
+    the fixed-sequence test stops at the first non-PASS point -- so a
+    clean but too-small low point (gold C=4: 796 requests, 0 throttles,
+    0.38% bound vs 0.1%) left every class unconfirmed, and the
+    `recommendation.reason` still said "see `confirmation` ... raise the
+    confirmation caps" when no such phase existed. Every shipped
+    experiment now has a `confirmation:` block (the mix with caps sized
+    for its gold class's 60% share), and `reason` states the actual
+    cause: the confirmation candidate's `stop_reason`, or -- discovery
+    only -- the point the test stopped at and its `n < required_n`.
+    Field set unchanged.

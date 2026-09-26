@@ -75,7 +75,7 @@ from importlib import metadata
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from .analysis.capacity import Recommendation
+from .analysis.capacity import INCONCLUSIVE, PASS, Recommendation
 from .analysis.metrics import DEFAULT_CONFIDENCE, RunMetrics, min_samples_to_resolve_rate, percentile
 from .experiments.executor import ExperimentReport
 from .recommendation import admission_envelope
@@ -189,6 +189,50 @@ def _sweep_points(profile_report) -> List[dict]:
     return out
 
 
+_STOP_HINTS = {
+    "observed_violation": "the SLO was violated in fresh data there -- a lower candidate may confirm (candidates > 1)",
+    "looks_exhausted": "bad events used up every planned look",
+    "max_repetitions": "raise the confirmation caps to collect more samples",
+    "max_requests": "raise the confirmation caps to collect more samples",
+    "max_duration": "raise the confirmation caps to collect more samples",
+    "unreachable_within_caps": "its next look can't be reached within the confirmation caps -- raise them",
+}
+
+
+def _unconfirmed_reason(profile_report, spec) -> str:
+    """WHY nothing was statistically confirmed, from what actually ran --
+    a confirmation phase's stop reason, or (discovery only) the point
+    where the fixed-sequence test stopped and how many requests it
+    lacked. Never suggests relaxing the SLO."""
+    prefix = "no statistically confirmed point -- "
+    if profile_report.recommendation is None:
+        return prefix + "the first swept value already FAILs the SLO, so there is nothing to confirm; sweep lower values"
+    if profile_report.confirmation_plan is not None:
+        tried = sorted(profile_report.confirmations, key=lambda c: c.value)
+        failed = next((c for c in tried if c.verdict != PASS), None)
+        if failed is None:
+            where = " at or below the provider ceiling" if spec.sweep.type == "rate" else ""
+            return prefix + f"no non-failing discovery point{where} to confirm"
+        text = f"confirmation at {failed.value:g}: {failed.verdict} ({failed.stop_reason}, n={failed.n}"
+        if failed.next_look_n is not None:
+            text += f", next look at n={failed.next_look_n}"
+        text += ")"
+        hint = _STOP_HINTS.get(failed.stop_reason)
+        return prefix + text + (f"; {hint}" if hint else "") + " -- see `confirmation.candidates`"
+    ordered = sorted(zip(profile_report.points, profile_report.verdicts), key=lambda pv: _value(pv[0]))
+    stop = next(((p, v) for p, v in ordered if v.verdict != PASS), None)
+    text = prefix + ("discovery only (no `confirmation:` phase), a fixed-sequence test that stops at the first "
+                     "non-PASS point")
+    if stop is None:
+        return text
+    point, verdict = stop
+    text += f": {_value(point):g} is {verdict.verdict}"
+    lacking = [f"{c.name} n={c.n} < required_n={c.required_n}" for c in verdict.inconclusive_checks]
+    if verdict.verdict == INCONCLUSIVE and lacking:
+        text += f" ({'; '.join(lacking)}) -- add a `confirmation:` block to the experiment to collect them"
+    return text
+
+
 def _evidence(point) -> dict:
     m: RunMetrics = point.metrics
     out = {
@@ -280,7 +324,10 @@ def _envelope(entry: dict, profile_report, spec) -> None:
             entry["unstable_region"] = analysis.unstable_region
         else:
             entry["note"] = "no swept value met the configured SLO -- re-run with lower sweep values"
-        entry["recommendation"] = admission_envelope(spec.sweep.type, None, headroom=spec.provider_headroom)
+        entry["recommendation"] = admission_envelope(
+            spec.sweep.type, None, headroom=spec.provider_headroom,
+            unconfirmed_reason=_unconfirmed_reason(profile_report, spec),
+        )
         return
     ceiling = spec.provider_ceilings.get(subject)
     ceiling_rps = ceiling.rps if ceiling else None
@@ -295,6 +342,7 @@ def _envelope(entry: dict, profile_report, spec) -> None:
     entry["recommendation"] = admission_envelope(
         spec.sweep.type, confirmed, headroom=spec.provider_headroom, quota_headroom=spec.quota_headroom,
         provider_ceiling_rps=ceiling_rps,
+        unconfirmed_reason=None if confirmed is not None else _unconfirmed_reason(profile_report, spec),
     )
     # evidence = the observed point; confirmed_evidence = the point the
     # recommendation is derived from, when it's a different point.

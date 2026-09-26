@@ -19,7 +19,7 @@ import yaml
 from .analysis.capacity import SweepPoint
 from .analysis.metrics import DEFAULT_CONFIDENCE, min_samples_to_resolve_rate
 from .client import BedrockConverseTarget
-from .experiments.executor import ExperimentReport, run_experiment
+from .experiments.executor import ExperimentReport, _slo_kwargs, run_experiment
 from .constraints import DEFAULT_SLO_FILE
 from .experiments.schema import ExperimentSpec, load_experiment
 from .models import ModelConfig
@@ -47,13 +47,15 @@ def estimated_duration_s(spec: ExperimentSpec) -> float:
     repetition, per sweep subject (each workload, or one mix), plus --
     with confirmation -- per subject:
 
-    - isolated rate sweeps: the repetitions needed to reach the FIRST
-      pre-planned look at the likely candidate (the highest sweep rate
-      at or below the provider ceiling), i.e. assuming it PASSes there;
-      0 if that look is unreachable within the caps (skipped unspent);
-    - otherwise (concurrency sweeps, mixes -- requests per repetition
-      aren't known up front): the cap, min(max_duration_s, candidates x
-      max_repetitions x (warmup + window)).
+    the repetitions needed to reach the FIRST pre-planned look at each
+    likely candidate, i.e. assuming it PASSes there -- 0 if that look is
+    unreachable within the caps (skipped unspent). A rate sweep's
+    candidates are its highest rates at or below the provider ceiling;
+    a concurrency sweep's request rate isn't known up front, so its
+    candidates are assumed to run at the ceiling (a non-failing point
+    can't sustain much more). Capped at min(max_duration_s, candidates
+    x max_repetitions x (warmup + window)); without a known ceiling,
+    the cap itself.
 
     Real runs take longer when a look is spent on a stray bad event
     (up to the caps) and shorter on an early FAIL. Drain time on top
@@ -79,17 +81,26 @@ def _confirmation_estimate_s(spec: ExperimentSpec, subject: str, per_run: float)
         return 0.0
     cap = min(c.max_duration_s, c.candidates * c.max_repetitions * per_run)
     ceiling = spec.provider_ceilings.get(subject)
-    if spec.sweep.type != "rate" or spec.mix is not None or ceiling is None or not ceiling.rps:
+    if ceiling is None or not ceiling.rps:
         return cap
     from .analysis.confirmation import limits_for, plan_looks
-    slo = spec.slo_for(subject)
-    gate = dict(throttle_rate_max=slo.throttle_rate_max, success_rate_min=slo.success_rate_min)
-    plan = plan_looks(limits_for(gate, None, None), confidence=slo.confidence or DEFAULT_CONFIDENCE,
+    if spec.mix is not None:
+        total_weight = sum(spec.mix.weights.values())
+        shares = {n: w / total_weight for n, w in spec.mix.weights.items()}
+        gate = _slo_kwargs(spec.slo, latency=False)
+        class_gate = {n: _slo_kwargs(spec.slo_for(n)) for n in shares}
+    else:
+        shares, class_gate = None, None
+        gate = _slo_kwargs(spec.slo_for(subject))
+    plan = plan_looks(limits_for(gate, class_gate, shares), confidence=gate["confidence"],
                       max_looks=c.max_looks, max_repetitions=c.max_repetitions, max_requests=c.max_requests,
                       max_duration_s=c.max_duration_s)
-    candidates = sorted(v for v in spec.sweep_values(subject) if v <= ceiling.rps + _ROUNDING_TOLERANCE)[-c.candidates:]
+    if spec.sweep.type == "rate":
+        rates = sorted(v for v in spec.sweep_values(subject) if v <= ceiling.rps + _ROUNDING_TOLERANCE)[-c.candidates:]
+    else:
+        rates = [ceiling.rps] * min(c.candidates, len(spec.sweep.values))
     total = 0.0
-    for rps in candidates:
+    for rps in rates:
         per_rep = rps * spec.duration_s
         reps = math.ceil(plan.look_schedule[0] / per_rep) if per_rep > 0 else c.max_repetitions + 1
         if reps <= c.max_repetitions and plan.look_schedule[0] <= c.max_requests:

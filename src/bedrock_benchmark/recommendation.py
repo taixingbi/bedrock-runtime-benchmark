@@ -37,8 +37,7 @@ from typing import Optional
 SOURCE = "statistically_confirmed_measurement"
 
 _NO_CONFIRMED = ("no statistically confirmed point -- nothing is recommended from an observed-only or "
-                 "INCONCLUSIVE point; see the measurement block and `confirmation` for why, and collect "
-                 "more samples (raise the confirmation caps) rather than relax the SLO")
+                 "INCONCLUSIVE point; collect more samples rather than relax the SLO")
 
 
 def _headroom(value: float, fraction: float) -> float:
@@ -47,13 +46,15 @@ def _headroom(value: float, fraction: float) -> float:
 
 def admission_envelope(
     sweep_type: str, confirmed: Optional[float], *, headroom: float, quota_headroom: float = 0.0,
-    provider_ceiling_rps: Optional[float] = None,
+    provider_ceiling_rps: Optional[float] = None, unconfirmed_reason: Optional[str] = None,
 ) -> dict:
     """The `recommendation` block for one workload class or mix.
     `confirmed` is the statistically confirmed concurrency (concurrency
-    sweep) or offered rps (rate sweep) -- None when nothing was confirmed."""
+    sweep) or offered rps (rate sweep) -- None when nothing was confirmed,
+    in which case `unconfirmed_reason` (the measurement-specific cause,
+    see report.py) replaces the generic reason."""
     if confirmed is None:
-        return {"admission_envelope": None, "reason": _NO_CONFIRMED}
+        return {"admission_envelope": None, "reason": unconfirmed_reason or _NO_CONFIRMED}
 
     if sweep_type == "concurrency":
         max_inflight = math.floor(confirmed * (1.0 - headroom) + 1e-9)

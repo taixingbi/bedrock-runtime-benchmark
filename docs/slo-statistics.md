@@ -112,7 +112,7 @@ exists to collect exactly that, and only that, at the boundary.
 ### Two phases, two jobs: discovery -> adaptive confirmation
 
 One 90s window per point is a capacity snapshot. With `confirmation:`
-(on in `rate-capacity.yaml`) the sweep has two phases whose data is
+(on in every shipped experiment) the sweep has two phases whose data is
 never mixed (`analysis/confirmation.py`):
 
 | Phase | Data | Used for | Never used for |
@@ -127,7 +127,8 @@ looked good. So confirmation starts from zero.
 **Candidates.** The highest point(s) of discovery's leading non-failing
 run -- for a rate sweep, only at or below the provider ceiling
 (production is quota-capped anyway; above it a point passes on burst
-allowance at best). With `candidates: N > 1` they're tested
+allowance at best); for a concurrency sweep, the highest non-failing
+concurrency. With `candidates: N > 1` they're tested
 lowest-first and stop at the first one not confirmed (a fixed-sequence
 test, which keeps the family-wise error at alpha without splitting it).
 
@@ -147,7 +148,11 @@ exactly at gold's limit (`tests/test_confirmation.py`):
 
 For gold (`max_looks: 2`, per-look 97.5%) the looks are at 3,688 and
 5,570 requests: 7 and 10 repetitions at the 6.67 rps ceiling (~600
-requests each) -- inside the default caps.
+requests each) -- inside the default caps. In a mix each class sees
+only its share, so the plan scales its limits up: `mixed-capacity`'s
+gold class is 60% of requests, putting the looks at 6,147 and 9,284
+(11 and 16 repetitions) -- that experiment's caps are raised to match.
+More samples, never a looser SLO.
 
 **Caps -> INCONCLUSIVE, never a looser SLO.** `max_repetitions`
 (default 10) and `max_requests` (8,000) per candidate, `max_duration_s`
@@ -166,4 +171,12 @@ Without a confirmation phase, `statistically_confirmed` comes from
 discovery as a fixed-sequence test over the sweep's own ascending order
 (the top of the leading run of strict PASSes);
 `confirmation_source` says which (`confirmation` |
-`discovery_fixed_sequence`).
+`discovery_fixed_sequence`). That test stops at the first non-PASS
+point, and a low point is usually INCONCLUSIVE for gold (one window is
+too few requests), so discovery alone rarely confirms anything.
+
+When nothing is confirmed, `recommendation.reason` states the actual
+cause -- the first non-PASS confirmation candidate and its
+`stop_reason` (with a hint: raise the caps, or test a lower candidate),
+or, discovery only, the point the test stopped at with each
+`n < required_n`.

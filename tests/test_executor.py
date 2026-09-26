@@ -54,6 +54,12 @@ class RunExperimentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(throttle.reason, "insufficient_samples")
         self.assertGreater(throttle.required_n, 2000)
         self.assertEqual(profile.verdicts[0].verdict, "INCONCLUSIVE")
+        # No confirmation phase ran, so the reason must not point at one:
+        # it names where the fixed-sequence test stopped and what it lacked.
+        reason = build_capacity_profile(report)["workload_classes"]["short"]["recommendation"]["reason"]
+        self.assertIn("discovery only (no `confirmation:` phase)", reason)
+        self.assertIn(f"throttle_rate n={throttle.n} < required_n={throttle.required_n}", reason)
+        self.assertNotIn("raise the confirmation caps", reason)
 
     # Loose rate limits so a fake 0.2s window can reach the first look:
     # throttle <= 5%, success >= 90% -> first look at a few dozen requests.
@@ -96,7 +102,10 @@ class RunExperimentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.repetitions, 0)                          # no calls spent on a hopeless candidate
         self.assertIsNone(report.profiles[0].recommendation.confirmed_point)
         rate = build_capacity_profile(report)["workload_classes"]["short"]["rate"]
-        self.assertIsNone(build_capacity_profile(report)["workload_classes"]["short"]["recommendation"]["admission_envelope"])
+        recommendation = build_capacity_profile(report)["workload_classes"]["short"]["recommendation"]
+        self.assertIsNone(recommendation["admission_envelope"])
+        self.assertIn("confirmation at 200: INCONCLUSIVE (unreachable_within_caps", recommendation["reason"])
+        self.assertIn("raise them", recommendation["reason"])
         self.assertEqual(rate["confirmation_source"], "confirmation")
 
     async def test_violation_during_confirmation_fails_the_candidate(self):
@@ -139,6 +148,23 @@ class RunExperimentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([r.value for r in results], [200.0, 400.0])  # the two highest, ascending
         self.assertTrue(all(r.verdict == "PASS" for r in results))
         self.assertEqual(report.profiles[0].recommendation.confirmed_point.rps, 400.0)
+
+    async def test_concurrency_sweep_confirms_its_candidate_with_fresh_data(self):
+        from bedrock_benchmark.experiments.schema import ConfirmationConfig
+        target = BedrockConverseTarget(model_id="m", client=FakeBedrockRuntimeClient())
+        spec = _spec(sweep=SweepConfig(type="concurrency", values=[2, 4]), repetitions=1, slo=self.LOOSE,
+                     confirmation=ConfirmationConfig(max_repetitions=20, max_requests=10**6))
+
+        report = await run_experiment(spec, target=target)
+
+        profile = report.profiles[0]
+        [result] = profile.confirmations
+        self.assertEqual((result.value, result.verdict, result.stop_reason), (4, "PASS", "confirmed"))
+        self.assertEqual(profile.recommendation.confirmation_source, "confirmation")
+        self.assertIs(profile.recommendation.confirmed_point, result.point)
+        entry = build_capacity_profile(report)["workload_classes"]["short"]
+        self.assertEqual(entry["concurrency"]["statistically_confirmed"], 4)
+        self.assertEqual(entry["recommendation"]["admission_envelope"]["max_inflight"], 3)  # floor(4 x 0.8)
 
     async def test_without_confirmation_discovery_is_a_fixed_sequence_test(self):
         target = BedrockConverseTarget(model_id="m", client=FakeBedrockRuntimeClient())

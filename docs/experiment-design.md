@@ -46,10 +46,17 @@ every experiment x every model -> capacity-profile.yaml (judged against the cons
 
 | Experiment | Sweep | Per model |
 |---|---|---|
-| `concurrency-sweep.yaml` | concurrency 1/2/4/6/8, `short_chat` | ~11 min |
-| `rate-capacity.yaml` | 0.25x-2.5x ceiling, one workload per tier (`short_chat` gold, `rag_answer` silver, `long_generation` bronze), each with adaptive confirmation -- the canonical production-envelope run | ~60 min |
-| `mixed-capacity.yaml` | 0.25x-2.5x ceiling, 60% `short_chat` / 30% `rag_answer` / 10% `long_generation` | ~13 min |
-| `token-sweep.yaml` | 4 most distinct catalog shapes x concurrency 1/2/4/6 | ~27 min |
+| `concurrency-sweep.yaml` | concurrency 1/2/4/6/8, `short_chat` | ~22 min |
+| `rate-capacity.yaml` | 0.25x-2.5x ceiling, one workload per tier (`short_chat` gold, `rag_answer` silver, `long_generation` bronze) -- the canonical production-envelope run | ~57 min |
+| `mixed-capacity.yaml` | 0.25x-2.5x ceiling, 60% `short_chat` / 30% `rag_answer` / 10% `long_generation` | ~32 min |
+| `token-sweep.yaml` | 4 most distinct catalog shapes x concurrency 1/2/4/6 | ~47 min |
+
+Every experiment runs adaptive confirmation at its candidate after
+discovery (see [SLO statistics](slo-statistics.md)) -- without it one
+window per point can't resolve gold's 0.1% throttle limit and nothing
+is ever confirmed. Times are `--dry-run` estimates for nova-micro,
+assuming each candidate PASSes at the first look; a stray bad event can
+push a candidate up to its caps.
 
 Keep `constraints/quota.yaml` current with `scripts/fetch_quota.py --all` (see
 [quota model](quota-model.md)) -- a stale quota shifts every

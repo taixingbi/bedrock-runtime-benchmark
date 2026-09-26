@@ -12,8 +12,9 @@
 #
 # Each workload is judged against the SLO profile the catalog binds it to.
 #
-# Slow: 4 workloads x 4 points x (10s warmup + 90s window) ~= 27 min per
-# model. Run it for a capacity re-baseline, not on every change.
+# Slow: 4 workloads x 4 points x (10s warmup + 90s window) ~= 27 min of
+# discovery per model, plus confirmation (~47 min in all). Run it for a
+# capacity re-baseline, not on every change.
 name: token-sweep
 description: |
   Concurrency 1/2/4/6 across the four most distinct catalog shapes
@@ -31,6 +32,17 @@ sweep:
   values: [1, 2, 4, 6]
 
 provider_headroom: 0.20
+
+# Confirmation at each workload's candidate (fresh data, never pooled
+# with discovery -- see docs/slo-statistics.md). First look per profile:
+# gold 3,688 requests, silver 736, bronze 368 -- a few 90s repetitions
+# each at the concurrencies this sweep reaches.
+confirmation:
+  max_looks: 2
+  max_repetitions: 10
+  max_requests: 8000
+  max_duration_s: 1800
+  candidates: 1
 
 transport:
   max_connections: 64

@@ -14,7 +14,8 @@
 name: concurrency-sweep
 description: |
   short_chat workload (512 input / 64 output tokens), concurrency
-  1/2/4/6/8, 10s warmup + 120s window per point (~11 min per model).
+  1/2/4/6/8, 10s warmup + 120s window per point, plus adaptive
+  confirmation at the candidate.
   Answers: the recommended concurrency for this shape under its SLO
   profile, and where the saturation edge is.
 
@@ -32,6 +33,20 @@ sweep:
   values: [1, 2, 4, 6, 8]
 
 provider_headroom: 0.20
+
+# Discovery (above) picks the candidate; confirmation collects FRESH
+# repetitions there -- the only source of statistically_confirmed (see
+# docs/slo-statistics.md). One 120s window resolves nothing for gold: C=4
+# on nova-micro gave 796 requests, 0 throttles -- a 0.38% upper bound,
+# INCONCLUSIVE against 0.1% (needs 2,995). Gold's looks are at 3,688 and
+# 5,570 requests: ~5 and 7 repetitions at the 6.67 rps ceiling. Caps end
+# in INCONCLUSIVE, never a looser SLO.
+confirmation:
+  max_looks: 2
+  max_repetitions: 10
+  max_requests: 8000
+  max_duration_s: 1800
+  candidates: 1
 
 transport:
   max_connections: 64

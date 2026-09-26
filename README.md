@@ -63,10 +63,14 @@ there is no gateway config schema in this repo.
 
 | Experiment | Sweep | Per model |
 |---|---|---|
-| `concurrency-sweep` | concurrency 1/2/4/6/8, `short_chat` | ~11 min |
-| `rate-capacity` | 0.25x-2.5x of the provider ceiling, one workload per tier (`short_chat` gold, `rag_answer` silver, `long_generation` bronze), adaptive confirmation -- the canonical envelope run | ~60 min |
-| `mixed-capacity` | 0.25x-2.5x ceiling, 60% `short_chat` / 30% `rag_answer` / 10% `long_generation` | ~13 min |
-| `token-sweep` | the 4 most distinct catalog shapes x concurrency 1/2/4/6 | ~27 min |
+| `concurrency-sweep` | concurrency 1/2/4/6/8, `short_chat` | ~22 min |
+| `rate-capacity` | 0.25x-2.5x of the provider ceiling, one workload per tier (`short_chat` gold, `rag_answer` silver, `long_generation` bronze) -- the canonical envelope run | ~57 min |
+| `mixed-capacity` | 0.25x-2.5x ceiling, 60% `short_chat` / 30% `rag_answer` / 10% `long_generation` | ~32 min |
+| `token-sweep` | the 4 most distinct catalog shapes x concurrency 1/2/4/6 | ~47 min |
+
+Every experiment is discovery followed by adaptive confirmation at the
+candidate -- the only way a point becomes statistically confirmed.
+Times are nova-micro `--dry-run` estimates.
 
 ## Quick start
 
@@ -128,7 +132,8 @@ workload_classes:
 
 No statistically confirmed point means `admission_envelope: null`: a
 recommendation is never derived from an observed-only or INCONCLUSIVE
-point.
+point, and `reason` says why (e.g. `confirmation at 6.6667: FAIL
+(observed_violation, n=620)` for silver `rag_answer`).
 
 ## Not in scope
 

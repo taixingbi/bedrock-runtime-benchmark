@@ -15,7 +15,7 @@ name: mixed-capacity
 description: |
   Poisson rate sweep at 0.25x..2.5x of the model's provider ceiling,
   60% short_chat + 30% rag_answer + 10% long_generation, 10s warmup +
-  90s window per point (~13 min per model).
+  90s window per point, plus adaptive confirmation at the candidate.
 
 workloads: [short_chat, rag_answer, long_generation]
 
@@ -37,6 +37,20 @@ sweep:
 
 provider_headroom: 0.20
 quota_headroom: 0.10
+
+# Confirmation at the mix's candidate (fresh data -- see
+# docs/slo-statistics.md). Every class is gated on its own profile but
+# sees only its share of the requests: short_chat (gold, 60%) needs its
+# 3,688 at the first look, so the mix needs 6,147 -- 11 repetitions at
+# the ~6.67 rps ceiling (600 requests each), and 9,284 (16) for the
+# second look. Hence caps above rate-capacity's: more SAMPLES, never a
+# looser SLO.
+confirmation:
+  max_looks: 2
+  max_repetitions: 16
+  max_requests: 10000
+  max_duration_s: 1800
+  candidates: 1
 
 transport:
   max_connections: 64

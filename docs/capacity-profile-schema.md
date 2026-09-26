@@ -112,7 +112,10 @@ rate sweep          sustained_rps = min(statistically_confirmed_offered_rps x (1
 ```
 
 It fails closed: no statistically confirmed point -> `admission_envelope:
-null` with a `reason`; an observed or INCONCLUSIVE point is never used.
+null` with a `reason` naming the cause (a confirmation candidate's
+`stop_reason`, or the discovery point that stopped the fixed-sequence
+test and its `n < required_n`); an observed or INCONCLUSIVE point is
+never used.
 A `max_inflight` that floors to 0 (e.g. confirmed C=1 with 20% headroom)
 is also null -- 0 would admit nothing, and rounding up would drop the
 headroom. The quota term matters because a rate sweep deliberately goes
