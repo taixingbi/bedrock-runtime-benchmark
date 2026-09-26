@@ -1,38 +1,106 @@
 # Workload catalog -- every request shape the benchmark sends, defined
-# once. Experiments only LIST workloads by name (`workloads: [short_chat]`),
-# they never define shapes; SLOs live in constraints/slo.yaml. The two
-# are kept separate and joined only here, by an explicit slo_profile per
-# workload -- a workload describes a business request class, and its
-# profile says what quality that class is promised.
-#
-#   input_tokens   prompt size the padding is calibrated to (calibration.py)
-#   output_tokens  max_tokens for the request; the prompt asks for ~this much
-#   slo_profile    a profile name from constraints/slo.yaml (required):
-#                  TTFT / TPOT / success / throttle, shared per service class
-#   latency_p95_ms end-to-end p95 cap for THIS workload (business-defined):
-#                  64-, 256- and 1024-token outputs can't share one E2E
-#                  budget, so E2E lives here, not in the profile. Values
-#                  below are starting points -- set them to what each
-#                  product actually promises.
+# once. Experiments only LIST workloads by name (`# The catalog is deliberately broader than any one experiment: adding a
+# workload here sends no traffic -- only experiments that list it do.
 
 workloads:
-  # Chat-style reply: short prompt, short answer, user waiting.
+
+  # Very small interactive request.
+  # Typical applications:
+  # - intent classification
+  # - routing / tool selection
+  # - short extraction
+  # - lightweight agent decisions
+  # Purpose: establish the low-token latency floor and maximum lightweight
+  # request capacity.
+  tiny_request:
+    input_tokens: 256
+    output_tokens: 32
+    slo_profile: gold
+    latency_p95_ms: 2000
+
+  # Standard interactive chat request.
+  # Typical applications:
+  # - chatbot response
+  # - copilot interaction
+  # - short Q&A
+  # - simple agent response
+  # Purpose: representative baseline for latency-sensitive interactive traffic.
   short_chat:
     input_tokens: 512
     output_tokens: 64
     slo_profile: gold
     latency_p95_ms: 3000
 
-  # Retrieval-augmented answer: long context, medium answer.
+  # Medium-context synchronous request.
+  # Typical applications:
+  # - small RAG context
+  # - document Q&A
+  # - email / ticket summarization
+  # - agent reasoning with limited context
+  # Purpose: represent common application traffic between short chat and
+  # long-context RAG workloads.
+  medium_context:
+    input_tokens: 2048
+    output_tokens: 128
+    slo_profile: silver
+    latency_p95_ms: 6000
+
+  # Large-input request with a short response.
+  # Typical applications:
+  # - long-document question answering
+  # - policy / contract lookup
+  # - large conversation-history lookup
+  # - retrieval with substantial context and concise output
+  # Purpose: isolate input-side / prefill pressure while keeping decode
+  # cost relatively small. (TPM-bound, not RPM-bound, on low-TPM models:
+  # llama3-3-70b's 600k TPM allows ~1.21 rps here vs 1.33 by RPM.)
+  long_context_short_answer:
+    input_tokens: 8192
+    output_tokens: 64
+    slo_profile: silver
+    latency_p95_ms: 8000
+
+  # Typical retrieval-augmented generation request.
+  # Typical applications:
+  # - enterprise knowledge assistant
+  # - customer-support RAG
+  # - research assistant
+  # - grounded document Q&A
+  # Purpose: represent the common combination of substantial retrieved
+  # context and a medium-length generated answer.
   rag_answer:
     input_tokens: 4096
     output_tokens: 256
     slo_profile: silver
     latency_p95_ms: 10000
 
-  # Long generation: long context, long output (summaries, drafts).
+  # Output-heavy generation request.
+  # Typical applications:
+  # - report generation
+  # - long-form summarization
+  # - code generation
+  # - drafting documents or emails
+  # Purpose: isolate decode / output-token pressure and long in-flight
+  # request occupancy.
   long_generation:
     input_tokens: 4096
     output_tokens: 1024
     slo_profile: bronze
     latency_p95_ms: 60000
+
+  # Very large-context request.
+  # Typical applications:
+  # - multi-document analysis
+  # - large contract / filing analysis
+  # - long conversation-history processing
+  # - large retrieval bundles
+  # Purpose: characterize large-context prefill pressure and the resulting
+  # impact on TTFT, concurrency, and TPM-bound throughput.
+  # UNCONFIRMED: the original entry was truncated -- token counts, tier and
+  # E2E cap below are conservative placeholders. 16k input stays well inside
+  # every catalog model's context window; confirm before relying on it.
+  very_large_context:
+    input_tokens: 16384
+    output_tokens: 256
+    slo_profile: bronze
+    latency_p95_ms: 20000

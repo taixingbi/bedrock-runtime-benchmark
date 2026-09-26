@@ -44,9 +44,9 @@ class ShippedExperimentTests(unittest.TestCase):
                 self.assertFalse(any(w in spec.name for w in model_words), spec.name)
                 self.assertFalse(any(w in path.stem for w in model_words), path.stem)
 
-    def test_token_sweep_covers_every_catalog_workload(self):
+    def test_token_sweep_covers_the_four_most_distinct_shapes(self):
         names = [w.name for w in load_experiment("experiments/token-sweep.yaml", MICRO).workloads]
-        self.assertEqual(names, ["short_chat", "rag_answer", "long_generation"])
+        self.assertEqual(names, ["short_chat", "long_context_short_answer", "rag_answer", "long_generation"])
 
     def test_mixed_capacity_defines_a_valid_mix(self):
         spec = load_experiment("experiments/mixed-capacity.yaml", MICRO)
@@ -101,6 +101,7 @@ class WorkloadE2ECapTests(unittest.TestCase):
         from bedrock_benchmark.workload import load_workloads
         caps = {n: w.latency_p95_ms for n, w in load_workloads().items()}
         self.assertTrue(all(caps.values()))
+        self.assertLess(caps["tiny_request"], caps["short_chat"])
         self.assertLess(caps["short_chat"], caps["rag_answer"])
         self.assertLess(caps["rag_answer"], caps["long_generation"])
 
@@ -114,6 +115,10 @@ class SloProfileFilterTests(unittest.TestCase):
     def test_several_profiles(self):
         spec = load_experiment("experiments/token-sweep.yaml", MICRO, only_slo_profiles={"gold", "bronze"})
         self.assertEqual([w.name for w in spec.workloads], ["short_chat", "long_generation"])
+
+    def test_silver_selects_both_silver_shapes(self):
+        spec = load_experiment("experiments/token-sweep.yaml", MICRO, only_slo_profiles={"silver"})
+        self.assertEqual([w.name for w in spec.workloads], ["long_context_short_answer", "rag_answer"])
 
     def test_nothing_matching_is_a_skip_not_an_error(self):
         with self.assertRaisesRegex(NoMatchingWorkloads, "bronze"):

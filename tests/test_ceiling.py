@@ -42,6 +42,18 @@ class ProviderCeilingTests(unittest.TestCase):
         self.assertIsNone(none.binding)
 
 
+class CatalogTpmBindingTests(unittest.TestCase):
+    def test_long_context_short_answer_is_tpm_bound_on_llama3_70b(self):
+        """8192 + 64 tokens/request against 600k TPM: ~1.21 rps by TPM,
+        below the 1.33 rps RPM limit -- the catalog shape that exercises
+        the TPM-binding path."""
+        from bedrock_benchmark.workload import load_workloads
+        w = load_workloads()["long_context_short_answer"]
+        c = provider_ceiling([(w, 1.0)], rpm=80, tpm=600_000)
+        self.assertEqual(c.binding, "tpm")
+        self.assertAlmostEqual(c.rps, 600_000 / 8256 / 60, places=4)
+
+
 class QuotaRelativeSweepTests(unittest.TestCase):
     def test_rate_sweep_resolves_against_the_tpm_ceiling_when_tpm_binds(self):
         tight_tpm = ModelConfig(name="t", model_id="m.t-v1:0", quota_rpm=10_000, quota_tpm=600_000)

@@ -55,7 +55,9 @@ class ShippedConstraintsTests(unittest.TestCase):
         catalog = load_workloads()
         self.assertEqual(
             {n: w.slo_profile for n, w in catalog.items()},
-            {"short_chat": "gold", "rag_answer": "silver", "long_generation": "bronze"},
+            {"tiny_request": "gold", "short_chat": "gold", "medium_context": "silver",
+             "long_context_short_answer": "silver", "rag_answer": "silver", "long_generation": "bronze",
+             "very_large_context": "bronze"},
         )
         for w in catalog.values():
             self.assertIn(w.slo_profile, slos.profiles)
@@ -89,6 +91,7 @@ class SloFileTests(unittest.TestCase):
         path = _write("profiles:\n  gold: {tpot_p95_ms: 5}\n  silver: {tpot_p95_ms: 6}\n  bronze: {tpot_p95_ms: 7}\n")
         try:
             spec = load_experiment("experiments/token-sweep.yaml", MICRO, slo_file=path)
+            self.assertEqual(spec.slo_for("long_context_short_answer").tpot_p95_ms, 6)
             self.assertEqual(spec.slo_for("short_chat").tpot_p95_ms, 5)
             self.assertEqual(spec.slo_for("rag_answer").tpot_p95_ms, 6)
             self.assertEqual(spec.slo_for("long_generation").tpot_p95_ms, 7)

@@ -176,7 +176,7 @@ absolute (and may not exceed `transport.max_connections`).
 | `concurrency-sweep.yaml` | concurrency 1/2/4/6/8, `short_chat` | ~11 min |
 | `rate-capacity.yaml` | 0.25x-2.5x ceiling, `short_chat` -- the canonical production-envelope run | ~13 min |
 | `mixed-capacity.yaml` | 0.25x-2.5x ceiling, 60% `short_chat` / 30% `rag_answer` / 10% `long_generation` | ~13 min |
-| `token-sweep.yaml` | each catalog workload x concurrency 1/2/4/6 | ~20 min |
+| `token-sweep.yaml` | 4 most distinct catalog shapes x concurrency 1/2/4/6 | ~27 min |
 
 Keep `constraints/quota.yaml` current with `scripts/fetch_quota.py --all` (see
 "Quota-aware experiment design" below) -- a stale quota shifts every
@@ -627,13 +627,24 @@ experiment is rejected.
 ```yaml
 # catalog/workloads.yaml
 workloads:
-  short_chat:      {input_tokens: 512,  output_tokens: 64,   slo_profile: gold,   latency_p95_ms: 3000}
-  rag_answer:      {input_tokens: 4096, output_tokens: 256,  slo_profile: silver, latency_p95_ms: 10000}
-  long_generation: {input_tokens: 4096, output_tokens: 1024, slo_profile: bronze, latency_p95_ms: 60000}
+  tiny_request:              {input_tokens: 256,   output_tokens: 32,   slo_profile: gold,   latency_p95_ms: 2000}
+  short_chat:                {input_tokens: 512,   output_tokens: 64,   slo_profile: gold,   latency_p95_ms: 3000}
+  medium_context:            {input_tokens: 2048,  output_tokens: 128,  slo_profile: silver, latency_p95_ms: 6000}
+  long_context_short_answer: {input_tokens: 8192,  output_tokens: 64,   slo_profile: silver, latency_p95_ms: 8000}
+  rag_answer:                {input_tokens: 4096,  output_tokens: 256,  slo_profile: silver, latency_p95_ms: 10000}
+  long_generation:           {input_tokens: 4096,  output_tokens: 1024, slo_profile: bronze, latency_p95_ms: 60000}
+  very_large_context:        {input_tokens: 16384, output_tokens: 256,  slo_profile: bronze, latency_p95_ms: 20000}
 
-# experiments/token-sweep.yaml
-workloads: [short_chat, rag_answer, long_generation]
+# experiments/token-sweep.yaml -- the four most distinct shapes
+workloads: [short_chat, long_context_short_answer, rag_answer, long_generation]
 ```
+
+The catalog is deliberately broader than any experiment: adding a
+workload sends no traffic, only experiments that list it do.
+`long_context_short_answer` isolates input-side (prefill) pressure and
+`long_generation` output-side (decode) pressure; the former is also
+TPM-bound on low-TPM models (llama3-3-70b: ~1.21 rps by TPM vs 1.33 by
+RPM).
 
 ## SLO profiles
 

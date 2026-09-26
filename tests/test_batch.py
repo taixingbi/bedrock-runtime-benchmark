@@ -173,8 +173,8 @@ class SloProfileFilterBatchTests(unittest.TestCase):
 class PlanTests(unittest.TestCase):
     def test_estimate_counts_subjects_points_repetitions_warmup_and_window(self):
         micro = load_models(names=["nova-micro"])[0]
-        spec = load_experiment("experiments/token-sweep.yaml", micro)  # 3 workloads x 4 points
-        self.assertEqual(estimated_duration_s(spec), 3 * 4 * 1 * (10 + 90))
+        spec = load_experiment("experiments/token-sweep.yaml", micro)  # 4 workloads x 4 points
+        self.assertEqual(estimated_duration_s(spec), 4 * 4 * 1 * (10 + 90))
         mixed = load_experiment("experiments/mixed-capacity.yaml", micro)  # a mix is ONE subject
         self.assertEqual(estimated_duration_s(mixed), 1 * 8 * 1 * (10 + 90))
 
