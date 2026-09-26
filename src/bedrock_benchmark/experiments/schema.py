@@ -15,7 +15,7 @@ magnitude across models and RPM vs TPM binds differently per workload
 shape. Fixed rps values would be far over one model's ceiling and
 nowhere near another's.
 
-Workloads come from the catalog (scripts/workloads.yaml) and SLOs from
+Workloads come from the catalog (catalog/workloads.yaml) and SLOs from
 constraints/slo.yaml -- never from the experiment, which only LISTS
 workload names. Each catalog workload binds its slo_profile explicitly
 (there is no default), so the same workload is judged identically in
@@ -162,7 +162,7 @@ def load_experiment(
     if present:
         raise ValueError(
             f"{path}: experiments are model-agnostic -- remove {present}; models live in "
-            f"scripts/models.yaml and quotas in constraints/quota.yaml"
+            f"catalog/models.yaml and quotas in constraints/quota.yaml"
         )
     present = [k for k in _SLO_KEYS if k in raw]
     if present:

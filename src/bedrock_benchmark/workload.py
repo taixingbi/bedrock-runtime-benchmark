@@ -31,7 +31,7 @@ from typing import Dict, List, Optional, Tuple
 
 import yaml
 
-DEFAULT_WORKLOADS_FILE = "scripts/workloads.yaml"
+DEFAULT_WORKLOADS_FILE = "catalog/workloads.yaml"
 
 _CHARS_PER_TOKEN_ESTIMATE = 4
 _FILLER_WORD = "benchmark "  # 10 chars incl. space -- deliberately plain, no semantic content to bias the model

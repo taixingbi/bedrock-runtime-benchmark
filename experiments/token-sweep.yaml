@@ -1,5 +1,5 @@
 # Does capacity depend on workload SHAPE, not just load? Each request
-# class in the catalog (scripts/workloads.yaml) -- short chat, RAG
+# class in the catalog (catalog/workloads.yaml) -- short chat, RAG
 # answer, long generation -- concurrency-swept on its own. One result
 # per class is the evidence for per-request-class concurrency config; a
 # single shape doesn't generalize to every class.

@@ -1,7 +1,7 @@
 """Run every (model x experiment) pair back to back -- the engine behind
 scripts/run.py and scripts/run_all.py.
 
-Models come from the models file (scripts/models.yaml); experiments are
+Models come from the models file (catalog/models.yaml); experiments are
 model-agnostic, so the batch is the cross product, grouped by model:
 
     results/<batch>/

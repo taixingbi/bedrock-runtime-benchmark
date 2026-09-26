@@ -4,7 +4,7 @@
 # RPM/throttling saturation (this one's).
 #
 # Rates are quota_fractions of each workload's PROVIDER CEILING from
-# the model's quota in scripts/models.yaml:
+# the model's quota in catalog/models.yaml:
 #   ceiling = min(RPM / 60, TPM / (input + max_tokens) / 60)
 # (1.0 = exactly the ceiling; the artifact's provider_constraints says
 # whether RPM or TPM binds). One sweep brackets every model's ceiling:

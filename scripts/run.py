@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run ONE experiment against the models in scripts/models.yaml:
+"""Run ONE experiment against the models in catalog/models.yaml:
 
     python scripts/run.py experiments/concurrency-sweep.yaml                    # every enabled model
     python scripts/run.py experiments/concurrency-sweep.yaml --model nova-micro # one model

@@ -1,5 +1,5 @@
 """ModelConfig -- the models a benchmark runs against, loaded from a
-models file (scripts/models.yaml by default). Experiments are model-
+models file (catalog/models.yaml by default). Experiments are model-
 agnostic workload/sweep definitions; every experiment runs against
 every enabled model listed here, so adding a model means one entry in
 this file, not a new experiment.
@@ -22,7 +22,7 @@ import yaml
 
 from .constraints import DEFAULT_QUOTA_FILE, load_quotas, resolve_account
 
-DEFAULT_MODELS_FILE = "scripts/models.yaml"
+DEFAULT_MODELS_FILE = "catalog/models.yaml"
 
 # `name` is used as a results folder name -- keep it filesystem-safe.
 _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")

@@ -1,5 +1,5 @@
 # SLO -- what quality we REQUIRE, as named profiles. Kept separate from
-# workloads: scripts/workloads.yaml binds each workload to one of these
+# workloads: catalog/workloads.yaml binds each workload to one of these
 # profiles explicitly (no default), and experiments only list workloads.
 # The same model serves every profile, so each profile yields its own
 # safe envelope per model -- a gateway's request_class -> limits.

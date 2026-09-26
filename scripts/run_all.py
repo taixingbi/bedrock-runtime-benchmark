@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run every experiment against every model in scripts/models.yaml, one
+"""Run every experiment against every model in catalog/models.yaml, one
 after another, then print a summary table.
 
     python scripts/run_all.py --dry-run                        # plan + time estimate, no AWS calls

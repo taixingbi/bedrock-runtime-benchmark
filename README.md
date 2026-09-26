@@ -48,7 +48,7 @@ for either: a gateway's per-tenant-class concurrency config should be
 
 - **`WorkloadProfile`** (`workload.py`) -- a named input/output token
   shape (e.g. `short_chat` = 512 in / 64 out), defined once in the
-  catalog `scripts/workloads.yaml`. Capacity depends heavily on
+  catalog `catalog/workloads.yaml`. Capacity depends heavily on
   this; see `token-sweep.yaml`. Input padding is calibrated per model
   from the provider's own token count (`calibration.py`).
 - **`WorkloadMix`** (`workload.py`) -- weighted classes for a mixed-
@@ -91,17 +91,19 @@ the configured SLO, which is what a gateway config actually needs.
 Independent inputs, combined at run time:
 
 ```
-scripts/models.yaml        WHICH models: name (= results folder), model_id, region
-scripts/workloads.yaml     WHICH requests: workload shapes, each bound to an SLO profile
-experiments/*.yaml         HOW to load them: workload names + sweep -- no shapes, no SLO, no quota
-constraints/
+catalog/                   WHAT exists -- the benchmark's inputs
+  ├─ models.yaml           which models: name (= results folder), model_id, region
+  └─ workloads.yaml        which requests: workload shapes, each bound to an SLO profile
+constraints/               what every result is JUDGED AGAINST
   ├─ slo.yaml              SLO:   what quality we REQUIRE  (gold / silver / bronze)
   └─ quota.yaml            quota: what the provider ALLOWS (per account / region / model)
+experiments/*.yaml         HOW to load: workload names + sweep -- no shapes, no SLO, no quota
+scripts/                   entry points only (run.py, run_all.py, fetch_quota.py, gateway_diff.py)
         ↓
 every experiment x every model -> capacity-profile.yaml (judged against the constraints)
 ```
 
-- **Models** -- `scripts/models.yaml`: the five models
+- **Models** -- `catalog/models.yaml`: the five models
   `bedrock-runtime-gateway` certifies (nova-micro, nova-lite, nova-pro,
   llama3-3-70b, qwen3-32b). `enabled: false` skips one by default.
 - **Experiments** -- `experiments/*.yaml`: model-agnostic workload +
@@ -466,7 +468,7 @@ target -- typically 2-4 steps. Calibration runs before warmup and is
 never part of a measurement window. Inference-profile ids
 (`us.`/`eu.`/...) are retried as their base model id for CountTokens.
 
-Per model, `token_counting` in `scripts/models.yaml` can force a strategy
+Per model, `token_counting` in `catalog/models.yaml` can force a strategy
 (`auto` by default). As of 2026-09-25 **none of the five certified
 models support CountTokens** (Bedrock: "The provided model doesn't
 support counting tokens"), so they all calibrate via `converse_usage`;
@@ -495,13 +497,13 @@ models legitimately stop a little early).
 
 ## Workload catalog
 
-Every request shape is defined once in `scripts/workloads.yaml` and
+Every request shape is defined once in `catalog/workloads.yaml` and
 bound there -- explicitly, no default -- to an SLO profile.
 Experiments only list workload names; a shape or SLO inside an
 experiment is rejected.
 
 ```yaml
-# scripts/workloads.yaml
+# catalog/workloads.yaml
 workloads:
   short_chat:      {input_tokens: 512,  output_tokens: 64,   slo_profile: gold}
   rag_answer:      {input_tokens: 4096, output_tokens: 256,  slo_profile: silver}

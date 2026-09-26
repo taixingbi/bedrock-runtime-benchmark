@@ -5,14 +5,14 @@
 #   accounts:
 #     <account id>:
 #       <region>:
-#         <model name from scripts/models.yaml>: {rpm, tpm[, output_burndown]}
+#         <model name from catalog/models.yaml>: {rpm, tpm[, output_burndown]}
 #
 #   rpm              requests per minute
 #   tpm              tokens per minute (input + max_tokens x output_burndown)
 #   output_burndown  TPM tokens charged per output token (default 1)
 #
 # At run time the account comes from the live AWS credentials (STS) and
-# the region from each model's entry in scripts/models.yaml; a run on an
+# the region from each model's entry in catalog/models.yaml; a run on an
 # account with no entry here fails instead of sweeping around someone
 # else's quota. Quota-relative rate sweeps are fractions of the ceiling
 # min(RPM/60, TPM / tokens-per-request / 60).

@@ -1,7 +1,7 @@
 # How do throughput / TTFT / throttling change as concurrency rises, for
 # one workload shape? Closed-loop: N workers, each firing its next
 # request as soon as the previous one returns. Runs against every model
-# in scripts/models.yaml -- this file never names a model.
+# in catalog/models.yaml -- this file never names a model.
 #
 # Concurrency is absolute (not quota-relative): it's a property of the
 # caller, not the quota. For a low-quota model (e.g. 50 RPM) even C=1

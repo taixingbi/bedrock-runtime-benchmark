@@ -8,7 +8,7 @@
 # Rates are quota_fractions of the mix's provider ceiling --
 # min(RPM, TPM / avg tokens per request), see rate-capacity.yaml.
 # Each class is judged against its own SLO profile (bound in
-# scripts/workloads.yaml) -- a real mix of request classes on one model. The mixed_workloads
+# catalog/workloads.yaml) -- a real mix of request classes on one model. The mixed_workloads
 # envelope is valid for THIS mix's shares only -- a different traffic
 # mix needs its own run.
 name: mixed-capacity
