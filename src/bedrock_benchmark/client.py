@@ -99,6 +99,9 @@ class TransportConfig:
         return self.executor_workers if self.executor_workers is not None else self.max_connections
 
 
+_INFERENCE_PROFILE_PREFIXES = {"us", "eu", "apac", "global", "us-gov", "jp", "au", "ca"}
+
+
 def _client_error_code(exc: Exception) -> Optional[str]:
     response = getattr(exc, "response", None)
     if response is None:
@@ -162,6 +165,40 @@ class BedrockConverseTarget:
 
     def close(self) -> None:
         self._executor.shutdown(wait=False)
+
+    def count_tokens(self, prompt: str) -> int:
+        """Bedrock CountTokens for exactly the user message invoke()
+        sends -- free (no inference), model-specific, and documented to
+        match what the same input costs through Converse. Not every
+        model supports it, and it takes a foundation-model id, so a
+        cross-region inference-profile id (us./eu./apac./global. prefix)
+        is retried as its base id. Raises when neither works."""
+        messages = [{"role": "user", "content": [{"text": prompt}]}]
+        candidates = [self.model_id]
+        prefix, _, base = self.model_id.partition(".")
+        if base and prefix in _INFERENCE_PROFILE_PREFIXES:
+            candidates.append(base)
+        last_exc: Optional[Exception] = None
+        for model_id in candidates:
+            try:
+                resp = self._client.count_tokens(modelId=model_id, input={"converse": {"messages": messages}})
+                return int(resp["inputTokens"])
+            except Exception as exc:  # noqa: BLE001 - surfaced to the caller after every candidate fails
+                last_exc = exc
+        assert last_exc is not None
+        raise last_exc
+
+    def usage_input_tokens(self, prompt: str) -> int:
+        """The fallback counter for models without CountTokens: a real
+        Converse call with maxTokens=1, reading usage.inputTokens -- the
+        provider's own count for this exact input, at the cost of one
+        tiny inference. Only used for calibration before load starts,
+        never inside a measurement window."""
+        resp = self._client.converse(
+            modelId=self.model_id, messages=[{"role": "user", "content": [{"text": prompt}]}],
+            inferenceConfig={"maxTokens": 1, "temperature": 0.0},
+        )
+        return int(resp["usage"]["inputTokens"])
 
     async def invoke(self, request: InvokeRequest) -> RequestResult:
         loop = asyncio.get_running_loop()

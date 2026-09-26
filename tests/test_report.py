@@ -213,7 +213,7 @@ class BuildCapacityProfileTests(unittest.TestCase):
         self.assertEqual(v["output"]["target"], 64)
         self.assertTrue(v["output"]["valid"])  # 60 vs 64 = -6.25%, within 25%
         self.assertFalse(v["valid"])  # overall = both
-        self.assertEqual(v["padding"], "4_chars_per_token_estimate")
+        self.assertEqual(v["token_counting"], {"method": "estimate"})  # no calibration ran
 
     def test_short_output_is_flagged(self):
         spec = self._spec()

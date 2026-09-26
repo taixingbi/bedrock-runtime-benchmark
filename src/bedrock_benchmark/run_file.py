@@ -138,6 +138,15 @@ def run_file(
     report = asyncio.run(run_experiment(spec, on_progress=_make_progress_printer(), target=target))
     elapsed_s = time.perf_counter() - start
 
+    print("\n-- input-token calibration --")
+    for name, c in report.calibrations.items():
+        if c.method == "estimate":
+            print(f"  {name}: estimate, 4 chars/token ({c.note})")
+        else:
+            status = "converged" if c.converged else "closest, not within tolerance"
+            print(f"  {name}: {c.method} -> {c.counted_input_tokens} tokens ({status}, {c.iterations} steps)"
+                  + (f" [{c.note}]" if c.note else ""))
+
     print("\n-- recommendations --")
     for line in recommendation_summary(report):
         print(f"  {line}")
@@ -161,7 +170,7 @@ def run_file(
 
     for name, entry in capacity_profile["workload_classes"].items():
         v = entry["workload_validation"]
-        for side, why in (("input", "the 4-chars/token padding estimate missed for this model"),
+        for side, why in (("input", f"padding sized by {v['token_counting']['method']} missed"),
                           ("output", "the model stopped well short of max_tokens")):
             c = v[side]
             if c["valid"] is False:

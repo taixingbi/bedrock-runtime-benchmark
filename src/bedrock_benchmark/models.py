@@ -35,6 +35,10 @@ class ModelConfig:
     # How many TPM-quota tokens one output token costs (some models bill
     # output at a multiple against TPM). See ceiling.py.
     output_burndown: float = 1.0
+    # How prompt padding is sized (calibration.py): auto = CountTokens if
+    # supported, else a Converse usage probe, else the 4-chars/token
+    # estimate. Force one with count_tokens | converse_usage | estimate.
+    token_counting: str = "auto"
     enabled: bool = True
 
 

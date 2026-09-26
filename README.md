@@ -48,7 +48,8 @@ for either: a gateway's per-tenant-class concurrency config should be
 
 - **`WorkloadProfile`** (`workload.py`) -- a named input/output token
   shape (e.g. "short" = 512 in / 64 out). Capacity depends heavily on
-  this; see `token-sweep.yaml`. Input is padded at ~4 chars per token.
+  this; see `token-sweep.yaml`. Input padding is calibrated per model
+  from the provider's own token count (`calibration.py`).
 - **`WorkloadMix`** (`workload.py`) -- weighted classes for a mixed-
   workload sweep; each request draws its class independently.
 - **`BedrockConverseTarget`** (`client.py`) -- direct Converse/
@@ -326,6 +327,9 @@ artifact was ever used to actually inform a gateway config:
     `confirmed_fail_from` instead). Only the leading run of passes is
     eligible for the recommendation.
 15. **One SLO for every workload.** See "SLO profiles".
+16. **Input padding trusted 4 chars ≈ 1 token.** Real runs measured
+    ~46% of the requested input. Padding is now calibrated per model
+    from the provider's own count -- see "Input-token calibration".
 
 ## Measurement policy
 
@@ -406,17 +410,43 @@ rps list tuned for one model is useless for another. The first full
 batch found real ceilings between ~1.0x and ~1.9x quota, so the shipped
 sweeps span 0.25x-2.5x.
 
+## Input-token calibration
+
+Prompt padding is sized from the **provider's own token count**, not a
+chars-per-token guess -- the first real batch sent ~236 tokens for
+"512 in", because the repeated filler word tokenizes far denser than
+4 chars/token. Before any load is sent, each model's counter is
+resolved once (`calibration.py`), in preference order:
+
+| Strategy | How | Cost |
+|---|---|---|
+| `count_tokens` | Bedrock `CountTokens` -- used whenever the model supports it | free, no inference |
+| `converse_usage` | fallback: Converse with `maxTokens=1`, read `usage.inputTokens` | one tiny inference per step |
+| `estimate` | last resort (no permission / access): 4 chars ≈ 1 token | -- |
+
+A counter is only accepted if two probes of different length return
+increasing counts. Each workload's padding is then rescaled until the
+counted input is within `calibration_tolerance_pct` (default 2%) of the
+target -- typically 2-4 steps. Calibration runs before warmup and is
+never part of a measurement window. Inference-profile ids
+(`us.`/`eu.`/...) are retried as their base model id for CountTokens.
+
+Per model, `token_counting` in `scripts/models.yaml` can force a strategy
+(`auto` by default). As of 2026-09-25 **none of the five certified
+models support CountTokens** (Bedrock: "The provided model doesn't
+support counting tokens"), so they all calibrate via `converse_usage`;
+a model that gains support switches to `count_tokens` automatically.
+
 ## Workload validation
 
-Prompts are padded at a fixed ~4 chars ≈ 1 token (the same estimate
-`bedrock-runtime-gateway` uses), and `max_tokens` is only a cap -- the
+Calibration sizes the input; `max_tokens` only caps the output -- the
 model may emit far less. So each class's `workload_validation` checks
 BOTH sides against what Bedrock actually *reported* during the run:
 
 ```yaml
 workload_validation:
-  padding: 4_chars_per_token_estimate
-  input:  {target: 4096, observed_p50: 4020, deviation_pct: -1.86, tolerance_pct: 10.0, valid: true}
+  token_counting: {method: converse_usage, calibrated_input_tokens: 509, converged: true, iterations: 3}
+  input:  {target: 4096, observed_p50: 4090, deviation_pct: -0.15, tolerance_pct: 10.0, valid: true}
   output: {target: 512,  observed_p50: 438,  deviation_pct: -14.45, tolerance_pct: 25.0, valid: true}
   valid: true              # both
 ```

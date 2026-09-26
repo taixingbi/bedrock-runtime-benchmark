@@ -7,6 +7,14 @@
 #             so this must be real. Refresh with:
 #               .venv/bin/python scripts/fetch_quota.py --all
 #   enabled   false = skipped by default (still runnable via --model NAME)
+#   token_counting  how prompt padding is sized (default auto):
+#             auto = Bedrock CountTokens if the model supports it, else a
+#             Converse usage probe (maxTokens=1), else 4 chars/token.
+#             Force one with count_tokens | converse_usage | estimate.
+#             As of 2026-09-25 none of the five models below support
+#             CountTokens ("The provided model doesn't support counting
+#             tokens"), so auto resolves to converse_usage for all of them.
+#   output_burndown TPM tokens charged per output token (default 1).
 #
 # The five models bedrock-runtime-gateway certifies (certified_models.yaml);
 # quotas from gateway-model-quotas-dev, fetched 2026-09-25.

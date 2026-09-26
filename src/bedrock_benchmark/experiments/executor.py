@@ -13,6 +13,7 @@ from typing import Callable, Dict, List, Optional, Union
 
 from ..analysis.capacity import Recommendation, SweepAnalysis, SweepPoint, analyze_sweep, recommend
 from ..analysis.metrics import DEFAULT_CONFIDENCE, MeasurementWindow, compute_run_metrics
+from ..calibration import CalibrationResult, calibrate_profile, estimate_profile, resolve_counter
 from ..client import BedrockConverseTarget
 from ..results import RequestResult
 from ..runners.concurrency import ConcurrencyRunner
@@ -44,6 +45,26 @@ class ExperimentReport:
     spec: ExperimentSpec
     profiles: List[ProfileReport] = field(default_factory=list)
     all_results: List[RequestResult] = field(default_factory=list)
+    calibrations: Dict[str, CalibrationResult] = field(default_factory=dict)
+
+
+def calibrate_workloads(spec: ExperimentSpec, target: BedrockConverseTarget) -> Dict[str, CalibrationResult]:
+    """Resolve the model's token counter once (CountTokens > Converse
+    usage > estimate), then size every workload's padding with it."""
+    method, count_fn, notes = resolve_counter(spec.token_counting, [
+        ("count_tokens", target.count_tokens),
+        ("converse_usage", target.usage_input_tokens),
+    ])
+    if method is None:
+        note = "; ".join(notes) or "no provider token counter available"
+        return {w.name: estimate_profile(w, note) for w in spec.workloads}
+    out = {}
+    for w in spec.workloads:
+        result = calibrate_profile(w, count_fn, method, tolerance_pct=spec.calibration_tolerance_pct)
+        if notes and not result.note:
+            result.note = "; ".join(notes)
+        out[w.name] = result
+    return out
 
 
 def _slo_kwargs(slo, *, latency: bool = True) -> dict:
@@ -76,7 +97,8 @@ async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress:
     if spec.sweep.type not in ("concurrency", "rate"):
         raise ValueError(f"unknown sweep type: {spec.sweep.type!r} (use 'concurrency' or 'rate')")
 
-    profiles = {w.name: w for w in spec.workloads}
+    report.calibrations = calibrate_workloads(spec, target)
+    profiles = {name: c.profile for name, c in report.calibrations.items()}
     subjects: List[Union[WorkloadProfile, WorkloadMix]]
     if spec.mix is not None:
         subjects = [WorkloadMix(

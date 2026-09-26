@@ -10,10 +10,11 @@ input_tokens length using the same ~4-chars-per-token estimate
 bedrock-runtime-gateway's own usage/token_estimate.py uses -- it only
 needs to be CLOSE, not exact: the real input_tokens actually consumed
 comes back from Bedrock's own response usage block and is what's
-recorded on RequestResult, never this estimate. report.py's
-workload_validation compares that real count against the requested
-shape, so a model whose tokenizer strays far from 4 chars/token is
-flagged rather than silently mislabeled.
+recorded on RequestResult. calibration.py replaces the estimate with
+a padding length measured by the provider itself (`filler_chars`) --
+Bedrock CountTokens where the model supports it, else a Converse
+usage probe -- and report.py's workload_validation checks the real
+counts against the requested shape either way.
 
 WorkloadMix -- a weighted set of profiles for mixed-workload
 experiments: each request independently samples its class, so short
@@ -40,6 +41,12 @@ class WorkloadProfile:
     # `slo:`) -- a 512-token generation shouldn't be held to the same
     # end-to-end latency as a 64-token one.
     slo_profile: Optional[str] = None
+    # Padding length in chars, set by calibration.py from a provider
+    # token count. None = the 4-chars/token estimate.
+    filler_chars: Optional[int] = None
+
+    def estimated_filler_chars(self) -> int:
+        return self.input_tokens * _CHARS_PER_TOKEN_ESTIMATE
 
     def prompt(self) -> str:
         # Explicitly asks for output of roughly the target length --
@@ -48,8 +55,9 @@ class WorkloadProfile:
         # (e.g. token-sweep.yaml's 512-output profile) needs the model
         # to actually try to fill that budget, not stop early because
         # the prompt itself only warranted a one-line reply.
-        target_chars = self.input_tokens * _CHARS_PER_TOKEN_ESTIMATE
-        repeats = max(1, target_chars // len(_FILLER_WORD))
+        target_chars = self.filler_chars if self.filler_chars is not None else self.estimated_filler_chars()
+        target_chars = max(0, target_chars)
+        repeats = max(1, target_chars // len(_FILLER_WORD) + 1)
         filler = (_FILLER_WORD * repeats)[:target_chars].strip()
         target_words = max(1, self.output_tokens // 2)  # ~2 tokens/word, rough
         return (

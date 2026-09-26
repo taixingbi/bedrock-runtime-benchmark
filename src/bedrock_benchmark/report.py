@@ -158,8 +158,9 @@ def _workload_validation(workload: WorkloadProfile, results: List[RequestResult]
     inp = _deviation(observed["input_tokens_p50"], workload.input_tokens, spec.workload_validation_tolerance_pct)
     out = _deviation(observed["output_tokens_p50"], workload.output_tokens, spec.output_validation_tolerance_pct)
     checks = [v for v in (inp["valid"], out["valid"]) if v is not None]
+    calibration = report.calibrations.get(workload.name)
     return {
-        "padding": "4_chars_per_token_estimate",
+        "token_counting": calibration.to_dict() if calibration else {"method": "estimate"},
         "input": inp,
         "output": out,
         "valid": all(checks) if checks else None,

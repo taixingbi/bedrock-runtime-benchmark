@@ -129,6 +129,10 @@ class ExperimentSpec:
     # (max_tokens). Looser than input -- models legitimately stop a bit
     # early -- but a "512 out" class that really emits 110 is flagged.
     output_validation_tolerance_pct: float = 25.0
+    # Padding calibration (calibration.py): strategy from the model entry,
+    # tolerance for counted vs requested input tokens.
+    token_counting: str = "auto"
+    calibration_tolerance_pct: float = 2.0
     # Named SLOs workloads opt into via WorkloadProfile.slo_profile.
     slo_profiles: Dict[str, SloConfig] = field(default_factory=dict)
     # The models-file entry this spec is bound to (None only for specs
@@ -194,6 +198,8 @@ def load_experiment(path: str, model: ModelConfig) -> ExperimentSpec:
         workload_validation_tolerance_pct=raw.get("workload_validation_tolerance_pct", 10.0),
         output_validation_tolerance_pct=raw.get("output_validation_tolerance_pct", 25.0),
         slo_profiles=slo_profiles,
+        token_counting=model.token_counting,
+        calibration_tolerance_pct=raw.get("calibration_tolerance_pct", 2.0),
         model_name=model.name,
     )
     _validate(spec)
@@ -245,6 +251,9 @@ def _validate(spec: ExperimentSpec) -> None:
         raise ValueError("warmup_s must be >= 0 and duration_s > 0")
     if spec.slo.confidence is not None and not 0 < spec.slo.confidence < 1:
         raise ValueError(f"slo.confidence must be in (0, 1), got {spec.slo.confidence}")
+    from ..calibration import STRATEGIES
+    if spec.token_counting not in STRATEGIES:
+        raise ValueError(f"token_counting must be one of {STRATEGIES}, got {spec.token_counting!r}")
     unknown_profiles = sorted({w.slo_profile for w in spec.workloads if w.slo_profile} - set(spec.slo_profiles))
     if unknown_profiles:
         raise ValueError(f"workloads reference undefined slo_profiles: {unknown_profiles}")
