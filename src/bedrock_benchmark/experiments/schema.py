@@ -16,7 +16,7 @@ shape. Fixed rps values would be far over one model's ceiling and
 nowhere near another's.
 
 SLOs come from constraints/slo.yaml, never from the experiment: every
-workload names its profile explicitly (`slo_profile: long_generation`)
+workload names its SLO tier explicitly (`slo_profile: tier3_throughput`)
 -- there is no default -- so the same workload class is judged
 identically in every experiment (see constraints.py).
 """

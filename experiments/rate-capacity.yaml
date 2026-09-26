@@ -20,7 +20,7 @@ workloads:
   - name: short
     input_tokens: 512
     output_tokens: 64
-    slo_profile: interactive
+    slo_profile: tier1_interactive
 
 warmup_s: 10
 duration_s: 90

@@ -17,12 +17,18 @@ def _write(text: str) -> str:
 
 
 class ShippedConstraintsTests(unittest.TestCase):
-    def test_slo_file_defines_named_profiles_and_no_default(self):
+    def test_slo_file_defines_three_tiers_and_no_default(self):
         slos = load_slo()
-        self.assertEqual(set(slos.profiles), {"interactive", "long_generation"})
-        self.assertEqual(slos.get("interactive").latency_p95_ms, 3000)
-        self.assertEqual(slos.get("long_generation").latency_p95_ms, 10000)
-        self.assertEqual(slos.get("long_generation").ttft_p95_ms, slos.get("interactive").ttft_p95_ms)
+        self.assertEqual(set(slos.profiles), {"tier1_interactive", "tier2_standard", "tier3_throughput"})
+        t1, t2, t3 = (slos.get(n) for n in ("tier1_interactive", "tier2_standard", "tier3_throughput"))
+        # Each tier is strictly more relaxed than the one above it.
+        self.assertLess(t1.ttft_p95_ms, t2.ttft_p95_ms)
+        self.assertLess(t2.ttft_p95_ms, t3.ttft_p95_ms)
+        self.assertLess(t1.latency_p95_ms, t2.latency_p95_ms)
+        self.assertLess(t2.latency_p95_ms, t3.latency_p95_ms)
+        self.assertLess(t1.throttle_rate_max, t2.throttle_rate_max)
+        self.assertLess(t2.throttle_rate_max, t3.throttle_rate_max)
+        self.assertGreaterEqual(t1.success_rate_min, t2.success_rate_min)
 
     def test_quota_file_covers_every_shipped_model_for_the_account_and_its_region(self):
         table = load_quotas()
@@ -41,12 +47,19 @@ class ShippedConstraintsTests(unittest.TestCase):
                     self.assertIn(w.slo_profile, slos.profiles)
                     self.assertEqual(spec.slo_for(w.name), slos.get(w.slo_profile))
 
-    def test_512_output_workloads_use_long_generation(self):
+    def test_workloads_bind_tiers_by_request_class(self):
+        """Tier = business request class, from the workload's shape:
+        short chat -> 1, long context + short answer (RAG) -> 2,
+        long generation -> 3."""
+        def expected(w):
+            if w.output_tokens >= 512:
+                return "tier3_throughput"
+            return "tier2_standard" if w.input_tokens >= 4096 else "tier1_interactive"
+
         for path in sorted(Path("experiments").glob("*.yaml")):
             for w in load_experiment(str(path), MICRO).workloads:
                 with self.subTest(path=path.name, workload=w.name):
-                    expected = "long_generation" if w.output_tokens >= 512 else "interactive"
-                    self.assertEqual(w.slo_profile, expected)
+                    self.assertEqual(w.slo_profile, expected(w))
 
 
 class SloFileTests(unittest.TestCase):
@@ -67,18 +80,20 @@ class SloFileTests(unittest.TestCase):
                 Path(path).unlink()
 
     def test_custom_slo_file_is_used_by_experiments(self):
-        path = _write("profiles:\n  interactive: {latency_p95_ms: 500}\n  long_generation: {latency_p95_ms: 900}\n")
+        path = _write("profiles:\n  tier1_interactive: {latency_p95_ms: 500}\n"
+                      "  tier2_standard: {latency_p95_ms: 700}\n  tier3_throughput: {latency_p95_ms: 900}\n")
         try:
             spec = load_experiment("experiments/token-sweep.yaml", MICRO, slo_file=path)
             self.assertEqual(spec.slo_for("short_short").latency_p95_ms, 500)
+            self.assertEqual(spec.slo_for("long_input_short_output").latency_p95_ms, 700)
             self.assertEqual(spec.slo_for("long_long").latency_p95_ms, 900)
         finally:
             Path(path).unlink()
 
     def test_experiment_naming_a_profile_the_slo_file_lacks_is_rejected(self):
-        path = _write("profiles: {interactive: {latency_p95_ms: 1}}\n")
+        path = _write("profiles: {tier1_interactive: {latency_p95_ms: 1}}\n")
         try:
-            with self.assertRaisesRegex(ValueError, "long_generation"):
+            with self.assertRaisesRegex(ValueError, "tier3_throughput"):
                 load_experiment("experiments/token-sweep.yaml", MICRO, slo_file=path)
         finally:
             Path(path).unlink()
@@ -86,8 +101,8 @@ class SloFileTests(unittest.TestCase):
     def test_blend_gate_is_the_strictest_among_used_profiles(self):
         path = _write(
             "profiles:\n"
-            "  interactive: {latency_p95_ms: 3000, success_rate_min: 0.99, throttle_rate_max: 0.01}\n"
-            "  long_generation: {latency_p95_ms: 10000, success_rate_min: 0.999, throttle_rate_max: 0.001, confidence: 0.95}\n"
+            "  tier1_interactive: {latency_p95_ms: 3000, success_rate_min: 0.99, throttle_rate_max: 0.01}\n"
+            "  tier3_throughput: {latency_p95_ms: 10000, success_rate_min: 0.999, throttle_rate_max: 0.001, confidence: 0.95}\n"
         )
         try:
             gate = load_experiment("experiments/mixed-capacity.yaml", MICRO, slo_file=path).slo
@@ -100,7 +115,7 @@ class SloFileTests(unittest.TestCase):
 class ExperimentRejectsInlineConstraintsTests(unittest.TestCase):
     MINIMAL = (
         "name: minimal\n"
-        "workloads: [{name: w, input_tokens: 100, output_tokens: 16, slo_profile: interactive}]\n"
+        "workloads: [{name: w, input_tokens: 100, output_tokens: 16, slo_profile: tier1_interactive}]\n"
         "sweep: {type: concurrency, values: [1]}\n"
     )
 
@@ -114,7 +129,7 @@ class ExperimentRejectsInlineConstraintsTests(unittest.TestCase):
                 Path(path).unlink()
 
     def test_workload_without_a_profile_is_rejected(self):
-        path = _write(self.MINIMAL.replace(", slo_profile: interactive", ""))
+        path = _write(self.MINIMAL.replace(", slo_profile: tier1_interactive", ""))
         try:
             with self.assertRaisesRegex(ValueError, "explicit `slo_profile:`"):
                 load_experiment(path, MICRO)

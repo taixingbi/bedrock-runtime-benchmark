@@ -4,9 +4,9 @@
 # evidence for per-tenant-class concurrency config; a single shape
 # doesn't generalize to every class.
 #
-# SLO profiles (constraints/slo.yaml) are named per workload: the
-# 512-token-output shapes use long_generation (10s end-to-end), the
-# 64-token ones interactive (3s).
+# SLO tiers (constraints/slo.yaml) are named per workload by request
+# class: short chat -> tier1_interactive, long-context short answer
+# (RAG-like) -> tier2_standard, 512-token generations -> tier3_throughput.
 #
 # Slow: 4 workloads x 4 points x (10s warmup + 90s window) ~= 27 min per
 # model. Run it for a capacity re-baseline, not on every change.
@@ -19,19 +19,19 @@ workloads:
   - name: short_short
     input_tokens: 512
     output_tokens: 64
-    slo_profile: interactive
+    slo_profile: tier1_interactive
   - name: short_output_heavy
     input_tokens: 512
     output_tokens: 512
-    slo_profile: long_generation
+    slo_profile: tier3_throughput
   - name: long_input_short_output
     input_tokens: 4096
     output_tokens: 64
-    slo_profile: interactive
+    slo_profile: tier2_standard
   - name: long_long
     input_tokens: 4096
     output_tokens: 512
-    slo_profile: long_generation
+    slo_profile: tier3_throughput
 
 warmup_s: 10
 duration_s: 90

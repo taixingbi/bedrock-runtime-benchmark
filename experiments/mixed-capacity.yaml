@@ -8,7 +8,8 @@
 # Rates are quota_fractions of the mix's provider ceiling --
 # min(RPM, TPM / avg tokens per request), see rate-capacity.yaml.
 # Each class is judged against its own SLO profile from
-# constraints/slo.yaml (short: interactive, long_long: long_generation). The mixed_workloads
+# constraints/slo.yaml (short: tier1_interactive, long_long:
+# tier3_throughput) -- a real mix of request classes on one model. The mixed_workloads
 # envelope is valid for THIS mix's shares only -- a different traffic
 # mix needs its own run.
 name: mixed-capacity
@@ -21,11 +22,11 @@ workloads:
   - name: short
     input_tokens: 512
     output_tokens: 64
-    slo_profile: interactive
+    slo_profile: tier1_interactive
   - name: long_long
     input_tokens: 4096
     output_tokens: 512
-    slo_profile: long_generation
+    slo_profile: tier3_throughput
 
 mix:
   name: short70_long30

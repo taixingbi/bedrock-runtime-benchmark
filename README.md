@@ -93,7 +93,7 @@ Three independent inputs, combined at run time:
 scripts/models.yaml        WHICH models: name (= results folder), model_id, region
 experiments/*.yaml         WHAT load: workloads + sweep -- no model, no SLO, no quota
 constraints/
-  ├─ slo.yaml              SLO:   what quality we REQUIRE  (named profiles per use case)
+  ├─ slo.yaml              SLO:   what quality we REQUIRE  (3 tiers by request class)
   └─ quota.yaml            quota: what the provider ALLOWS (per account / region / model)
         ↓
 every experiment x every model -> capacity-profile.yaml (judged against the constraints)
@@ -110,9 +110,10 @@ every experiment x every model -> capacity-profile.yaml (judged against the cons
   copy can drift and every run of the same workload class is judged
   the same way. `--slo-file` / `--quota-file` point a run at other
   constraint files (e.g. a stricter SLO).
-  - `slo.yaml`: named profiles only (`interactive`, `long_generation`),
-    **no default** -- every workload in every experiment names its
-    `slo_profile:` explicitly, or the experiment fails to load.
+  - `slo.yaml`: three tiers by business request class
+    (`tier1_interactive`, `tier2_standard`, `tier3_throughput`) -- not
+    by model; **no default** -- every workload in every experiment names
+    its `slo_profile:` explicitly, or the experiment fails to load.
   - `quota.yaml`: scoped like Bedrock quotas themselves --
     `accounts: {<account id>: {<region>: {<model name>: {rpm, tpm}}}}`.
     The account comes from the live credentials (STS; `--account`
@@ -218,8 +219,7 @@ constraints:                                       # what every number was judge
   quota: {account: "646821141010", region: us-east-1, rpm: 400, tpm: 8000000, output_burndown: 1.0}  # constraints/quota.yaml
   slo:                                                                       # constraints/slo.yaml -- profiles this run's workloads use
     profiles:
-      interactive: {ttft_p95_ms: 1000, latency_p95_ms: 3000, success_rate_min: 0.99, throttle_rate_max: 0.001, confidence: null}
-      long_generation: {ttft_p95_ms: 1000, latency_p95_ms: 10000, ...}
+      tier1_interactive: {ttft_p95_ms: 800, latency_p95_ms: 3000, success_rate_min: 0.995, throttle_rate_max: 0.001, confidence: null}
 measurement:
   warmup_s: 10
   window_s: 90
@@ -231,7 +231,7 @@ measurement:
 sweep: {type: rate, quota_fractions: [0.25, ...], relative_to: provider_ceiling}
 workload_classes:
   short:
-    slo_profile: interactive
+    slo_profile: tier1_interactive
     observed: {input_tokens_p50: 505, output_tokens_p50: 61}
     workload_validation: {input: {...}, output: {...}, valid: true}
     provider_constraints: {tokens_per_request: 576.0, ceiling_rps: 6.6667, binding_constraint: rpm, ...}
@@ -352,7 +352,7 @@ artifact was ever used to actually inform a gateway config:
     after a fail: no saturation claimed; `unstable_region` and
     `confirmed_fail_from` instead). Only the leading run of passes is
     eligible for the recommendation.
-15. **One SLO for every workload.** See "SLO profiles".
+15. **One SLO for every workload.** See "SLO tiers".
 16. **Input padding trusted 4 chars ≈ 1 token.** Real runs measured
     ~46% of the requested input. Padding is now calibrated per model
     from the provider's own count -- see "Input-token calibration".
@@ -360,9 +360,9 @@ artifact was ever used to actually inform a gateway config:
     `slo:` block lived in 4 experiments and quotas in the models list.
     Both now live once under `constraints/` (schema v5 groups them in
     the artifact's `constraints:` block); loaders reject copies. SLO
-    profiles are always named explicitly per workload (no implicit
-    default), and quotas are scoped by account and region, matching
-    how Bedrock actually applies them.
+    tiers are always named explicitly per workload (no implicit
+    default) and defined by request class, not model; quotas are scoped
+    by account and region, matching how Bedrock actually applies them.
 
 ## Measurement policy
 
@@ -491,36 +491,47 @@ emitted 110 tokens) -- `run.py` warns and `gateway_diff.py` raises
 (input, default 10) and `output_validation_tolerance_pct` (default 25 --
 models legitimately stop a little early).
 
-## SLO profiles
+## SLO tiers
 
-SLOs live in `constraints/slo.yaml` as named profiles per workload /
-use case -- one definition shared by every experiment and model. TTFT
-can be shared, but a 512-token generation can't be held to a 64-token
-reply's end-to-end budget:
+SLOs live in `constraints/slo.yaml` as **three tiers by business
+request class -- not by model**. The same model serves every tier:
 
-```yaml
-# constraints/slo.yaml
-profiles:
-  interactive:     {ttft_p95_ms: 1000, latency_p95_ms: 3000,  success_rate_min: 0.99, throttle_rate_max: 0.001}
-  long_generation: {ttft_p95_ms: 1000, latency_p95_ms: 10000, success_rate_min: 0.99, throttle_rate_max: 0.001}
+```
+same model
+├── short chat       -> tier1_interactive
+├── RAG answer       -> tier2_standard
+└── long generation  -> tier3_throughput
 ```
 
+never "nova-pro = tier 1, nova-micro = tier 3".
+
+| Tier | Typical workload | TTFT p95 | E2E p95 | Success | Throttle | Focus |
+|---|---|---|---|---|---|---|
+| `tier1_interactive` | chatbot, agent UI, user waiting | 800 ms | 3 s | 99.5% | 0.1% | TTFT first, strictest limits |
+| `tier2_standard` | RAG, internal copilot, ordinary API | 1.5 s | 6 s | 99% | 0.5% | latency / capacity balance |
+| `tier3_throughput` | long generation, summarization, offline jobs | 3 s | 15 s | 99% | 1% | throughput first, latency relaxed |
+
 There is **no default**: every workload -- including each class of a
-mixed workload -- names its profile, so reading an experiment tells you
-exactly which SLO each class is held to:
+mixed workload -- names its tier:
 
 ```yaml
 workloads:
-  - {name: short_short, input_tokens: 512,  output_tokens: 64,  slo_profile: interactive}
-  - {name: long_long,   input_tokens: 4096, output_tokens: 512, slo_profile: long_generation}
+  - {name: short_short,             input_tokens: 512,  output_tokens: 64,  slo_profile: tier1_interactive}
+  - {name: long_input_short_output, input_tokens: 4096, output_tokens: 64,  slo_profile: tier2_standard}
+  - {name: long_long,               input_tokens: 4096, output_tokens: 512, slo_profile: tier3_throughput}
 ```
 
-Isolated workloads are gated on their own profile. In a mix, every
-request counts toward goodput against its own class's SLO, every class
-is gated on its own profile, and the blend on the STRICTEST
-success/throttle gate among the profiles its classes use (latency
-always per class). The answer is therefore model + workload class +
-SLO profile + quota -> envelope, never one universal concurrency.
+Each tier therefore yields its own envelope per model -- strict tier 1
+-> lower safe rps/concurrency, relaxed tier 3 -> higher -- which maps
+directly onto a gateway's `request_class -> concurrency / rate limit`.
+Isolated workloads are gated on their own tier. In a mix, every
+request counts toward goodput against its own class's tier, every class
+is gated on its own tier, and the blend on the STRICTEST success/throttle
+gate among its classes' tiers (latency always per class).
+
+Looser throttle limits also need fewer samples to resolve statistically:
+~2,700 requests per point for tier 1's 0.1%, ~540 for tier 2's 0.5%,
+~270 for tier 3's 1% (95% confidence).
 
 ## Mixed workloads
 

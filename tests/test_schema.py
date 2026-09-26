@@ -11,7 +11,7 @@ NO_QUOTA = ModelConfig(name="mystery", model_id="x.y-v1:0")
 
 MINIMAL = (
     "name: minimal\n"
-    "workloads: [{name: w, input_tokens: 100, output_tokens: 16, slo_profile: interactive}]\n"
+    "workloads: [{name: w, input_tokens: 100, output_tokens: 16, slo_profile: tier1_interactive}]\n"
     "sweep: {type: concurrency, values: [1]}\n"
 )
 
@@ -82,10 +82,10 @@ class ModelBindingTests(unittest.TestCase):
 class SloProfileTests(unittest.TestCase):
     def test_workloads_resolve_their_own_slo_profile(self):
         spec = load_experiment("experiments/token-sweep.yaml", MICRO)
-        self.assertEqual(spec.slo_for("short_short").latency_p95_ms, 3000)
-        self.assertEqual(spec.slo_for("long_long").latency_p95_ms, 10000)
-        self.assertEqual(spec.slo_for("short_output_heavy").latency_p95_ms, 10000)
-        self.assertEqual(spec.slo_for("long_input_short_output").latency_p95_ms, 3000)
+        self.assertEqual(spec.slo_for("short_short").latency_p95_ms, 3000)                # tier 1
+        self.assertEqual(spec.slo_for("long_input_short_output").latency_p95_ms, 6000)    # tier 2
+        self.assertEqual(spec.slo_for("short_output_heavy").latency_p95_ms, 15000)        # tier 3
+        self.assertEqual(spec.slo_for("long_long").latency_p95_ms, 15000)                 # tier 3
 
 
 class ValidationTests(unittest.TestCase):
@@ -105,8 +105,8 @@ class ValidationTests(unittest.TestCase):
             MINIMAL.replace("values: [1]", "quota_fractions: [1.0]"),  # concurrency can't be quota-relative
             MINIMAL.replace("{type: concurrency, values: [1]}", "{type: rate}"),
             MINIMAL.replace("values: [1]", "values: [1, 128]"),  # > transport.max_connections (64)
-            MINIMAL.replace("slo_profile: interactive", "slo_profile: nope"),
-            MINIMAL.replace(", slo_profile: interactive", ""),  # no explicit profile
+            MINIMAL.replace("slo_profile: tier1_interactive", "slo_profile: nope"),
+            MINIMAL.replace(", slo_profile: tier1_interactive", ""),  # no explicit profile
             MINIMAL + "transport: {max_connections: 64, executor_workers: 8}\n",
         ]
         for text in bad:
