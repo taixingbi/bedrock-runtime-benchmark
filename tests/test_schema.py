@@ -83,9 +83,9 @@ class ModelBindingTests(unittest.TestCase):
 class SloProfileTests(unittest.TestCase):
     def test_workloads_resolve_the_slo_profile_the_catalog_binds(self):
         spec = load_experiment("experiments/token-sweep.yaml", MICRO)
-        self.assertEqual(spec.slo_for("short_chat").latency_p95_ms, 3000)       # gold
-        self.assertEqual(spec.slo_for("rag_answer").latency_p95_ms, 6000)       # silver
-        self.assertEqual(spec.slo_for("long_generation").latency_p95_ms, 15000) # bronze
+        self.assertEqual(spec.slo_for("short_chat").tpot_p95_ms, 40)        # gold
+        self.assertEqual(spec.slo_for("rag_answer").tpot_p95_ms, 70)        # silver
+        self.assertEqual(spec.slo_for("long_generation").tpot_p95_ms, 120)  # bronze
 
 
 class ValidationTests(unittest.TestCase):

@@ -7,10 +7,13 @@
 # Three service classes, by business criticality of the request -- not
 # by model:
 #
+# Gated on the two latency components rather than end-to-end latency,
+# so one class stays meaningful whatever the output length:
+#
 #   ttft_p95_ms        time to first token, p95 (streaming only)
-#   latency_p95_ms     end-to-end latency, p95
-#   tpot_p95_ms        optional: time per output token after the first,
-#                      p95 = (latency - TTFT) / (output_tokens - 1)
+#   tpot_p95_ms        time per output token after the first, p95:
+#                      (latency - TTFT) / (output_tokens - 1)
+#   latency_p95_ms     optional end-to-end latency, p95
 #   success_rate_min   fraction of requests that must succeed
 #   throttle_rate_max  max fraction throttled (429)
 #   confidence         optional, e.g. 0.95: gate success/throttle on
@@ -22,20 +25,20 @@ profiles:
   gold:
     # Real-time, latency-sensitive, business-critical workloads.
     ttft_p95_ms: 800
-    latency_p95_ms: 3000
+    tpot_p95_ms: 40
     success_rate_min: 0.995
     throttle_rate_max: 0.001
 
   silver:
     # Standard synchronous application workloads.
     ttft_p95_ms: 1500
-    latency_p95_ms: 6000
+    tpot_p95_ms: 70
     success_rate_min: 0.99
     throttle_rate_max: 0.005
 
   bronze:
     # Async, batch, or throughput-oriented workloads.
     ttft_p95_ms: 3000
-    latency_p95_ms: 15000
+    tpot_p95_ms: 120
     success_rate_min: 0.99
     throttle_rate_max: 0.01

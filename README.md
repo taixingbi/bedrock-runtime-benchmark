@@ -220,7 +220,7 @@ constraints:                                       # what every number was judge
   quota: {account: "646821141010", region: us-east-1, rpm: 400, tpm: 8000000, output_burndown: 1.0}  # constraints/quota.yaml
   slo:                                                                       # constraints/slo.yaml -- profiles this run's workloads use
     profiles:
-      gold: {ttft_p95_ms: 800, tpot_p95_ms: null, latency_p95_ms: 3000, success_rate_min: 0.995, throttle_rate_max: 0.001, confidence: null}
+      gold: {ttft_p95_ms: 800, tpot_p95_ms: 40, latency_p95_ms: null, success_rate_min: 0.995, throttle_rate_max: 0.001, confidence: null}
 measurement:
   warmup_s: 10
   window_s: 90
@@ -520,16 +520,21 @@ class (strict gold -> lower safe rps/concurrency, relaxed bronze ->
 higher), which maps onto a gateway's `request_class -> concurrency /
 rate limit`.
 
-| Profile | For | Workload | TTFT p95 | E2E p95 | Success | Throttle |
-|---|---|---|---|---|---|---|
-| `gold` | real-time, latency-sensitive, business-critical | `short_chat` | 800 ms | 3 s | 99.5% | 0.1% |
-| `silver` | standard synchronous application | `rag_answer` | 1.5 s | 6 s | 99% | 0.5% |
-| `bronze` | async, batch, throughput-oriented | `long_generation` | 3 s | 15 s | 99% | 1% |
+Classes gate on the two latency components -- **TTFT** (time to first
+token) and **TPOT** (time per output token after the first:
+`(latency - TTFT) / (output_tokens - 1)`, per streamed request with
+>= 2 output tokens) -- rather than end-to-end latency, so a class stays
+meaningful for a 64-token reply and a 1024-token generation alike. A
+configured TPOT SLO with no TPOT measured fails closed, like TTFT.
 
-A profile may also set `tpot_p95_ms` -- time per output token after the
-first, `(latency - TTFT) / (output_tokens - 1)` per streamed request
-with >= 2 output tokens; like TTFT, a configured TPOT SLO with no TPOT
-measured fails closed. Isolated workloads are gated on their own
+| Profile | For | Workload | TTFT p95 | TPOT p95 | Success | Throttle |
+|---|---|---|---|---|---|---|
+| `gold` | real-time, latency-sensitive, business-critical | `short_chat` | 800 ms | 40 ms | 99.5% | 0.1% |
+| `silver` | standard synchronous application | `rag_answer` | 1.5 s | 70 ms | 99% | 0.5% |
+| `bronze` | async, batch, throughput-oriented | `long_generation` | 3 s | 120 ms | 99% | 1% |
+
+`latency_p95_ms` remains available as an optional end-to-end gate.
+Isolated workloads are gated on their own
 profile. In a mix, every request counts toward goodput against its own
 class's profile, every class is gated on its own profile, and the blend
 on the STRICTEST success/throttle gate among its classes' profiles
