@@ -32,14 +32,25 @@ sweep:
 provider_headroom: 0.20
 quota_headroom: 0.10
 
-# Two-phase: discovery (every value once) finds the transition region;
-# confirmation re-runs the candidate safe point and one neighbour on
-# each side 3 more times, pooled -- the final envelope rests on repeated
-# measurements at the boundary (and ~4x the samples there, which is what
-# resolves INCONCLUSIVE throttle checks). Adds up to 9 runs (~15 min).
+# Two phases with separate jobs (analysis/confirmation.py):
+#   discovery     every value once -- picks the candidate and reports the
+#                 transition region; its data never confirms anything.
+#   confirmation  fresh repetitions at the candidate (the highest
+#                 non-failing point at or below the provider ceiling)
+#                 until a pre-planned look PASSes it, an observed
+#                 violation FAILs it, or a cap is hit -> INCONCLUSIVE.
+# PASS only at max_looks pre-planned sample sizes, each at confidence
+# 1 - 0.05 / max_looks, so repeated checking can't inflate false PASSes.
+# For gold (throttle <= 0.1%, exact Clopper-Pearson bounds) with
+# max_looks 2 the looks are at 3,688 and 5,570 requests; at the 6.67 rps
+# ceiling (~600 requests/rep) that's 7 and 10 repetitions, inside the
+# caps below.
 confirmation:
-  repetitions: 3
-  neighbors: 1
+  max_looks: 2
+  max_repetitions: 10
+  max_requests: 8000
+  max_duration_s: 1800
+  candidates: 1
 
 transport:
   max_connections: 64

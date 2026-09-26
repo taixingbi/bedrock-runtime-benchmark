@@ -106,9 +106,9 @@ def _value(point) -> float:
     return point.concurrency if point.concurrency is not None else point.rps
 
 
-_UNCONFIRMED_NOTE = ("no statistically confirmed point -- nothing violated the SLO, but no point had enough "
-                     "requests to prove it (see observed_inconclusive_checks for n vs required_n); raise "
-                     "duration_s / repetitions / confirmation.repetitions")
+_UNCONFIRMED_NOTE = ("no statistically confirmed point, so no production value -- see `confirmation` for why "
+                     "(no candidate PASSed a pre-planned look within the caps); raise the confirmation caps "
+                     "rather than relax the SLO")
 
 
 def _observed_fields(rec: Recommendation) -> dict:
@@ -132,6 +132,7 @@ def _concurrency_block(rec: Recommendation, *, headroom: float) -> dict:
         "observed_nonfailing": rec.point.concurrency,
         **_observed_fields(rec),
         "statistically_confirmed": confirmed,
+        "confirmation_source": rec.confirmation_source,
         "saturation": saturation,
         **_saturation_fields(rec),
         "production_max": max(1, int(apply_headroom(confirmed, headroom=headroom))) if confirmed else None,
@@ -172,6 +173,7 @@ def _rate_block(rec: Recommendation, *, headroom: float, quota_headroom: float, 
         **_observed_fields(rec),
         "observed_slo_goodput_rps": rec.point.metrics.slo_goodput_rps,
         "statistically_confirmed_offered_rps": confirmed,
+        "confirmation_source": rec.confirmation_source,  # confirmation | discovery_fixed_sequence
         "confirmed_slo_goodput_rps": rec.confirmed_point.metrics.slo_goodput_rps if rec.confirmed_point else None,
         # Highest swept rate that didn't FAIL anywhere in the sweep --
         # observed short-window serving, possibly above quota on burst.
@@ -276,7 +278,15 @@ def _envelope(entry: dict, profile_report, spec) -> None:
     if limited:
         entry["client_limited_points"] = limited
     if profile_report.verdicts:
+        # Discovery only: picks candidates and shows the transition region.
         entry["sweep_points"] = _sweep_points(profile_report)
+    if profile_report.confirmation_plan is not None:
+        # Independent data at the candidates; the only source of
+        # statistically_confirmed when present.
+        entry["confirmation"] = {
+            "plan": profile_report.confirmation_plan.to_dict(),
+            "candidates": [c.to_dict() for c in profile_report.confirmations],
+        }
     rec = profile_report.recommendation
     if rec is None:
         analysis = profile_report.analysis
@@ -343,7 +353,7 @@ def build_capacity_profile(report: ExperimentReport) -> dict:
 
     confidence = spec.slo.confidence or DEFAULT_CONFIDENCE
     return {
-        "schema_version": 7,
+        "schema_version": 8,
         "experiment": spec.name,
         "model": {
             "name": spec.model_name,
@@ -380,12 +390,14 @@ def build_capacity_profile(report: ExperimentReport) -> dict:
             "window_policy": "scheduled_in_window_for_rates__completed_in_window_for_throughput",
             "clock": "monotonic_durations__wall_clock_timestamps",
             # Every check is PASS / FAIL / INCONCLUSIVE; success & throttle
-            # use Wilson bounds at this confidence (observed violation ->
+            # use exact Clopper-Pearson bounds at this confidence (observed violation ->
             # FAIL, bound clears -> PASS, otherwise INCONCLUSIVE).
             "gate": "pass_fail_inconclusive",
             "confidence": confidence,
             "confirmation": (
-                {"repetitions": spec.confirmation.repetitions, "neighbors": spec.confirmation.neighbors}
+                {"max_looks": spec.confirmation.max_looks, "max_repetitions": spec.confirmation.max_repetitions,
+                 "max_requests": spec.confirmation.max_requests, "max_duration_s": spec.confirmation.max_duration_s,
+                 "candidates": spec.confirmation.candidates}
                 if spec.confirmation is not None else None
             ),
             "min_requests_to_resolve_throttle_slo": min_samples_to_resolve_rate(

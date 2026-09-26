@@ -1,8 +1,8 @@
 import unittest
 
 from bedrock_benchmark.analysis.metrics import (
-    MeasurementWindow, compute_run_metrics, min_samples_to_resolve_rate, percentile, tpot_ms, wilson_lower,
-    wilson_upper,
+    MeasurementWindow, compute_run_metrics, min_samples_to_resolve_rate, percentile, rate_lower, rate_upper,
+    tpot_ms,
 )
 from bedrock_benchmark.results import RequestResult
 
@@ -174,17 +174,17 @@ class MeasurementWindowTests(unittest.TestCase):
 class ConfidenceBoundTests(unittest.TestCase):
     def test_zero_throttles_in_540_does_not_resolve_a_0_1_percent_slo(self):
         """The reviewer's example: 6 rps x 90s ~= 540 requests."""
-        self.assertGreater(wilson_upper(0, 540), 0.001)
+        self.assertGreater(rate_upper(0, 540), 0.001)
 
     def test_enough_zero_throttle_samples_do_resolve_it(self):
         n = min_samples_to_resolve_rate(0.001)
-        self.assertLessEqual(wilson_upper(0, n), 0.001)
-        self.assertGreater(wilson_upper(0, n - 1), 0.001)
+        self.assertLessEqual(rate_upper(0, n), 0.001)
+        self.assertGreater(rate_upper(0, n - 1), 0.001)
         self.assertTrue(2500 < n < 3000)
 
     def test_bounds_bracket_the_point_estimate(self):
-        self.assertLess(wilson_lower(990, 1000), 0.99)
-        self.assertGreater(wilson_upper(10, 1000), 0.01)
+        self.assertLess(rate_lower(990, 1000), 0.99)
+        self.assertGreater(rate_upper(10, 1000), 0.01)
 
     def test_metrics_carry_counts_and_bounds(self):
         results = [_result() for _ in range(99)] + [_result(success=False, throttled=True)]

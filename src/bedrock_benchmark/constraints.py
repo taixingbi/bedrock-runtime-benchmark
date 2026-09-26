@@ -37,12 +37,11 @@ class SloConfig:
     # all and cleanly.
     success_rate_min: float = 0.99
     throttle_rate_max: float = 0.001
-    # When set (e.g. 0.95), success_rate_min/throttle_rate_max are
-    # gated on one-sided Wilson confidence bounds instead of point
-    # estimates -- a point has to have enough requests to DEMONSTRATE
-    # it meets a 0.1% throttle SLO (~2,700 at 95%), not just happen to
-    # observe zero throttles in a few hundred. None keeps point-
-    # estimate gating (bounds are still computed and reported at 95%).
+    # Confidence for the success/throttle checks (default 0.95): judged
+    # PASS / FAIL / INCONCLUSIVE on exact (Clopper-Pearson) one-sided
+    # bounds -- a point has to have enough requests to DEMONSTRATE it
+    # meets a 0.1% throttle SLO (2,995 at 95%), not just happen to
+    # observe zero throttles in a few hundred. None = 0.95.
     confidence: Optional[float] = None
 
 

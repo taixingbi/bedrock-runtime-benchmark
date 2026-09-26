@@ -72,14 +72,21 @@ class SweepConfig:
 
 @dataclass
 class ConfirmationConfig:
-    """Two-phase sweep: the discovery pass (every value, `repetitions`
-    each) finds the transition region; this phase re-runs the candidate
-    safe point and `neighbors` points either side of it `repetitions`
-    more times, pooled with discovery. One 90s window is a capacity
-    snapshot; the final capacity-profile should rest on repeated
-    measurements at the boundary, not on every point equally."""
-    repetitions: int = 3
-    neighbors: int = 1
+    """Adaptive confirmation (analysis/confirmation.py): after discovery
+    picks candidates, fresh independent repetitions at each candidate
+    until a pre-planned look can PASS it, an observed violation FAILs it,
+    or a cap is reached (-> INCONCLUSIVE). Discovery data never counts."""
+    # PASS may be declared only at this many pre-planned sample sizes,
+    # each at confidence 1 - alpha / max_looks (Bonferroni).
+    max_looks: int = 2
+    # Per-candidate caps.
+    max_repetitions: int = 10
+    max_requests: int = 8000
+    # Wall-time cap for the whole confirmation phase of one sweep subject.
+    max_duration_s: float = 1800.0
+    # How many of the highest non-failing discovery points to confirm,
+    # tested lowest-first (fixed sequence).
+    candidates: int = 1
 
 
 @dataclass
@@ -330,8 +337,11 @@ def _validate(spec: ExperimentSpec) -> None:
     for name in ("provider_headroom", "quota_headroom"):
         if not 0 <= getattr(spec, name) < 1:
             raise ValueError(f"{name} must be in [0, 1)")
-    if spec.confirmation is not None and (spec.confirmation.repetitions < 1 or spec.confirmation.neighbors < 0):
-        raise ValueError("confirmation.repetitions must be >= 1 and confirmation.neighbors >= 0")
+    c = spec.confirmation
+    if c is not None and (c.max_looks < 1 or c.max_repetitions < 1 or c.max_requests < 1
+                          or c.max_duration_s <= 0 or c.candidates < 1):
+        raise ValueError("confirmation: max_looks, max_repetitions, max_requests, candidates must be >= 1 "
+                         "and max_duration_s > 0")
     if spec.repetitions < 1:
         raise ValueError(f"repetitions must be >= 1, got {spec.repetitions}")
     if spec.warmup_s < 0 or spec.duration_s <= 0:

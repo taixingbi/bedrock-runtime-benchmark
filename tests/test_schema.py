@@ -159,7 +159,8 @@ class ValidationTests(unittest.TestCase):
             MINIMAL + "mix: {name: x, weights: {rag_answer: 1}}\n",            # mixes an unlisted workload
             MINIMAL + "transport: {max_connections: 64, executor_workers: 8}\n",
             MINIMAL + "quota_headroom: 1.0\n",
-            MINIMAL + "confirmation: {repetitions: 0}\n",
+            MINIMAL + "confirmation: {max_looks: 0}\n",
+            MINIMAL + "confirmation: {max_duration_s: 0}\n",
         ]
         for text in bad:
             with self.subTest(text=text), self.assertRaises(ValueError):

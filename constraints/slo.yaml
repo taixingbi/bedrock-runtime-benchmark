@@ -18,11 +18,13 @@
 #   success_rate_min   fraction of requests that must succeed
 #   throttle_rate_max  max fraction throttled (429)
 #   confidence         optional (default 0.95): success/throttle are judged
-#                      PASS / FAIL / INCONCLUSIVE on Wilson bounds -- an
-#                      observed violation FAILs; too few requests to prove
-#                      the limit is INCONCLUSIVE, not a fail. Requests per
-#                      point to resolve throttle_rate_max at 95%: ~2,700
-#                      (0.001), ~540 (0.005), ~270 (0.01)
+#                      PASS / FAIL / INCONCLUSIVE on exact (Clopper-Pearson)
+#                      bounds -- an observed violation FAILs; too few
+#                      requests to prove the limit is INCONCLUSIVE, not a
+#                      fail. Requests per point to resolve throttle_rate_max
+#                      at 95% with zero throttles: 2,995 (0.001), 598
+#                      (0.005), 299 (0.01). Don't loosen a profile to reach
+#                      PASS -- raise the confirmation caps instead.
 
 profiles:
   gold:

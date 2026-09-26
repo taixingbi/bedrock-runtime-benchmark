@@ -225,8 +225,13 @@ class Recommendation:
     # `point`'s verdict: PASS = statistically demonstrated; INCONCLUSIVE =
     # no violation observed but not enough requests to prove the rate SLOs.
     verdict: Verdict = field(default_factory=lambda: Verdict(PASS))
-    # Best point in the leading run that is strictly PASS, if any.
+    # The statistically confirmed point, or None. Set from the DISCOVERY
+    # sweep by recommend() (a fixed-sequence test: the top of the leading
+    # run of strict PASSes, in ascending order) -- and, when a
+    # confirmation phase runs, replaced by the executor with the result
+    # of that phase alone (confirmation_source says which).
     confirmed_point: Optional[SweepPoint] = None
+    confirmation_source: str = "discovery_fixed_sequence"
     # Highest swept value anywhere that didn't FAIL -- what the service
     # sustained in a short window, possibly above quota on burst capacity.
     burst_point: Optional[SweepPoint] = None
@@ -252,14 +257,23 @@ def recommend(points: List[SweepPoint], class_slo: Optional[Dict[str, dict]] = N
 
     stable = [p for p in ordered if _key(p) <= analysis.stable_pass_max]
     best = max(stable, key=goodput)
-    confirmed = [p for p in stable if verdicts[id(p)].verdict == PASS]
+    # Fixed-sequence test over the sweep's own ascending order: each point
+    # is tested at the full confidence, and the claim stops at the first
+    # point that isn't a strict PASS -- so the family-wise false-PASS rate
+    # stays <= alpha. (Picking the best-goodput PASS anywhere in the run,
+    # skipping INCONCLUSIVE points in between, would not.)
+    confirmed = []
+    for p in ordered:
+        if verdicts[id(p)].verdict != PASS:
+            break
+        confirmed.append(p)
     non_failing = [p for p in ordered if verdicts[id(p)].verdict != FAIL]
     saturation = None
     if analysis.status == "resolved":
         saturation = next(p for p in ordered if _key(p) == analysis.confirmed_fail_from)
     return Recommendation(
         point=best, saturation_point=saturation, analysis=analysis, verdict=verdicts[id(best)],
-        confirmed_point=max(confirmed, key=goodput) if confirmed else None,
+        confirmed_point=confirmed[-1] if confirmed else None,
         burst_point=max(non_failing, key=_key) if non_failing else None,
     )
 

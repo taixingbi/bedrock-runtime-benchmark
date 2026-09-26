@@ -41,12 +41,86 @@ def _z_one_sided(confidence: float) -> float:
     return NormalDist().inv_cdf(confidence)
 
 
+def _betacf(a: float, b: float, x: float) -> float:
+    """Continued fraction for the regularized incomplete beta (Lentz)."""
+    tiny = 1e-300
+    qab, qap, qam = a + b, a + 1.0, a - 1.0
+    c, d = 1.0, 1.0 - qab * x / qap
+    d = 1.0 / (d if abs(d) > tiny else tiny)
+    h = d
+    for m in range(1, 1000):
+        m2 = 2 * m
+        aa = m * (b - m) * x / ((qam + m2) * (a + m2))
+        d = 1.0 + aa * d
+        d = 1.0 / (d if abs(d) > tiny else tiny)
+        c = 1.0 + aa / c
+        c = c if abs(c) > tiny else tiny
+        h *= d * c
+        aa = -(a + m) * (qab + m) * x / ((a + m2) * (qap + m2))
+        d = 1.0 + aa * d
+        d = 1.0 / (d if abs(d) > tiny else tiny)
+        c = 1.0 + aa / c
+        c = c if abs(c) > tiny else tiny
+        delta = d * c
+        h *= delta
+        if abs(delta - 1.0) < 1e-12:
+            break
+    return h
+
+
+def _betainc(a: float, b: float, x: float) -> float:
+    """Regularized incomplete beta I_x(a, b)."""
+    if x <= 0:
+        return 0.0
+    if x >= 1:
+        return 1.0
+    ln_front = math.lgamma(a + b) - math.lgamma(a) - math.lgamma(b) + a * math.log(x) + b * math.log1p(-x)
+    if x < (a + 1) / (a + b + 2):
+        return math.exp(ln_front) * _betacf(a, b, x) / a
+    return 1.0 - math.exp(ln_front) * _betacf(b, a, 1.0 - x) / b
+
+
+def rate_upper(k: int, n: int, *, confidence: float = DEFAULT_CONFIDENCE) -> float:
+    """One-sided EXACT (Clopper-Pearson) upper bound on a binomial rate:
+    the largest p for which seeing <= k events in n requests still has
+    probability >= 1 - confidence. "With this many samples, the true
+    rate is at most X at this confidence" -- with guaranteed coverage.
+
+    Exact rather than Wilson on purpose: the SLO rate checks live at
+    zero or a handful of events, exactly where Wilson is anti-
+    conservative -- its 95% bound clears a 0.1% limit after 2,703
+    throttle-free requests, but at a true rate of exactly 0.1% that
+    happens 6.7% of the time, not 5%. Clopper-Pearson needs 2,995."""
+    if n <= 0:
+        return 1.0
+    if k >= n:
+        return 1.0
+    alpha = 1.0 - confidence
+    if k == 0:
+        return 1.0 - alpha ** (1.0 / n)
+    # P(X <= k | n, p) = 1 - I_p(k + 1, n - k); solve it equal to alpha.
+    lo, hi = k / n, 1.0
+    for _ in range(100):
+        mid = (lo + hi) / 2
+        if 1.0 - _betainc(k + 1, n - k, mid) > alpha:
+            lo = mid
+        else:
+            hi = mid
+        if hi - lo < 1e-12:
+            break
+    return hi
+
+
+def rate_lower(k: int, n: int, *, confidence: float = DEFAULT_CONFIDENCE) -> float:
+    """Exact one-sided lower bound on a binomial rate (k successes of n)."""
+    if n <= 0:
+        return 0.0
+    return 1.0 - rate_upper(n - k, n, confidence=confidence)
+
+
 def wilson_upper(k: int, n: int, *, confidence: float = DEFAULT_CONFIDENCE) -> float:
-    """One-sided Wilson score upper bound on a binomial rate -- "with
-    this many samples, the true rate is at most X at this confidence."
-    Used instead of the raw k/n point estimate because a 0.1% throttle
-    SLO can't be resolved from a few hundred requests: 0/540 throttles
-    has a point estimate of 0% but a 95% upper bound of ~0.5%."""
+    """One-sided Wilson score upper bound. Kept for reference/comparison
+    only -- SLO decisions use the exact rate_upper (see its docstring)."""
     if n <= 0:
         return 1.0
     z = _z_one_sided(confidence)
@@ -64,14 +138,16 @@ def wilson_lower(k: int, n: int, *, confidence: float = DEFAULT_CONFIDENCE) -> f
 
 
 def min_samples_to_resolve_rate(max_rate: float, *, confidence: float = DEFAULT_CONFIDENCE) -> int:
-    """Smallest n for which ZERO observed events already puts the
-    Wilson upper bound at or under max_rate -- the floor below which a
-    point can't statistically demonstrate it meets the SLO no matter
-    how clean it looks. ~2,700 requests for 0.1% at 95%."""
+    """Smallest n for which ZERO observed events already puts the exact
+    upper bound at or under max_rate: 1 - alpha^(1/n) <= max_rate. The
+    floor below which a point can't statistically demonstrate it meets
+    the SLO no matter how clean it looks -- 2,995 requests for 0.1% at
+    95% (the "rule of three": ~3 / rate)."""
     if max_rate <= 0:
         raise ValueError("max_rate must be > 0 -- a zero-tolerance rate can never be statistically demonstrated")
-    z2 = _z_one_sided(confidence) ** 2
-    return math.ceil(z2 * (1 - max_rate) / max_rate)
+    if max_rate >= 1:
+        return 1
+    return math.ceil(math.log(1.0 - confidence) / math.log1p(-max_rate))
 
 
 def tpot_ms(r: RequestResult) -> Optional[float]:
@@ -237,8 +313,8 @@ def compute_run_metrics(
         slo_goodput_rps=slo_goodput_rps,
         slo_efficiency=slo_efficiency,
         n_throttled=n_throttled,
-        throttle_rate_upper=round(wilson_upper(n_throttled, n, confidence=confidence), 6),
-        success_rate_lower=round(wilson_lower(n_success, n, confidence=confidence), 6),
+        throttle_rate_upper=round(rate_upper(n_throttled, n, confidence=confidence), 6),
+        success_rate_lower=round(rate_lower(n_success, n, confidence=confidence), 6),
         bound_confidence=confidence,
         measured_duration_s=round(duration_s, 3),
     )

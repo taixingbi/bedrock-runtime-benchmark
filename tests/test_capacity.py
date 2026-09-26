@@ -107,7 +107,7 @@ class TriStateVerdictTests(unittest.TestCase):
         self.assertEqual(v.verdict, "INCONCLUSIVE")
         throttle = next(c for c in v.checks if c.name == "throttle_rate")
         self.assertEqual((throttle.verdict, throttle.reason, throttle.n), ("INCONCLUSIVE", "insufficient_samples", 180))
-        self.assertEqual(throttle.required_n, 2703)
+        self.assertEqual(throttle.required_n, 2995)  # exact (Clopper-Pearson), not Wilson's 2,703
         success = next(c for c in v.checks if c.name == "success_rate")
         self.assertEqual(success.verdict, "INCONCLUSIVE")
 

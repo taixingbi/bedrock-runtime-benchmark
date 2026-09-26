@@ -42,19 +42,21 @@ class RunOutcome:
 
 
 def estimated_duration_s(spec: ExperimentSpec) -> float:
-    """Wall time estimate: every sweep point runs warmup + window per
+    """Upper-bound wall time: every sweep point runs warmup + window per
     repetition, per sweep subject (each workload, or one mix), plus --
-    with confirmation -- up to 2 x neighbors + 1 boundary points re-run
-    confirmation.repetitions more times (fewer if the candidate sits at
-    an end of the sweep, none if nothing passed). Drain time on top
-    depends on real latency, so it isn't counted."""
+    with confirmation -- at most min(max_duration_s, candidates x
+    max_repetitions x (warmup + window)) per subject. Adaptive
+    confirmation usually stops sooner (PASS at an early look, or an
+    observed FAIL). Drain time on top depends on real latency, so it
+    isn't counted."""
     subjects = 1 if spec.mix is not None else len(spec.workloads)
     per_run = spec.warmup_s + spec.duration_s
-    discovery = spec.sweep.point_count * spec.repetitions
-    confirmation = 0
+    discovery = spec.sweep.point_count * spec.repetitions * per_run
+    confirmation = 0.0
     if spec.confirmation is not None:
-        confirmation = min(2 * spec.confirmation.neighbors + 1, spec.sweep.point_count) * spec.confirmation.repetitions
-    return subjects * (discovery + confirmation) * per_run
+        c = spec.confirmation
+        confirmation = min(c.max_duration_s, c.candidates * c.max_repetitions * per_run)
+    return subjects * (discovery + confirmation)
 
 
 def describe_sweep(spec: ExperimentSpec) -> str:

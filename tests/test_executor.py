@@ -55,22 +55,96 @@ class RunExperimentTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(throttle.required_n, 2000)
         self.assertEqual(profile.verdicts[0].verdict, "INCONCLUSIVE")
 
-    async def test_confirmation_reruns_the_candidate_and_its_neighbours(self):
+    # Loose rate limits so a fake 0.2s window can reach the first look:
+    # throttle <= 5%, success >= 90% -> first look at a few dozen requests.
+    LOOSE = SloConfig(latency_p95_ms=3000, throttle_rate_max=0.05, success_rate_min=0.9)
+
+    async def test_confirmation_uses_only_its_own_independent_data(self):
         from bedrock_benchmark.experiments.schema import ConfirmationConfig
         target = BedrockConverseTarget(model_id="m", client=FakeBedrockRuntimeClient())
-        spec = _spec(sweep=SweepConfig(type="rate", values=[20.0, 40.0, 80.0, 120.0]), repetitions=1,
-                     confirmation=ConfirmationConfig(repetitions=2, neighbors=1))
+        spec = _spec(sweep=SweepConfig(type="rate", values=[200.0, 400.0]), repetitions=1, slo=self.LOOSE,
+                     confirmation=ConfirmationConfig(max_looks=2, max_repetitions=20, max_requests=10**6))
 
         report = await run_experiment(spec, target=target)
 
-        points = report.profiles[0].points
-        best = report.profiles[0].recommendation.point.rps
-        i = [p.rps for p in points].index(best)
-        confirmed = {p.rps for p in points if p.phase == "confirmation"}
-        self.assertEqual(confirmed, {p.rps for p in points[max(0, i - 1):i + 2]})
-        for p in points:
-            self.assertEqual(len(p.repetitions), 3 if p.rps in confirmed else 1)
-        self.assertEqual({r.tags["phase"] for r in report.all_results}, {"discovery", "confirmation"})
+        profile = report.profiles[0]
+        rec = profile.recommendation
+        self.assertEqual(rec.confirmation_source, "confirmation")
+        [result] = profile.confirmations
+        self.assertEqual((result.value, result.verdict, result.stop_reason), (400.0, "PASS", "confirmed"))
+        self.assertGreaterEqual(result.n, profile.confirmation_plan.look_schedule[0])
+        # The confirmed point's metrics are confirmation data ONLY -- the
+        # discovery requests at 400 rps are not pooled in.
+        conf_measured = [r for r in report.all_results
+                         if r.tags["phase"] == "confirmation" and r.tags["measured"]]
+        self.assertEqual(rec.confirmed_point.metrics.n, len(conf_measured))
+        self.assertEqual(rec.confirmed_point.metrics.bound_confidence, profile.confirmation_plan.per_look_confidence)
+        # Discovery points are untouched by confirmation.
+        self.assertTrue(all(len(p.repetitions) == 1 and p.phase == "discovery" for p in profile.points))
+
+    async def test_caps_without_a_pass_are_inconclusive_never_pass(self):
+        from bedrock_benchmark.experiments.schema import ConfirmationConfig
+        target = BedrockConverseTarget(model_id="m", client=FakeBedrockRuntimeClient())
+        spec = _spec(sweep=SweepConfig(type="rate", values=[200.0]), repetitions=1,
+                     confirmation=ConfirmationConfig(max_repetitions=3))  # gold-strict default 0.1% throttle
+
+        report = await run_experiment(spec, target=target)
+
+        [result] = report.profiles[0].confirmations
+        self.assertEqual(result.verdict, "INCONCLUSIVE")
+        self.assertEqual(result.stop_reason, "unreachable_within_caps")  # ~40 req/rep can't reach ~3,700
+        self.assertEqual(result.repetitions, 0)                          # no calls spent on a hopeless candidate
+        self.assertIsNone(report.profiles[0].recommendation.confirmed_point)
+        rate = build_capacity_profile(report)["workload_classes"]["short"]["rate"]
+        self.assertIsNone(rate["production_sustained_rps"])
+        self.assertEqual(rate["confirmation_source"], "confirmation")
+
+    async def test_violation_during_confirmation_fails_the_candidate(self):
+        from bedrock_benchmark.experiments.schema import ConfirmationConfig
+
+        class ThrottlesAfterDiscovery(BedrockConverseTarget):
+            throttle = False
+
+            async def invoke(self, request):
+                result = await super().invoke(request)
+                if self.throttle:
+                    result.success, result.throttled, result.error_code = False, True, "ThrottlingException"
+                return result
+
+        target = ThrottlesAfterDiscovery(model_id="m", client=FakeBedrockRuntimeClient())
+        spec = _spec(sweep=SweepConfig(type="rate", values=[200.0]), repetitions=1, slo=self.LOOSE,
+                     confirmation=ConfirmationConfig(max_repetitions=20, max_requests=10**6))
+
+        def after_discovery(subject, value, point):
+            target.throttle = True
+
+        report = await run_experiment(spec, target=target, on_progress=after_discovery)
+
+        [result] = report.profiles[0].confirmations
+        self.assertEqual((result.verdict, result.stop_reason, result.repetitions), ("FAIL", "observed_violation", 1))
+        self.assertIsNone(report.profiles[0].recommendation.confirmed_point)
+        # Discovery itself saw no violation (not FAIL -- ~40 requests are too
+        # few to PASS even the loose limit): only confirmation data failed it.
+        self.assertNotEqual(report.profiles[0].verdicts[0].verdict, "FAIL")
+
+    async def test_several_candidates_are_tested_lowest_first_and_stop_at_the_first_non_pass(self):
+        from bedrock_benchmark.experiments.schema import ConfirmationConfig
+        target = BedrockConverseTarget(model_id="m", client=FakeBedrockRuntimeClient())
+        spec = _spec(sweep=SweepConfig(type="rate", values=[100.0, 200.0, 400.0]), repetitions=1, slo=self.LOOSE,
+                     confirmation=ConfirmationConfig(candidates=2, max_repetitions=20, max_requests=10**6))
+
+        report = await run_experiment(spec, target=target)
+
+        results = report.profiles[0].confirmations
+        self.assertEqual([r.value for r in results], [200.0, 400.0])  # the two highest, ascending
+        self.assertTrue(all(r.verdict == "PASS" for r in results))
+        self.assertEqual(report.profiles[0].recommendation.confirmed_point.rps, 400.0)
+
+    async def test_without_confirmation_discovery_is_a_fixed_sequence_test(self):
+        target = BedrockConverseTarget(model_id="m", client=FakeBedrockRuntimeClient())
+        report = await run_experiment(_spec(slo=self.LOOSE), target=target)
+        self.assertEqual(report.profiles[0].recommendation.confirmation_source, "discovery_fixed_sequence")
+        self.assertEqual(report.profiles[0].confirmations, [])
 
     async def test_mix_sweeps_once_with_per_class_metrics(self):
         target = BedrockConverseTarget(model_id="m", client=FakeBedrockRuntimeClient())
