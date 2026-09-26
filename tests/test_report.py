@@ -5,6 +5,7 @@ from bedrock_benchmark.analysis.metrics import RunMetrics
 from bedrock_benchmark.client import TransportConfig
 from bedrock_benchmark.experiments.executor import ExperimentReport, ProfileReport
 from bedrock_benchmark.experiments.schema import ExperimentSpec, QuotaSnapshot, SloConfig, SweepConfig, TargetConfig
+from bedrock_benchmark.experiments.schema import load_experiment
 from bedrock_benchmark.report import build_capacity_profile
 from bedrock_benchmark.results import RequestResult
 from bedrock_benchmark.workload import WorkloadProfile
@@ -322,6 +323,19 @@ class BuildCapacityProfileTests(unittest.TestCase):
         self.assertEqual(profile["transport"]["total_max_attempts"], 1)
         self.assertEqual(profile["recommendation_policy"]["headroom_fraction"], 0.20)
         self.assertEqual(profile["recommendation_policy"]["quota_headroom_fraction"], 0.10)
+
+    def test_workload_level_e2e_cap_is_recorded_next_to_the_profiles(self):
+        """Profiles carry only TTFT/TPOT; the E2E cap comes from the
+        catalog entry, so the artifact must record that entry too."""
+        from bedrock_benchmark.models import load_models
+        spec = load_experiment("experiments/concurrency-sweep.yaml", load_models(names=["nova-micro"])[0])
+        report = ExperimentReport(spec=spec, profiles=[])
+
+        c = build_capacity_profile(report)["constraints"]
+
+        self.assertIsNone(c["slo"]["profiles"]["gold"]["latency_p95_ms"])
+        self.assertEqual(c["workloads"]["short_chat"],
+                         {"input_tokens": 512, "output_tokens": 64, "slo_profile": "gold", "latency_p95_ms": 3000})
 
 
 if __name__ == "__main__":

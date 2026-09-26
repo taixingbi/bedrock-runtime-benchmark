@@ -480,6 +480,15 @@ def build_capacity_profile(report: ExperimentReport) -> dict:
                     for n in sorted({w.slo_profile for w in spec.workloads if w.slo_profile in spec.slo_profiles})
                 },
             },
+            # The catalog entries (catalog/workloads.yaml) as run: shape,
+            # profile, and the workload-level E2E cap -- profiles carry
+            # only TTFT/TPOT, so latency_p95_ms is null there and the
+            # effective E2E limit is the one here.
+            "workloads": {
+                w.name: {"input_tokens": w.input_tokens, "output_tokens": w.output_tokens,
+                         "slo_profile": w.slo_profile, "latency_p95_ms": w.latency_p95_ms}
+                for w in spec.workloads
+            },
         },
         "measurement": {
             "warmup_s": spec.warmup_s,
