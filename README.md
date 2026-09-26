@@ -199,7 +199,6 @@ python3.11 -m venv .venv && .venv/bin/pip install -e ".[dev]"   # same install C
 .venv/bin/python scripts/run_all.py --model nova-micro --slo-profile gold   # only gold workloads
 .venv/bin/python scripts/run_all.py --gateway-config my-gateway.yaml   # + gateway diff at the end
 .venv/bin/python scripts/run_all.py --model nova-micro --pilot          # ~30 s smoke test, no batch
-.venv/bin/python scripts/run_all.py --model nova-micro --pilot-first    # pilot, then the batch only if it passes
 ```
 
 `--slo-profile NAME` (repeatable) runs only the workloads bound to that
@@ -222,8 +221,8 @@ and checks (`pilot.py`):
 | quota | a throttle at one request at a time -> WARN (something else is using the quota) |
 
 Results go to `results/pilot-<timestamp>/pilot.yaml` and are never
-mixed into experiment data. `--pilot-first` runs the pilot, then starts
-the batch only if nothing FAILed. On nova-micro it takes ~30 s:
+mixed into experiment data; the batch is never started by `--pilot`
+(exit code 1 if anything FAILed). On nova-micro it takes ~30 s:
 
 ```
 OK    nova-micro  short_chat                 gold    in 505/512   out 64/64     ttft 455ms  tpot 3.4ms  e2e 672ms
