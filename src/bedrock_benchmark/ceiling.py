@@ -13,12 +13,23 @@ flips it. Quota-relative rate sweeps are fractions of THIS ceiling, not
 of RPM alone, so a long workload is swept around the limit it actually
 hits.
 
-tokens_per_request counts input + max_tokens x output_burndown: Bedrock
-reserves input + max_tokens against the TPM quota when a request starts
-(adjusted to actual usage at completion), so max_tokens -- not the
-eventual output -- is what throttling decides on. output_burndown
-(models file, default 1) covers models whose output tokens count more
-than once against TPM.
+TPM pressure per request has two distinct parts (AWS Bedrock quota
+docs):
+
+  reservation   input + max_tokens -- deducted from the TPM quota when
+                the request is ADMITTED; the burndown rate is NOT applied
+  consumption   input + actual_output x output_burndown -- what the
+                deduction is adjusted to when the request COMPLETES
+
+Reservations are held while requests are in flight and consumption is
+what settles against the minute, so tokens_per_request (the TPM
+ceiling's denominator) is the LARGER of the two -- conservative either
+way. The prompts are built to produce the full output budget
+(stop_reason max_tokens, see workload.py), so expected actual_output is
+max_tokens. With burndown 1 (Nova / Llama / Qwen) both are input +
+max_tokens; with burndown 5 (some Claude models), 4k in / 1k out
+reserves 5k but consumes 9k. output_burndown comes from
+constraints/quota.yaml (default 1).
 """
 from __future__ import annotations
 
@@ -30,9 +41,11 @@ from .workload import WorkloadProfile
 
 @dataclass
 class ProviderCeiling:
-    tokens_per_request: float
+    tokens_per_request: float  # max(reservation, consumption) -- the TPM denominator
     rpm_rps: Optional[float]
     tpm_rps: Optional[float]
+    reservation_tokens: Optional[float] = None   # input + max_tokens (at admission)
+    consumption_tokens: Optional[float] = None   # input + expected_output x burndown (at completion)
 
     @property
     def rps(self) -> Optional[float]:
@@ -50,6 +63,10 @@ class ProviderCeiling:
     def to_dict(self) -> dict:
         return {
             "tokens_per_request": round(self.tokens_per_request, 1),
+            **({"reservation_tokens": round(self.reservation_tokens, 1),
+                "consumption_tokens": round(self.consumption_tokens, 1),
+                "token_pressure": "consumption" if self.consumption_tokens > self.reservation_tokens else "reservation"}
+               if self.reservation_tokens is not None and self.consumption_tokens is not None else {}),
             "rpm_rps_ceiling": None if self.rpm_rps is None else round(self.rpm_rps, 4),
             "tpm_rps_ceiling": None if self.tpm_rps is None else round(self.tpm_rps, 4),
             "ceiling_rps": None if self.rps is None else round(self.rps, 4),
@@ -64,9 +81,12 @@ def provider_ceiling(
     """classes: (workload, share) -- one entry with share 1.0 for an
     isolated workload, the normalized mix shares for a WorkloadMix."""
     total = sum(share for _, share in classes)
-    tokens = sum(share / total * (w.input_tokens + w.output_tokens * output_burndown) for w, share in classes)
+    # Expected actual output = max_tokens: the prompts elicit the full budget.
+    reservation = sum(share / total * (w.input_tokens + w.output_tokens) for w, share in classes)
+    consumption = sum(share / total * (w.input_tokens + w.output_tokens * output_burndown) for w, share in classes)
+    tokens = max(reservation, consumption)
     return ProviderCeiling(
-        tokens_per_request=tokens,
+        tokens_per_request=tokens, reservation_tokens=reservation, consumption_tokens=consumption,
         rpm_rps=rpm / 60.0 if rpm else None,
         tpm_rps=tpm / tokens / 60.0 if tpm and tokens > 0 else None,
     )

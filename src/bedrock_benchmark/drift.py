@@ -11,6 +11,7 @@ statistically confirmed envelope actually is:
   spread_pct                      (max - min) / median of confirmed values
   stable                          spread_pct <= the threshold (default 20%)
   conservative_production         the MINIMUM production value across runs
+                                  (v11+: recommendation.admission_envelope)
 
 A profile without `environment.measured_at` (schema < 10) still counts as
 a run, but not toward days_observed.
@@ -59,6 +60,10 @@ def summarize(paths: Iterable[str], *, stability_threshold_pct: float = 20.0) ->
                 if kind not in entry:
                     continue
                 confirmed, production = _envelope(kind, entry[kind])
+                if "recommendation" in entry:  # v11+: policy lives in the recommendation block
+                    envelope = (entry["recommendation"] or {}).get("admission_envelope")
+                    production = None if envelope is None else envelope.get(
+                        "sustained_rps" if kind == "rate" else "max_inflight")
                 groups.setdefault((model, profile.get("experiment"), scope, name, kind), []).append({
                     "measured_at": measured, "confirmed": confirmed, "production": production,
                     "git_commit": env.get("git_commit"), "profile": path,

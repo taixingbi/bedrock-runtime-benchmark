@@ -32,7 +32,7 @@ import math
 from dataclasses import asdict, dataclass, field
 from typing import Dict, Iterable, List, Optional, Tuple
 
-SUPPORTED_SCHEMA_VERSIONS = {3, 4, 5, 6, 7, 8, 9, 10}
+SUPPORTED_SCHEMA_VERSIONS = {3, 4, 5, 6, 7, 8, 9, 10, 11}
 
 
 @dataclass
@@ -74,15 +74,32 @@ def _envelopes(profile: dict) -> Tuple[List[Tuple[str, float]], List[Tuple[str, 
     sources = [("class", n, e) for n, e in (profile.get("workload_classes") or {}).items()]
     sources += [("mix", n, e) for n, e in (profile.get("mixed_workloads") or {}).items()]
     for kind, name, entry in sources:
-        if "rate" in entry:
-            # v6+: production_sustained_rps (v7: from the statistically
-            # confirmed point only, null if none); v3-v5: production_offered_rps.
-            key = "production_sustained_rps" if "production_sustained_rps" in entry["rate"] else "production_offered_rps"
-            if entry["rate"].get(key) is not None:
-                rates.append((f"{kind} {name}: rate.{key}", entry["rate"][key]))
-        if "concurrency" in entry and entry["concurrency"].get("production_max") is not None:
-            concs.append((f"{kind} {name}: concurrency.production_max", entry["concurrency"]["production_max"]))
+        rate, conc = _production(entry)
+        if rate is not None:
+            rates.append((f"{kind} {name}: {rate[0]}", rate[1]))
+        if conc is not None:
+            concs.append((f"{kind} {name}: {conc[0]}", conc[1]))
     return rates, concs
+
+
+def _production(entry: dict):
+    """((field, rps) or None, (field, inflight) or None) for one entry.
+    v11+: recommendation.admission_envelope (policy kept apart from the
+    measurement); v6-v10: production_sustained_rps / production_max in the
+    measurement block; v3-v5: production_offered_rps."""
+    if "recommendation" in entry:
+        env = (entry["recommendation"] or {}).get("admission_envelope") or {}
+        rps, inflight = env.get("sustained_rps"), env.get("max_inflight")
+        return (("recommendation.admission_envelope.sustained_rps", rps) if rps is not None else None,
+                ("recommendation.admission_envelope.max_inflight", inflight) if inflight is not None else None)
+    rate = conc = None
+    if "rate" in entry:
+        key = "production_sustained_rps" if "production_sustained_rps" in entry["rate"] else "production_offered_rps"
+        if entry["rate"].get(key) is not None:
+            rate = (f"rate.{key}", entry["rate"][key])
+    if "concurrency" in entry and entry["concurrency"].get("production_max") is not None:
+        conc = ("concurrency.production_max", entry["concurrency"]["production_max"])
+    return rate, conc
 
 
 def _entries(profile: dict):
@@ -120,8 +137,8 @@ def _quality_findings(model_id: str, profile: dict) -> Iterable[Finding]:
         checks = block.get("observed_inconclusive_checks", block.get("inconclusive_checks", []))
         confirmed = next((block[k] for k in ("statistically_confirmed_offered_rps", "statistically_confirmed",
                                               "confirmed_safe") if block.get(k) is not None), None)
-        has_production = block.get("production_sustained_rps", block.get("production_offered_rps",
-                                                                            block.get("production_max")))
+        rate, conc = _production(entry)
+        has_production = rate or conc
         detail = "; ".join(f"{c.get('name')}: n={c.get('n')} < {c.get('required_n')}" for c in checks)
         if block and has_production is None:
             yield Finding(

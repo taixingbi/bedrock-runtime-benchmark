@@ -31,6 +31,22 @@ class ProviderCeilingTests(unittest.TestCase):
         c = provider_ceiling([(SHORT, 0.7), (LONG, 0.3)], rpm=400, tpm=8_000_000)
         self.assertAlmostEqual(c.tokens_per_request, 0.7 * 576 + 0.3 * 4608)
 
+    def test_reservation_and_consumption_are_separate(self):
+        """AWS: admission reserves input + max_tokens (no burndown);
+        completion settles at input + output x burndown."""
+        claude_like = WorkloadProfile(name="c", input_tokens=4000, output_tokens=1000)
+        c = provider_ceiling([(claude_like, 1.0)], rpm=1000, tpm=1_000_000, output_burndown=5)
+        self.assertEqual((c.reservation_tokens, c.consumption_tokens), (5000, 9000))
+        self.assertEqual(c.tokens_per_request, 9000)           # the larger one binds the TPM ceiling
+        d = c.to_dict()
+        self.assertEqual((d["reservation_tokens"], d["consumption_tokens"], d["token_pressure"]),
+                         (5000, 9000, "consumption"))
+
+    def test_burndown_one_makes_both_equal(self):
+        c = provider_ceiling([(SHORT, 1.0)], rpm=400, tpm=8_000_000)
+        self.assertEqual((c.reservation_tokens, c.consumption_tokens, c.tokens_per_request), (576, 576, 576))
+        self.assertEqual(c.to_dict()["token_pressure"], "reservation")
+
     def test_output_burndown_multiplies_output_tokens(self):
         c = provider_ceiling([(SHORT, 1.0)], rpm=400, tpm=8_000_000, output_burndown=5)
         self.assertEqual(c.tokens_per_request, 512 + 64 * 5)

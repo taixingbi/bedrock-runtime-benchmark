@@ -96,7 +96,7 @@ class RunExperimentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.repetitions, 0)                          # no calls spent on a hopeless candidate
         self.assertIsNone(report.profiles[0].recommendation.confirmed_point)
         rate = build_capacity_profile(report)["workload_classes"]["short"]["rate"]
-        self.assertIsNone(rate["production_sustained_rps"])
+        self.assertIsNone(build_capacity_profile(report)["workload_classes"]["short"]["recommendation"]["admission_envelope"])
         self.assertEqual(rate["confirmation_source"], "confirmation")
 
     async def test_violation_during_confirmation_fails_the_candidate(self):

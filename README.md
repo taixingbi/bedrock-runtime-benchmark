@@ -161,21 +161,32 @@ that workload's token shape (`ceiling.py`):
 
 ```
 rpm_rps = RPM / 60
-tpm_rps = TPM / (input_tokens + max_tokens x output_burndown) / 60
+reservation = input_tokens + max_tokens                         # deducted at admission
+consumption = input_tokens + expected_output x output_burndown  # settled at completion
+tpm_rps = TPM / max(reservation, consumption) / 60
 ceiling = min(rpm_rps, tpm_rps)
 ```
 
 Quotas cap requests AND tokens, and which binds depends on the
 workload (a short request on nova-micro is RPM-bound; a long one on a
-tight-TPM model can be TPM-bound). `max_tokens`, not actual output,
-counts because Bedrock reserves input + max_tokens against TPM when a
-request starts. `output_burndown` (`constraints/quota.yaml`, default 1) covers models
-that bill output tokens at a multiple. Every class/mix in the artifact
+tight-TPM model can be TPM-bound). Token pressure has two parts, per
+AWS's quota model: at admission Bedrock deducts **input + max_tokens**
+(no burndown), and at completion adjusts it to **input + actual output
+x burndown**. Reservations are held while requests are in flight and
+consumption is what settles, so the ceiling uses the larger. Expected
+output is `max_tokens` (the prompts elicit the full budget). With
+`output_burndown` 1 -- all current models -- both are input +
+max_tokens; with burndown 5 (some Claude models) 4k in / 1k out
+reserves 5k but consumes 9k. `output_burndown` is set in
+`constraints/quota.yaml` (default 1). Every class/mix in the artifact
 records it:
 
 ```yaml
 provider_constraints:
-  tokens_per_request: 576.0
+  tokens_per_request: 576.0         # max(reservation, consumption)
+  reservation_tokens: 576.0
+  consumption_tokens: 576.0
+  token_pressure: reservation       # which of the two binds
   rpm_rps_ceiling: 6.6667
   tpm_rps_ceiling: 231.4815
   ceiling_rps: 6.6667
@@ -314,25 +325,33 @@ workload_classes:
       provider_ceiling_rps: 6.6667          # from the quota
       saturation_offered_rps: 13.3333
       saturation_status: resolved           # or not_reached / unresolved (+ unstable_region)
-      production_sustained_rps: 4.0         # min(CONFIRMED x 0.8, ceiling x 0.9) -- null if nothing confirmed
-      production_binding: measurement       # or provider_quota, or unconfirmed
+    recommendation:                         # POLICY, kept apart from the measurement above
+      admission_envelope:                   # null (+ reason) when nothing is statistically confirmed
+        max_inflight: null                  # set by concurrency sweeps
+        sustained_rps: 4.0                  # min(CONFIRMED x 0.8, ceiling x 0.9)
+        source: statistically_confirmed_measurement
+        headroom_fraction: 0.2
+        quota_headroom_fraction: 0.1
+        binding: measurement                # or provider_quota
+        basis: {statistically_confirmed_offered_rps: 5.0, provider_ceiling_rps: 6.6667}
     sweep_points: [{value: 1.6667, verdict: INCONCLUSIVE, phase: discovery, n: 150, inconclusive: [...]}, ...]
     evidence: {n: 1740, n_throttled: 0, throttle_rate_upper: 0.0017, verdict: {...}, peak_outstanding: 9, ...}
-provider: {headroom: 0.20, quota_headroom: 0.10}
+recommendation_policy: {headroom_fraction: 0.20, quota_headroom_fraction: 0.10}
 transport: {max_connections: 64, executor_workers: 64, total_max_attempts: 1, connect_timeout_s: 5, read_timeout_s: 60}
 ```
 
 A concurrency sweep writes `concurrency: {observed_nonfailing,
 observed_verdict, statistically_confirmed, saturation, saturation_status,
-production_max, observed_slo_goodput_rps}` instead of `rate` --
-`production_max` likewise from the confirmed point only.
+observed_slo_goodput_rps}` instead of `rate`, and its recommendation sets
+`max_inflight` instead of `sustained_rps` -- likewise from the confirmed
+point only.
 
 This is the actual deliverable -- not an HTML report. A gateway's own
 config review reads this file, and decides its own global/tenant/AIMD
 config FROM these per-class envelopes -- this repo never pre-packages
 a gateway control policy itself (see "Not in scope here" below).
 
-## Correctness fixes (schema v2 -- v10)
+## Correctness fixes (schema v2 -- v11)
 
 A real review caught 5 measurement-correctness bugs before this
 artifact was ever used to actually inform a gateway config:
@@ -460,6 +479,23 @@ artifact was ever used to actually inform a gateway config:
 21. **TTFT + TPOT alone missed user-visible E2E.** Each workload now
     carries its own E2E cap -- see "SLO profiles".
 
+### Schema v11 fixes
+
+31. **Measurement and policy were mixed.** `production_sustained_rps` /
+    `production_max` (headroom applied) sat inside the measurement
+    blocks. They're now `recommendation.admission_envelope`
+    (`max_inflight` / `sustained_rps`, `source`, `headroom_fraction`,
+    `binding`, `basis`) per class/mix, next to -- not inside -- the
+    unchanged confirmed measurement; headroom settings moved to
+    `recommendation_policy`. A max_inflight that floors to 0 is null
+    rather than rounded up.
+32. **TPM reservation vs consumption.** The ceiling used input +
+    max_tokens x burndown for both; AWS reserves input + max_tokens at
+    admission and settles at input + output x burndown. Both are now
+    reported (`reservation_tokens`, `consumption_tokens`,
+    `token_pressure`) and the larger bounds the TPM ceiling. No change
+    for burndown-1 models.
+
 ### Schema v10 fixes
 
 28. **Latency verdicts now also report the bound in milliseconds**
@@ -584,12 +620,12 @@ observed_nonfailing          best point before the first FAIL -- may be INCONCLU
       |
 statistically_confirmed      best strictly-PASS point before the first FAIL -- or null
       |
-production_sustained_rps /   derived ONLY from the confirmed point (and quota-capped);
-production_max               null when nothing is confirmed -- never a guess
+recommendation.              derived ONLY from the confirmed point, after headroom
+  admission_envelope         (and quota-capped); null when nothing is confirmed
 ```
 
 `sweep_points` lists every point's verdict. `gateway_diff` only ever
-proposes limits from confirmed production values: an INCONCLUSIVE
+proposes limits from confirmed recommendations: an INCONCLUSIVE
 observed point is `envelope_unconfirmed` (info), and a class with no
 confirmed point at all is `no_confirmed_envelope` (warn).
 
@@ -599,25 +635,42 @@ with zero bad events takes 2,995 requests for gold's 0.1% throttle,
 occurs (4,742 for gold with one throttle). The confirmation phase below
 exists to collect exactly that, and only that, at the boundary.
 
-### Production rate: measured AND quota-capped
+### Measurement vs recommendation (admission envelope)
 
-A rate sweep deliberately goes above quota to see throttling and burst
-behavior, and a short window can pass there on Bedrock's burst
-allowance -- that is observed serving, not a sustainable quota. So the
-rate block separates what was observed from what's safe to configure:
+A measured result is not an operational policy, so every workload class
+or mix keeps them in separate blocks:
+
+| Block | Holds | Kind |
+|---|---|---|
+| `rate` / `concurrency` | `observed_nonfailing_*`, `statistically_confirmed_*`, `measured_burst_ceiling_rps`, `provider_ceiling_rps`, saturation, verdicts | measurement |
+| `recommendation.admission_envelope` | the confirmed point after this benchmark's safety headroom | policy |
+
+The recommendation says only: *based on this measured model/workload
+envelope, this is the recommended maximum backend in-flight concurrency
+and/or sustained offered rate after safety headroom*
+(`recommendation.py`):
 
 ```
-observed_nonfailing_offered_rps      best rate before the first FAIL (may be INCONCLUSIVE)
-statistically_confirmed_offered_rps  best strictly-PASS rate before the first FAIL, or null
-measured_burst_ceiling_rps           highest swept rate that didn't FAIL anywhere
-provider_ceiling_rps                 min(RPM/60, TPM/tokens/60) from the quota
-production_sustained_rps             min(confirmed x (1 - provider_headroom),
-                                         provider_ceiling x (1 - quota_headroom)), or null
+concurrency sweep   max_inflight  = floor(statistically_confirmed_concurrency x (1 - headroom))
+rate sweep          sustained_rps = min(statistically_confirmed_offered_rps x (1 - headroom),
+                                        provider_ceiling_rps x (1 - quota_headroom))
 ```
 
-`production_binding` says which term won (`measurement`,
-`provider_quota`, or `unconfirmed` when nothing was confirmed). Defaults: 20% off the
-measurement, 10% off the quota.
+It fails closed: no statistically confirmed point -> `admission_envelope:
+null` with a `reason`; an observed or INCONCLUSIVE point is never used.
+A `max_inflight` that floors to 0 (e.g. confirmed C=1 with 20% headroom)
+is also null -- 0 would admit nothing, and rounding up would drop the
+headroom. The quota term matters because a rate sweep deliberately goes
+above quota and a short window can pass there on burst allowance --
+observed serving, not a sustainable rate; `binding` says which term won.
+Headroom defaults (20% off the measurement, 10% off the quota) are
+recorded in `recommendation_policy`.
+
+It deliberately emits nothing gateway-specific -- no global or tenant
+concurrency, tenant RPM limits, queue waits, AIMD parameters or tenant
+allocation. Mapping the envelope onto those is `bedrock-runtime-gateway`'s
+decision, which can apply its own margins on top (e.g. more for a
+critical tenant).
 
 ### Two phases, two jobs: discovery -> adaptive confirmation
 
@@ -895,7 +948,8 @@ while the long class alone blows its latency SLO. The artifact gains:
 mixed_workloads:
   short70_long30:
     shares: {short_chat: 0.6, rag_answer: 0.3, long_generation: 0.1}
-    rate: {observed_nonfailing_offered_rps: ..., observed_verdict: ..., statistically_confirmed_offered_rps: ..., production_sustained_rps: ...}
+    rate: {observed_nonfailing_offered_rps: ..., observed_verdict: ..., statistically_confirmed_offered_rps: ...}
+    recommendation: {admission_envelope: {sustained_rps: ..., ...}}
     evidence: {...}
     classes_at_recommended_point: {short_chat: {...}, rag_answer: {...}, long_generation: {...}}
 ```
@@ -920,10 +974,10 @@ directly onto a gateway knob:
 
 | Gateway knob | Compared against | Finding |
 |---|---|---|
-| model `rpm_limit` (`gateway-model-quotas-dev`) | tightest `production_sustained_rps x 60` across the model's classes and mixes | warn + proposal if above; warn if unset (fails open) |
+| model `rpm_limit` (`gateway-model-quotas-dev`) | tightest `admission_envelope.sustained_rps x 60` across the model's classes and mixes | warn + proposal if above; warn if unset (fails open) |
 | tenant `rpm_limit` | same envelope | warn + proposal if one tenant alone exceeds it; info if tenants sum past it |
-| `CONCURRENCY_DEFAULT_TENANT_MAX` | tightest `production_max` | warn + proposal if one tenant can exceed it |
-| `CONCURRENCY_GLOBAL_MAX` x processes | tightest `production_max` | info only -- it spans all models |
+| `CONCURRENCY_DEFAULT_TENANT_MAX` | tightest `admission_envelope.max_inflight` | warn + proposal if one tenant can exceed it |
+| `CONCURRENCY_GLOBAL_MAX` x processes | tightest `admission_envelope.max_inflight` | info only -- it spans all models |
 
 It also surfaces `workload_shape_invalid` (warn) and
 `throttle_slo_unresolved` (info). It never reads or writes live gateway
@@ -932,8 +986,9 @@ config; the gateway's own review still decides.
 ## Not in scope here
 
 AIMD, tenant limiters, global admission control, queueing, fairness --
-all `bedrock-runtime-gateway`'s job. This repo outputs a safe operating
-envelope (`production_max`, `production_sustained_rps`) and, at most, an
+all `bedrock-runtime-gateway`'s job. This repo outputs a measured,
+statistically confirmed envelope plus an admission-envelope
+recommendation (`max_inflight`, `sustained_rps`) and, at most, an
 advisory diff against a gateway config snapshot; it never implements
 or applies the runtime logic that enforces it.
 

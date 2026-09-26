@@ -75,9 +75,10 @@ from importlib import metadata
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from .analysis.capacity import Recommendation, apply_headroom
+from .analysis.capacity import Recommendation
 from .analysis.metrics import DEFAULT_CONFIDENCE, RunMetrics, min_samples_to_resolve_rate, percentile
 from .experiments.executor import ExperimentReport
+from .recommendation import admission_envelope
 from .results import RequestResult
 from .workload import WorkloadProfile
 
@@ -111,11 +112,6 @@ def _value(point) -> float:
     return point.concurrency if point.concurrency is not None else point.rps
 
 
-_UNCONFIRMED_NOTE = ("no statistically confirmed point, so no production value -- see `confirmation` for why "
-                     "(no candidate PASSed a pre-planned look within the caps); raise the confirmation caps "
-                     "rather than relax the SLO")
-
-
 def _observed_fields(rec: Recommendation) -> dict:
     """What was OBSERVED: the best point with no FAIL before the first
     failure. Its verdict may be INCONCLUSIVE -- no violation seen, not
@@ -127,10 +123,10 @@ def _observed_fields(rec: Recommendation) -> dict:
     return out
 
 
-def _concurrency_block(rec: Recommendation, *, headroom: float) -> dict:
-    """observed_nonfailing -> statistically_confirmed -> production_max.
-    production_max is derived ONLY from the confirmed point (null if
-    none): not observing a violation isn't the same as proving the SLO."""
+def _concurrency_block(rec: Recommendation) -> dict:
+    """MEASUREMENT only: observed_nonfailing -> statistically_confirmed.
+    The policy step (headroom -> max_inflight) lives in the entry's
+    `recommendation` block (recommendation.py), never here."""
     saturation = rec.saturation_point.concurrency if rec.saturation_point is not None else None
     confirmed = rec.confirmed_point.concurrency if rec.confirmed_point is not None else None
     out = {
@@ -140,39 +136,26 @@ def _concurrency_block(rec: Recommendation, *, headroom: float) -> dict:
         "confirmation_source": rec.confirmation_source,
         "saturation": saturation,
         **_saturation_fields(rec),
-        "production_max": max(1, int(apply_headroom(confirmed, headroom=headroom))) if confirmed else None,
         "observed_slo_goodput_rps": rec.point.metrics.slo_goodput_rps,
     }
-    if confirmed is None:
-        out["production_note"] = _UNCONFIRMED_NOTE
     return out
 
 
-def _rate_block(rec: Recommendation, *, headroom: float, quota_headroom: float, ceiling_rps: Optional[float]) -> dict:
-    """Three distinct numbers, never conflated:
+def _rate_block(rec: Recommendation, *, ceiling_rps: Optional[float]) -> dict:
+    """MEASUREMENT only -- two distinct numbers, never conflated:
 
         observed_nonfailing_offered_rps      no FAIL observed (may be INCONCLUSIVE)
         statistically_confirmed_offered_rps  strictly PASS at the configured confidence
-        production_sustained_rps             derived from CONFIRMED only, and capped by
-                                             the provider ceiling:
-            min(confirmed x (1 - headroom), provider_ceiling x (1 - quota_headroom))
 
     A rate sweep deliberately goes above quota (to see throttling and
     burst behavior), and a short window can pass there on Bedrock's
     burst allowance -- measured_burst_ceiling_rps records that, but it
-    is observed serving, not a sustainable rate. With nothing
-    statistically confirmed, production is null, not a guess.
+    is observed serving, not a sustainable rate. The policy step
+    (headroom + quota cap -> sustained_rps) is the entry's
+    `recommendation` block (recommendation.py), never here.
     """
     saturation_rps = rec.saturation_point.rps if rec.saturation_point is not None else None
     confirmed = rec.confirmed_point.rps if rec.confirmed_point is not None else None
-    production, binding = None, "unconfirmed"
-    if confirmed is not None:
-        from_measurement = apply_headroom(confirmed, headroom=headroom)
-        from_quota = apply_headroom(ceiling_rps, headroom=quota_headroom) if ceiling_rps else None
-        if from_quota is not None and from_quota < from_measurement:
-            production, binding = from_quota, "provider_quota"
-        else:
-            production, binding = from_measurement, "measurement"
     out = {
         "observed_nonfailing_offered_rps": rec.point.rps,
         **_observed_fields(rec),
@@ -186,11 +169,7 @@ def _rate_block(rec: Recommendation, *, headroom: float, quota_headroom: float, 
         "provider_ceiling_rps": round(ceiling_rps, 4) if ceiling_rps else None,
         "saturation_offered_rps": saturation_rps,
         **_saturation_fields(rec),
-        "production_sustained_rps": production,
-        "production_binding": binding,  # measurement | provider_quota | unconfirmed
     }
-    if confirmed is None:
-        out["production_note"] = _UNCONFIRMED_NOTE
     return out
 
 
@@ -301,15 +280,24 @@ def _envelope(entry: dict, profile_report, spec) -> None:
             entry["unstable_region"] = analysis.unstable_region
         else:
             entry["note"] = "no swept value met the configured SLO -- re-run with lower sweep values"
+        entry["recommendation"] = admission_envelope(spec.sweep.type, None, headroom=spec.provider_headroom)
         return
+    ceiling = spec.provider_ceilings.get(subject)
+    ceiling_rps = ceiling.rps if ceiling else None
     if spec.sweep.type == "concurrency":
-        entry["concurrency"] = _concurrency_block(rec, headroom=spec.provider_headroom)
+        entry["concurrency"] = _concurrency_block(rec)
+        confirmed = rec.confirmed_point.concurrency if rec.confirmed_point is not None else None
     else:
-        ceiling = spec.provider_ceilings.get(subject)
-        entry["rate"] = _rate_block(rec, headroom=spec.provider_headroom, quota_headroom=spec.quota_headroom,
-                                    ceiling_rps=ceiling.rps if ceiling else None)
+        entry["rate"] = _rate_block(rec, ceiling_rps=ceiling_rps)
+        confirmed = rec.confirmed_point.rps if rec.confirmed_point is not None else None
+    # POLICY, kept apart from the measurement above: the confirmed point
+    # after this benchmark's safety headroom (recommendation.py).
+    entry["recommendation"] = admission_envelope(
+        spec.sweep.type, confirmed, headroom=spec.provider_headroom, quota_headroom=spec.quota_headroom,
+        provider_ceiling_rps=ceiling_rps,
+    )
     # evidence = the observed point; confirmed_evidence = the point the
-    # production value is derived from, when it's a different point.
+    # recommendation is derived from, when it's a different point.
     entry["evidence"] = _evidence(rec.point)
     entry["evidence"]["verdict"] = rec.verdict.to_dict()
     if rec.confirmed_point is not None and rec.confirmed_point is not rec.point:
@@ -404,7 +392,7 @@ def build_capacity_profile(report: ExperimentReport) -> dict:
 
     confidence = spec.slo.confidence or DEFAULT_CONFIDENCE
     return {
-        "schema_version": 10,
+        "schema_version": 11,
         "experiment": spec.name,
         "environment": _environment(report),
         # One profile is ONE snapshot of provider conditions. Validity
@@ -479,9 +467,11 @@ def build_capacity_profile(report: ExperimentReport) -> dict:
         # Only present for a `mix:` experiment -- the one valid source
         # of a cross-class envelope, and only for THAT mix's shares.
         **({"mixed_workloads": mixed} if mixed else {}),
-        "provider": {
-            "headroom": spec.provider_headroom,        # back-off from the measured safe point
-            "quota_headroom": spec.quota_headroom,     # back-off from the provider ceiling
+        # The policy applied to turn confirmed measurements into each
+        # entry's `recommendation` -- configured, not measured.
+        "recommendation_policy": {
+            "headroom_fraction": spec.provider_headroom,        # back-off from the confirmed point
+            "quota_headroom_fraction": spec.quota_headroom,     # back-off from the provider ceiling
         },
         # Recorded for reproducibility -- what was actually running
         # when these numbers were measured (see client.py's
