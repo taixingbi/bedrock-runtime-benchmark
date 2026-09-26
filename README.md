@@ -5,18 +5,34 @@ operating envelope of a Bedrock inference profile** under controlled
 token workloads and provider constraints, and derives runtime admission
 and concurrency configuration from it.
 
-What it measures is not the bare model but the **Bedrock runtime
-operating envelope**: model + Bedrock serving stack + inference-profile
-routing + account/region quota + current provider conditions.
+What it measures is not the bare model but the **Bedrock
+inference-profile operating envelope**: model + Bedrock serving stack +
+inference-profile routing + account/region quota + current provider
+conditions. The numbers it produces (e.g. 6.67 rps, TTFT 700 ms, C=4)
+are properties of that whole stack at measurement time -- never a
+model's intrinsic capacity -- and this README uses "operating envelope"
+in that sense throughout.
+
+**The SLO is an input, not a finding.** Gold / silver / bronze
+(`constraints/slo.yaml`) are externally supplied policy requirements;
+the benchmark never derives, tunes or relaxes them from measurements.
+The research question is:
+
+> Given workload W, provider environment E, quota Q and SLO S, what
+> operating region satisfies S?
+
+-- not "what should the SLO be?".
 
 It does not test the whole gateway, and it does not do release
 regression -- that's `bedrock-platform-eval`'s job. It answers exactly one
 question:
 
 > For a given Bedrock inference profile and workload shape, at a given
-> SLO and quota, what concurrency/RPS was observed without violations,
-> what has been statistically confirmed to meet the SLO, and what is
-> therefore safe to configure for production?
+> SLO (policy) and quota, what concurrency/RPS was observed without
+> violations, what has been statistically confirmed to meet the SLO --
+> latency, success and throttle alike -- and what is therefore safe to
+> configure for production, under the provider conditions at
+> measurement time?
 
 ```
 workload -> SLO -> quota-aware sweep -> find the boundary -> confirm it
@@ -29,8 +45,9 @@ statistically -> apply headroom + provider ceiling -> capacity-profile.yaml
 Every call in this repo goes **directly to Bedrock** (`boto3`
 Converse/ConverseStream) -- no API Gateway, no auth, no gateway
 admission control, no tenant quota, no gateway queue. Mixing those in
-would measure *platform* capacity, not *model/backend* capacity, and
-this repo only ever answers the second question.
+would measure the *platform's* envelope instead of the *Bedrock
+inference profile's*, and this repo only ever answers the second
+question.
 
 ```
               bedrock-runtime-benchmark
@@ -51,7 +68,7 @@ Three sibling repos, three different questions:
 |---|---|
 | `bedrock-runtime-gateway` | Is the gateway's own implementation correct? |
 | `bedrock-platform-eval` | Does the *deployed platform* (gateway + Bedrock) behave correctly under real workload? |
-| `bedrock-runtime-benchmark` | What's the *model's own* safe operating envelope, independent of any gateway? |
+| `bedrock-runtime-benchmark` | What's the *Bedrock inference-profile* operating envelope (model + Bedrock serving + routing + quota + current conditions), independent of any gateway? |
 
 This repo's output feeds the first two as **input**, not as a replacement
 for either: a gateway's per-tenant-class concurrency config should be
@@ -315,7 +332,7 @@ config review reads this file, and decides its own global/tenant/AIMD
 config FROM these per-class envelopes -- this repo never pre-packages
 a gateway control policy itself (see "Not in scope here" below).
 
-## Correctness fixes (schema v2 -- v9)
+## Correctness fixes (schema v2 -- v10)
 
 A real review caught 5 measurement-correctness bugs before this
 artifact was ever used to actually inform a gateway config:
@@ -443,6 +460,17 @@ artifact was ever used to actually inform a gateway config:
 21. **TTFT + TPOT alone missed user-visible E2E.** Each workload now
     carries its own E2E cap -- see "SLO profiles".
 
+### Schema v10 fixes
+
+28. **Latency verdicts now also report the bound in milliseconds**
+    (`p95_upper_bound`, order-statistic UCB, exactly dual to the
+    exceedance test).
+29. **No provenance.** Profiles now carry `environment` (measured_at,
+    account, region, inference profile, benchmark version, git commit)
+    and `validity`; `scripts/drift.py` compares repeated runs.
+30. **The SLO is marked as policy input** (`constraints.slo.role:
+    policy_input`) -- externally supplied, never derived from results.
+
 ### Schema v9 fixes
 
 27. **Latency SLOs were judged on the sample percentile alone.** "Sample
@@ -520,6 +548,15 @@ verdict (`capacity.py`'s `evaluate`):
     T isn't enough: 30 clean requests still bound the exceedance at
     9.5%; 59 clean ones resolve it (93 with one slow request). 11 slow of
     500 is 2.2% observed, 3.6% bound -> PASS.
+
+  This is the distribution-free test of H0: q95 > T vs H1: q95 <= T.
+  Each latency check also reports it in milliseconds as
+  `p95_upper_bound` -- the order-statistic one-sided 95% upper
+  confidence bound on the true p95 (e.g. "p95 estimate 742 ms, UCB
+  796 ms <= 800 ms -> PASS"). The two are exactly dual: PASS <=> UCB <= T
+  (checked on random samples in `tests/test_latency_bounds.py`), so
+  `statistically_confirmed` really means latency, success AND throttle
+  are all statistically confirmed.
 - **rate checks** (success, throttle), on EXACT one-sided
   (Clopper-Pearson) bounds at `confidence` (default 95%):
   - observed violation (e.g. throttle rate above the limit) -> **FAIL**
@@ -641,6 +678,44 @@ discovery as a fixed-sequence test over the sweep's own ascending order
 `confirmation_source` says which (`confirmation` |
 `discovery_fixed_sequence`).
 
+## Provenance and drift
+
+A profile is ONE snapshot of the Bedrock inference-profile operating
+envelope under the provider conditions at measurement time. The safe
+rate measured today can be 5.0 rps, tomorrow 4.2, tonight 5.8 -- so a
+single `capacity-profile.yaml` is not a permanent fact. Every profile
+records where and when it came from:
+
+```yaml
+environment:
+  measured_at: {start: 2026-09-26T13:39:11+00:00, end: ...}
+  account: "646821141010"
+  region: us-east-1
+  inference_profile: us.amazon.nova-micro-v1:0
+  benchmark_version: 0.1.0
+  git_commit: 451f7d4...
+  git_dirty: false
+  runtime: {python: 3.11.16, boto3: ..., botocore: ...}
+validity:
+  repeated_runs: 1
+  days_observed: 1
+  scope: "single run -- ... compare with scripts/drift.py"
+```
+
+`scripts/drift.py` lines repeated profiles up per (model, experiment,
+workload/mix, sweep kind) and reports runs, days observed, the confirmed
+and production values over time (oldest first), min / median / max,
+their spread, whether the envelope is `stable` (spread <= `--threshold`,
+default 20%), and a `conservative_production` (the minimum across runs):
+
+```bash
+.venv/bin/python scripts/drift.py results/
+```
+
+Re-measuring on different days and times of day turns a snapshot into
+evidence about temporal stability -- and into a basis for choosing how
+often an envelope must be re-certified.
+
 ## Quota-aware experiment design
 
 Picking sane sweep values (especially rate-sweep values) is guesswork
@@ -679,7 +754,7 @@ caps against it (see "Not in scope here" below).
 Why rate sweeps are quota-relative: nova-pro's 50 RPM (0.83 rps) with
 ~616ms latency means concurrency=1 closed-loop already runs ~2x over
 quota, and llama3-3-70b's 80 RPM sits right at its C=1 rate -- a
-concurrency sweep can't resolve either model's safe zone, and a fixed
+concurrency sweep can't resolve either inference profile's safe zone, and a fixed
 rps list tuned for one model is useless for another. The first full
 batch found real ceilings between ~1.0x and ~1.9x quota, so the shipped
 sweeps span 0.25x-2.5x.

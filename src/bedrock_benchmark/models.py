@@ -8,7 +8,7 @@ The models file says only WHICH models exist and how to reach them.
 Their quotas live in constraints/quota.yaml (see constraints.py) and
 are joined in here by (account, the model's region, model name) -- quotas differ by an order of
 magnitude across models (50 RPM for nova-pro, 1000 for qwen3-32b), and
-quota-relative rate sweeps bracket each model's own ceiling. Check the
+quota-relative rate sweeps bracket each model's own quota ceiling. Check the
 numbers with `scripts/fetch_quota.py --all`.
 """
 from __future__ import annotations

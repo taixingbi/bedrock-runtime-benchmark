@@ -14,7 +14,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
-from .metrics import DEFAULT_CONFIDENCE, RunMetrics, min_samples_to_resolve_rate, rate_upper, required_samples
+from .metrics import (
+    DEFAULT_CONFIDENCE, RunMetrics, min_samples_to_resolve_rate, quantile_upper_bound, rate_upper, required_samples,
+)
 
 
 @dataclass
@@ -68,6 +70,10 @@ class Check:
     # that proportion (the check is PASS when it's <= 5%).
     exceedances: Optional[int] = None
     exceedance_rate_upper: Optional[float] = None
+    # Latency checks: one-sided upper confidence bound on the TRUE p95
+    # (order statistic) -- "p95 estimate 742ms, 95% UCB 796ms <= 800ms".
+    # None when n is too small for any sample to bound it.
+    p95_upper_bound: Optional[float] = None
 
     def to_dict(self) -> dict:
         return {k: v for k, v in self.__dict__.items() if v is not None}
@@ -118,7 +124,8 @@ def _rate_check(name: str, observed: float, bound: Optional[float], limit: float
 
 def _latency_check(name: str, key: str, metrics: RunMetrics, limit: Optional[float],
                    confidence: float) -> Optional[Check]:
-    """p95 <= limit, proven rather than just observed: with k of n
+    """p95 <= limit, proven rather than just observed -- H0: q95 > limit,
+    H1: q95 <= limit, tested distribution-free. With k of n
     successful requests over `limit` (a request with no measurement
     counts as over -- not measured is not compliant):
 
@@ -127,7 +134,9 @@ def _latency_check(name: str, key: str, metrics: RunMetrics, limit: Optional[flo
         otherwise                         -> INCONCLUSIVE, with required_n
 
     30 requests all under the limit still bound the exceedance at ~9.5%,
-    so they're INCONCLUSIVE, not a PASS; 59 clean requests resolve it."""
+    so they're INCONCLUSIVE, not a PASS; 59 clean requests resolve it.
+    The check also reports p95_upper_bound, the order-statistic UCB on the
+    true p95 -- the same test read in milliseconds (PASS <=> UCB <= limit)."""
     if limit is None:
         return None
     observed = {"ttft": metrics.ttft_p95_ms, "tpot": metrics.tpot_p95_ms, "latency": metrics.latency_p95_ms}[key]
@@ -145,7 +154,9 @@ def _latency_check(name: str, key: str, metrics: RunMetrics, limit: Optional[flo
         return Check(name, FAIL, threshold=limit, reason="not_measured", n=n)
     k = sum(1 for v in samples if v is None or v > limit)
     bound = round(rate_upper(k, n, confidence=confidence), 6)
-    common = dict(observed=observed, threshold=limit, n=n, exceedances=k, exceedance_rate_upper=bound)
+    ucb = quantile_upper_bound(samples, LATENCY_QUANTILE, confidence=confidence)
+    common = dict(observed=observed, threshold=limit, n=n, exceedances=k, exceedance_rate_upper=bound,
+                  p95_upper_bound=None if ucb is None else round(ucb, 3))
     if k / n > LATENCY_EXCEEDANCE_MAX:
         return Check(name, FAIL, reason="observed_violation", **common)
     if bound <= LATENCY_EXCEEDANCE_MAX:

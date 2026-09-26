@@ -1,4 +1,7 @@
-# SLO -- what quality we REQUIRE, as named profiles. Kept separate from
+# SLO -- what quality we REQUIRE, as named profiles. POLICY, not a
+# benchmark result: these are externally supplied requirements, and the
+# benchmark only finds the operating region that satisfies them -- it
+# never derives, tunes or relaxes an SLO from measurements. Kept separate from
 # workloads: catalog/workloads.yaml binds each workload to one of these
 # profiles explicitly (no default), and experiments only list workloads.
 # The same model serves every profile, so each profile yields its own

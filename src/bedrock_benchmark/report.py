@@ -68,6 +68,11 @@ policy.
 """
 from __future__ import annotations
 
+import platform
+import subprocess
+from datetime import datetime, timezone
+from importlib import metadata
+from pathlib import Path
 from typing import Dict, List, Optional
 
 from .analysis.capacity import Recommendation, apply_headroom
@@ -311,6 +316,52 @@ def _envelope(entry: dict, profile_report, spec) -> None:
         entry["confirmed_evidence"] = _evidence(rec.confirmed_point)
 
 
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _git(*args: str) -> Optional[str]:
+    try:
+        out = subprocess.run(["git", *args], cwd=_REPO_ROOT, capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return out.stdout.strip() if out.returncode == 0 else None
+
+
+def _version(dist: str) -> Optional[str]:
+    try:
+        return metadata.version(dist)
+    except metadata.PackageNotFoundError:
+        return None
+
+
+def _iso(ts: Optional[float]) -> Optional[str]:
+    return None if ts is None else datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(timespec="seconds")
+
+
+def _environment(report: ExperimentReport) -> dict:
+    """Provenance: the measured envelope belongs to THIS environment at
+    THIS time -- model + Bedrock serving + inference-profile routing +
+    account/region quota + provider conditions then. Needed to compare
+    runs over time (scripts/drift.py) and to know when a profile is stale."""
+    spec = report.spec
+    started = [r.started_at for r in report.all_results if r.started_at]
+    completed = [r.completed_at for r in report.all_results if r.completed_at]
+    commit = _git("rev-parse", "HEAD")
+    status = _git("status", "--porcelain", "--untracked-files=no")
+    return {
+        "measured_at": {"start": _iso(min(started) if started else None),
+                        "end": _iso(max(completed) if completed else None)},
+        "account": spec.quota_account,
+        "region": spec.target.region,
+        "inference_profile": spec.target.model_id,
+        "benchmark_version": _version("bedrock-runtime-benchmark"),
+        "git_commit": commit,
+        "git_dirty": None if status is None else bool(status),
+        "runtime": {"python": platform.python_version(), "boto3": _version("boto3"),
+                    "botocore": _version("botocore")},
+    }
+
+
 def build_capacity_profile(report: ExperimentReport) -> dict:
     spec = report.spec
     by_name = {p.workload_name: p for p in report.profiles}
@@ -353,8 +404,18 @@ def build_capacity_profile(report: ExperimentReport) -> dict:
 
     confidence = spec.slo.confidence or DEFAULT_CONFIDENCE
     return {
-        "schema_version": 9,
+        "schema_version": 10,
         "experiment": spec.name,
+        "environment": _environment(report),
+        # One profile is ONE snapshot of provider conditions. Validity
+        # across time comes from comparing repeated runs (scripts/drift.py),
+        # which reports runs / days_observed / spread per envelope.
+        "validity": {
+            "repeated_runs": 1,
+            "days_observed": 1,
+            "scope": "single run -- a snapshot of the provider conditions at measured_at; re-measure and "
+                     "compare with scripts/drift.py before treating it as stable",
+        },
         "model": {
             "name": spec.model_name,
             "provider": "bedrock",
@@ -374,7 +435,10 @@ def build_capacity_profile(report: ExperimentReport) -> dict:
             },
             # The profiles this experiment's workloads use (each class
             # names its own under workload_classes.<name>.slo_profile).
+            # POLICY, not a result: externally supplied requirements the
+            # envelope is judged against -- never derived from measurements.
             "slo": {
+                "role": "policy_input",
                 "profiles": {
                     n: _slo_dict(spec.slo_profiles[n])
                     for n in sorted({w.slo_profile for w in spec.workloads if w.slo_profile in spec.slo_profiles})

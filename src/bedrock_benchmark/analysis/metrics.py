@@ -173,6 +173,42 @@ def required_samples(bad_events: int, max_rate: float, *, confidence: float = DE
     return lo
 
 
+def binomial_cdf(m: int, n: int, p: float) -> float:
+    """P(Bin(n, p) <= m), exact (regularized incomplete beta)."""
+    if m < 0:
+        return 0.0
+    if m >= n:
+        return 1.0
+    return 1.0 - _betainc(m + 1, n - m, p)
+
+
+def quantile_upper_bound(values: Sequence[Optional[float]], quantile: float = 0.95, *,
+                         confidence: float = DEFAULT_CONFIDENCE) -> Optional[float]:
+    """Distribution-free one-sided upper confidence bound on a population
+    quantile (order statistic): the r-th smallest value, r the smallest
+    rank with P(Bin(n, quantile) <= r - 1) >= confidence -- then
+    P(true quantile <= x_(r)) >= confidence for ANY continuous
+    distribution. None (a missing measurement) sorts as +inf. Returns
+    None when n is too small for any sample value to be a bound.
+
+    Exactly dual to the exceedance test in capacity._latency_check:
+    x_(r) <= T  <=>  exact upper bound on P(X > T) <= 1 - quantile,
+    so "UCB <= SLO" and "PASS" never disagree."""
+    n = len(values)
+    if n == 0 or binomial_cdf(n - 1, n, quantile) < confidence:
+        return None
+    lo, hi = 1, n  # smallest r with P(Bin(n, q) <= r - 1) >= confidence
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if binomial_cdf(mid - 1, n, quantile) >= confidence:
+            hi = mid
+        else:
+            lo = mid + 1
+    ordered = sorted(values, key=lambda v: math.inf if v is None else v)
+    x = ordered[lo - 1]
+    return None if x is None else x
+
+
 def tpot_ms(r: RequestResult) -> Optional[float]:
     """Time per output token for one request: the decode time after the
     first token, spread over the remaining tokens. None unless it's a

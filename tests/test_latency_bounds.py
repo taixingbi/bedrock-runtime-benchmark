@@ -2,7 +2,9 @@ import unittest
 
 from bedrock_benchmark.analysis.capacity import LATENCY_EXCEEDANCE_MAX, evaluate
 from bedrock_benchmark.analysis.confirmation import limits_for
-from bedrock_benchmark.analysis.metrics import compute_run_metrics
+import random
+
+from bedrock_benchmark.analysis.metrics import compute_run_metrics, quantile_upper_bound
 from bedrock_benchmark.results import RequestResult
 
 
@@ -76,6 +78,39 @@ class LatencyExceedanceTests(unittest.TestCase):
         by = {c.name: c for c in v.checks}
         self.assertEqual((by["tpot_p95"].verdict, by["latency_p95"].verdict), ("PASS", "PASS"))
         self.assertEqual(by["latency_p95"].exceedances, 0)
+
+
+class QuantileUpperBoundTests(unittest.TestCase):
+    """The reviewer's framing -- "p95 estimate 742ms, one-sided 95% UCB
+    796ms <= 800ms -> PASS" -- as the order-statistic bound, which must
+    never disagree with the exceedance-proportion verdict."""
+
+    def test_ucb_is_reported_and_bounds_the_estimate(self):
+        rng = random.Random(1)
+        results = [RequestResult(request_id=str(i), scheduled_at=0.0, started_at=0.0, completed_at=1.0, success=True,
+                                 ttft_ms=rng.gauss(600, 70), latency_ms=1000.0, output_tokens=64) for i in range(400)]
+        c = _ttft(results)
+        self.assertIsNotNone(c.p95_upper_bound)
+        self.assertGreaterEqual(c.p95_upper_bound, c.observed)  # the bound sits above the estimate
+
+    def test_too_few_samples_have_no_ucb(self):
+        self.assertIsNone(quantile_upper_bound([100.0] * 58))       # 58 < 59: no sample can bound q95 at 95%
+        self.assertEqual(quantile_upper_bound([100.0] * 59), 100.0)
+
+    def test_pass_iff_ucb_within_the_limit(self):
+        """Exact duality, checked on random samples of many sizes."""
+        rng = random.Random(7)
+        for trial in range(300):
+            n = rng.choice([40, 59, 80, 150, 400])
+            values = [rng.lognormvariate(6.4, 0.25) for _ in range(n)]
+            limit = rng.uniform(500, 1200)
+            results = [RequestResult(request_id=str(i), scheduled_at=0.0, started_at=0.0, completed_at=1.0,
+                                     success=True, ttft_ms=v, latency_ms=2000.0, output_tokens=64)
+                       for i, v in enumerate(values)]
+            c = _ttft(results, limit=limit)
+            ucb_ok = c.p95_upper_bound is not None and c.p95_upper_bound <= limit
+            with self.subTest(trial=trial, n=n):
+                self.assertEqual(c.verdict == "PASS", ucb_ok)
 
 
 class ConfirmationPlanCoversLatencyTests(unittest.TestCase):
