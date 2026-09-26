@@ -26,7 +26,20 @@ sweep:
   type: rate
   quota_fractions: [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 2.5]
 
+# Production = min(measured_safe x (1 - provider_headroom),
+#                  provider_ceiling x (1 - quota_headroom)): passing above
+# quota in a 90s window may be Bedrock burst allowance, not sustainable.
 provider_headroom: 0.20
+quota_headroom: 0.10
+
+# Two-phase: discovery (every value once) finds the transition region;
+# confirmation re-runs the candidate safe point and one neighbour on
+# each side 3 more times, pooled -- the final envelope rests on repeated
+# measurements at the boundary (and ~4x the samples there, which is what
+# resolves INCONCLUSIVE throttle checks). Adds up to 9 runs (~15 min).
+confirmation:
+  repetitions: 3
+  neighbors: 1
 
 transport:
   max_connections: 64

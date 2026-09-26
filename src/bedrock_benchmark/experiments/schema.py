@@ -23,7 +23,7 @@ every experiment (see constraints.py, workload.py).
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Collection, Dict, List, Optional
 
@@ -71,6 +71,18 @@ class SweepConfig:
 
 
 @dataclass
+class ConfirmationConfig:
+    """Two-phase sweep: the discovery pass (every value, `repetitions`
+    each) finds the transition region; this phase re-runs the candidate
+    safe point and `neighbors` points either side of it `repetitions`
+    more times, pooled with discovery. One 90s window is a capacity
+    snapshot; the final capacity-profile should rest on repeated
+    measurements at the boundary, not on every point equally."""
+    repetitions: int = 3
+    neighbors: int = 1
+
+
+@dataclass
 class MixConfig:
     """Mixed-workload experiment: instead of sweeping each workload in
     isolation, sweep ONE offered load (rate) or concurrency where each
@@ -99,7 +111,14 @@ class ExperimentSpec:
     # run-to-run spread is visible.
     repetitions: int = 1
     stream: bool = True
+    # Back-off from the MEASURED safe rate for production.
     provider_headroom: float = 0.20
+    # Back-off from the provider CEILING (quota) for production: a sweep
+    # that passed above quota may have ridden Bedrock's short-window
+    # burst allowance, which isn't sustainable, so production rate is
+    # min(measured_safe x (1 - provider_headroom), ceiling x (1 - quota_headroom)).
+    quota_headroom: float = 0.10
+    confirmation: Optional[ConfirmationConfig] = None
     seed: Optional[int] = None
     transport: TransportConfig = field(default_factory=TransportConfig)
     mix: Optional[MixConfig] = None
@@ -131,10 +150,15 @@ class ExperimentSpec:
     provider_ceilings: Dict[str, ProviderCeiling] = field(default_factory=dict)
 
     def slo_for(self, workload_name: str) -> SloConfig:
+        """The workload's profile (TTFT/TPOT/success/throttle), with the
+        workload's own E2E latency cap applied on top."""
         workload = next((w for w in self.workloads if w.name == workload_name), None)
+        slo = self.slo
         if workload is not None and workload.slo_profile is not None:
-            return self.slo_profiles[workload.slo_profile]
-        return self.slo
+            slo = self.slo_profiles[workload.slo_profile]
+        if workload is not None and workload.latency_p95_ms is not None:
+            slo = replace(slo, latency_p95_ms=workload.latency_p95_ms)
+        return slo
 
     @property
     def subject_names(self) -> List[str]:
@@ -201,6 +225,8 @@ def load_experiment(
         stream=raw.get("stream", True),
         sweep=SweepConfig(**sweep),
         provider_headroom=raw.get("provider_headroom", 0.20),
+        quota_headroom=raw.get("quota_headroom", 0.10),
+        confirmation=ConfirmationConfig(**raw["confirmation"]) if raw.get("confirmation") else None,
         seed=raw.get("seed"),
         transport=TransportConfig(**transport),
         mix=MixConfig(**raw["mix"]) if raw.get("mix") else None,
@@ -301,6 +327,11 @@ def _validate_sweep(spec: ExperimentSpec, model: ModelConfig, path: str) -> None
 
 
 def _validate(spec: ExperimentSpec) -> None:
+    for name in ("provider_headroom", "quota_headroom"):
+        if not 0 <= getattr(spec, name) < 1:
+            raise ValueError(f"{name} must be in [0, 1)")
+    if spec.confirmation is not None and (spec.confirmation.repetitions < 1 or spec.confirmation.neighbors < 0):
+        raise ValueError("confirmation.repetitions must be >= 1 and confirmation.neighbors >= 0")
     if spec.repetitions < 1:
         raise ValueError(f"repetitions must be >= 1, got {spec.repetitions}")
     if spec.warmup_s < 0 or spec.duration_s <= 0:

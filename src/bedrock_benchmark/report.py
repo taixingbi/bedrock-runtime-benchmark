@@ -102,11 +102,27 @@ def _saturation_fields(rec: Recommendation) -> dict:
     return out
 
 
+def _value(point) -> float:
+    return point.concurrency if point.concurrency is not None else point.rps
+
+
+def _verdict_fields(rec: Recommendation) -> dict:
+    """PASS = the rate SLOs are statistically demonstrated at the chosen
+    point; INCONCLUSIVE = nothing violated, but too few requests to prove
+    it (inconclusive_checks says which, with n vs required_n)."""
+    out: dict = {"verdict": rec.verdict.verdict}
+    if rec.verdict.inconclusive_checks:
+        out["inconclusive_checks"] = [c.to_dict() for c in rec.verdict.inconclusive_checks]
+    out["confirmed_safe"] = _value(rec.confirmed_point) if rec.confirmed_point is not None else None
+    return out
+
+
 def _concurrency_block(rec: Recommendation, *, headroom: float) -> dict:
     saturation = rec.saturation_point.concurrency if rec.saturation_point is not None else None
     production_max = max(1, int(apply_headroom(rec.point.concurrency, headroom=headroom)))
     return {
         "measured_best": rec.point.concurrency,
+        **_verdict_fields(rec),
         "saturation": saturation,
         **_saturation_fields(rec),
         "production_max": production_max,
@@ -114,15 +130,52 @@ def _concurrency_block(rec: Recommendation, *, headroom: float) -> dict:
     }
 
 
-def _rate_block(rec: Recommendation, *, headroom: float) -> dict:
+def _rate_block(rec: Recommendation, *, headroom: float, quota_headroom: float, ceiling_rps: Optional[float]) -> dict:
+    """Separates what was OBSERVED from what's safe to run in production.
+    A rate sweep deliberately goes above quota (to see throttling and
+    burst behavior), and a short window can pass there on Bedrock's
+    burst allowance -- that's not a sustainable rate. So production is
+    capped by BOTH the measurement and the provider ceiling:
+
+        production_sustained_rps = min(measured_safe x (1 - headroom),
+                                       provider_ceiling x (1 - quota_headroom))
+    """
     saturation_rps = rec.saturation_point.rps if rec.saturation_point is not None else None
+    from_measurement = apply_headroom(rec.point.rps, headroom=headroom)
+    from_quota = apply_headroom(ceiling_rps, headroom=quota_headroom) if ceiling_rps else None
+    if from_quota is not None and from_quota < from_measurement:
+        production, binding = from_quota, "provider_quota"
+    else:
+        production, binding = from_measurement, "measurement"
     return {
-        "max_safe_offered_rps": rec.point.rps,
+        "measured_safe_offered_rps": rec.point.rps,
+        **_verdict_fields(rec),
         "slo_goodput_rps": rec.point.metrics.slo_goodput_rps,
+        # Highest swept rate that didn't FAIL anywhere in the sweep --
+        # observed short-window serving, possibly above quota on burst.
+        "measured_burst_ceiling_rps": rec.burst_point.rps if rec.burst_point is not None else None,
+        "provider_ceiling_rps": round(ceiling_rps, 4) if ceiling_rps else None,
         "saturation_offered_rps": saturation_rps,
         **_saturation_fields(rec),
-        "production_offered_rps": apply_headroom(rec.point.rps, headroom=headroom),
+        "production_sustained_rps": production,
+        "production_binding": binding,  # measurement | provider_quota
     }
+
+
+def _sweep_points(profile_report) -> List[dict]:
+    """Every swept point's verdict -- the transition region at a glance."""
+    out = []
+    for point, verdict in zip(profile_report.points, profile_report.verdicts):
+        row = {"value": _value(point), "verdict": verdict.verdict, "phase": point.phase,
+               "repetitions": len(point.repetitions) or 1, "n": point.metrics.n}
+        failed = [c.name for c in verdict.checks if c.verdict == "FAIL"]
+        if failed:
+            row["failed"] = failed
+        inconclusive = verdict.inconclusive_checks
+        if inconclusive:
+            row["inconclusive"] = [f"{c.name}: n={c.n} < required_n={c.required_n}" for c in inconclusive]
+        out.append(row)
+    return out
 
 
 def _evidence(point) -> dict:
@@ -197,6 +250,8 @@ def _envelope(entry: dict, profile_report, spec) -> None:
     limited = [p.concurrency if p.concurrency is not None else p.rps for p in points if p.client_limited]
     if limited:
         entry["client_limited_points"] = limited
+    if profile_report.verdicts:
+        entry["sweep_points"] = _sweep_points(profile_report)
     rec = profile_report.recommendation
     if rec is None:
         analysis = profile_report.analysis
@@ -210,8 +265,11 @@ def _envelope(entry: dict, profile_report, spec) -> None:
     if spec.sweep.type == "concurrency":
         entry["concurrency"] = _concurrency_block(rec, headroom=spec.provider_headroom)
     else:
-        entry["rate"] = _rate_block(rec, headroom=spec.provider_headroom)
+        ceiling = spec.provider_ceilings.get(subject)
+        entry["rate"] = _rate_block(rec, headroom=spec.provider_headroom, quota_headroom=spec.quota_headroom,
+                                    ceiling_rps=ceiling.rps if ceiling else None)
     entry["evidence"] = _evidence(rec.point)
+    entry["evidence"]["verdict"] = rec.verdict.to_dict()
 
 
 def build_capacity_profile(report: ExperimentReport) -> dict:
@@ -256,7 +314,7 @@ def build_capacity_profile(report: ExperimentReport) -> dict:
 
     confidence = spec.slo.confidence or DEFAULT_CONFIDENCE
     return {
-        "schema_version": 5,
+        "schema_version": 6,
         "experiment": spec.name,
         "model": {
             "name": spec.model_name,
@@ -292,7 +350,15 @@ def build_capacity_profile(report: ExperimentReport) -> dict:
             # (drain included); throughput over completions in it.
             "window_policy": "scheduled_in_window_for_rates__completed_in_window_for_throughput",
             "clock": "monotonic_durations__wall_clock_timestamps",
-            "gate": "confidence_bound" if spec.slo.confidence is not None else "point_estimate",
+            # Every check is PASS / FAIL / INCONCLUSIVE; success & throttle
+            # use Wilson bounds at this confidence (observed violation ->
+            # FAIL, bound clears -> PASS, otherwise INCONCLUSIVE).
+            "gate": "pass_fail_inconclusive",
+            "confidence": confidence,
+            "confirmation": (
+                {"repetitions": spec.confirmation.repetitions, "neighbors": spec.confirmation.neighbors}
+                if spec.confirmation is not None else None
+            ),
             "min_requests_to_resolve_throttle_slo": min_samples_to_resolve_rate(
                 spec.slo.throttle_rate_max, confidence=confidence,
             ),
@@ -309,7 +375,8 @@ def build_capacity_profile(report: ExperimentReport) -> dict:
         # of a cross-class envelope, and only for THAT mix's shares.
         **({"mixed_workloads": mixed} if mixed else {}),
         "provider": {
-            "headroom": spec.provider_headroom,
+            "headroom": spec.provider_headroom,        # back-off from the measured safe point
+            "quota_headroom": spec.quota_headroom,     # back-off from the provider ceiling
         },
         # Recorded for reproducibility -- what was actually running
         # when these numbers were measured (see client.py's

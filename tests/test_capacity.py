@@ -1,7 +1,7 @@
 import unittest
 
 from bedrock_benchmark.analysis.capacity import (
-    SweepPoint, analyze_sweep, apply_headroom, meets_slo, point_meets_slo, recommend,
+    SweepPoint, analyze_sweep, apply_headroom, evaluate, meets_slo, point_meets_slo, point_verdict, recommend,
 )
 from bedrock_benchmark.analysis.metrics import RunMetrics
 
@@ -93,6 +93,59 @@ def _c(c, ok=True, goodput=None):
     return SweepPoint(concurrency=c, rps=None, metrics=_metrics(
         slo_goodput_rps=goodput if goodput is not None else float(c), throttle_rate=0.0 if ok else 0.2,
     ))
+
+
+class TriStateVerdictTests(unittest.TestCase):
+    def test_bounds_clearing_the_limits_is_pass(self):
+        v = evaluate(_metrics(n=3000, throttle_rate_upper=0.0009, success_rate_lower=0.999), throttle_rate_max=0.001)
+        self.assertEqual(v.verdict, "PASS")
+
+    def test_clean_but_undersampled_is_inconclusive_with_required_n(self):
+        """The reviewer's example: n=180, 0 throttles -> not a pass, not a fail."""
+        v = evaluate(_metrics(n=180, throttle_rate=0.0, throttle_rate_upper=0.0206, success_rate_lower=0.979),
+                     success_rate_min=0.99, throttle_rate_max=0.001)
+        self.assertEqual(v.verdict, "INCONCLUSIVE")
+        throttle = next(c for c in v.checks if c.name == "throttle_rate")
+        self.assertEqual((throttle.verdict, throttle.reason, throttle.n), ("INCONCLUSIVE", "insufficient_samples", 180))
+        self.assertEqual(throttle.required_n, 2703)
+        success = next(c for c in v.checks if c.name == "success_rate")
+        self.assertEqual(success.verdict, "INCONCLUSIVE")
+
+    def test_observed_violation_is_fail_regardless_of_sample_size(self):
+        v = evaluate(_metrics(n=50, throttle_rate=0.02, throttle_rate_upper=0.1), throttle_rate_max=0.001)
+        self.assertEqual(v.verdict, "FAIL")
+        self.assertEqual(next(c for c in v.checks if c.name == "throttle_rate").reason, "observed_violation")
+
+    def test_latency_fail_dominates_inconclusive(self):
+        v = evaluate(_metrics(n=100, ttft_p95_ms=2000.0), ttft_p95_slo_ms=1000.0)
+        self.assertEqual(v.verdict, "FAIL")
+
+    def test_no_requests_is_fail(self):
+        self.assertEqual(evaluate(_metrics(n=0)).verdict, "FAIL")
+
+    def test_meets_slo_is_not_fail_and_gate_on_bounds_requires_pass(self):
+        undersampled = _metrics(n=100, throttle_rate_upper=0.03, success_rate_lower=0.97)
+        self.assertTrue(meets_slo(undersampled))
+        self.assertFalse(meets_slo(undersampled, gate_on_bounds=True))
+
+    def test_mix_checks_are_named_per_class(self):
+        point = SweepPoint(concurrency=None, rps=1.0, metrics=_metrics(),
+                           class_metrics={"chat": _metrics(ttft_p95_ms=2000.0)})
+        v = point_verdict(point, ttft_p95_slo_ms=1000.0)
+        self.assertIn("chat.ttft_p95", [c.name for c in v.checks if c.verdict == "FAIL"])
+
+    def test_recommendation_carries_verdict_confirmed_and_burst_points(self):
+        resolved = dict(throttle_rate_upper=0.0005, success_rate_lower=0.999)
+        points = [
+            SweepPoint(concurrency=None, rps=1.0, metrics=_metrics(n=3000, slo_goodput_rps=1.0, **resolved)),
+            SweepPoint(concurrency=None, rps=2.0, metrics=_metrics(n=300, slo_goodput_rps=2.0)),   # inconclusive
+            SweepPoint(concurrency=None, rps=3.0, metrics=_metrics(n=300, throttle_rate=0.2)),     # fail
+        ]
+        rec = recommend(points)
+        self.assertEqual((rec.point.rps, rec.verdict.verdict), (2.0, "INCONCLUSIVE"))
+        self.assertEqual(rec.confirmed_point.rps, 1.0)
+        self.assertEqual(rec.burst_point.rps, 2.0)
+        self.assertEqual(rec.saturation_point.rps, 3.0)
 
 
 class NonMonotonicSweepTests(unittest.TestCase):

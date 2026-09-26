@@ -42,11 +42,19 @@ class RunOutcome:
 
 
 def estimated_duration_s(spec: ExperimentSpec) -> float:
-    """Lower bound on wall time: every sweep point runs warmup + window
-    per repetition, per sweep subject (each workload, or one mix).
-    Drain time on top depends on real latency, so it isn't counted."""
+    """Wall time estimate: every sweep point runs warmup + window per
+    repetition, per sweep subject (each workload, or one mix), plus --
+    with confirmation -- up to 2 x neighbors + 1 boundary points re-run
+    confirmation.repetitions more times (fewer if the candidate sits at
+    an end of the sweep, none if nothing passed). Drain time on top
+    depends on real latency, so it isn't counted."""
     subjects = 1 if spec.mix is not None else len(spec.workloads)
-    return subjects * spec.sweep.point_count * spec.repetitions * (spec.warmup_s + spec.duration_s)
+    per_run = spec.warmup_s + spec.duration_s
+    discovery = spec.sweep.point_count * spec.repetitions
+    confirmation = 0
+    if spec.confirmation is not None:
+        confirmation = min(2 * spec.confirmation.neighbors + 1, spec.sweep.point_count) * spec.confirmation.repetitions
+    return subjects * (discovery + confirmation) * per_run
 
 
 def describe_sweep(spec: ExperimentSpec) -> str:
@@ -75,9 +83,12 @@ def recommendation_summary(report: ExperimentReport) -> List[str]:
         sat = None
         if rec.saturation_point is not None:
             sat = rec.saturation_point.concurrency if rec.saturation_point.concurrency is not None else rec.saturation_point.rps
+        confirmed = rec.confirmed_point
+        confirmed_value = None if confirmed is None else (
+            confirmed.concurrency if confirmed.concurrency is not None else confirmed.rps)
         lines.append(
-            f"{profile_report.workload_name}: recommended={value} "
-            f"slo_goodput_rps={rec.point.metrics.slo_goodput_rps} saturation={sat}"
+            f"{profile_report.workload_name}: recommended={value} [{rec.verdict.verdict}] "
+            f"confirmed={confirmed_value} slo_goodput_rps={rec.point.metrics.slo_goodput_rps} saturation={sat}"
         )
     return lines
 

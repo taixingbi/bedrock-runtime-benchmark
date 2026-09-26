@@ -13,7 +13,7 @@ Gateway knobs compared (names as bedrock-runtime-gateway uses them):
 
 - models.<id>.rpm_limit -- gateway-model-quotas-dev `quota#<model_id>`
   row, enforced in routing/model_quota.py. Compared to the tightest
-  `production_offered_rps * 60` across the model's measured classes
+  `production_sustained_rps * 60` (v3-v5: production_offered_rps) across the model's measured classes
   and mixes: the gateway's model limit is workload-agnostic, so the
   binding class is the conservative bound.
 - tenants.<name>.rpm_limit -- tenant policy. A single tenant above the
@@ -32,7 +32,7 @@ import math
 from dataclasses import asdict, dataclass, field
 from typing import Dict, Iterable, List, Optional, Tuple
 
-SUPPORTED_SCHEMA_VERSIONS = {3, 4, 5}
+SUPPORTED_SCHEMA_VERSIONS = {3, 4, 5, 6}
 
 
 @dataclass
@@ -66,7 +66,7 @@ class GatewayDiff:
 
 
 def _envelopes(profile: dict) -> Tuple[List[Tuple[str, float]], List[Tuple[str, int]]]:
-    """(rate envelopes as (basis, production_offered_rps), concurrency
+    """(rate envelopes as (basis, production rps), concurrency
     envelopes as (basis, production_max)) across isolated classes and
     mixes in one profile."""
     rates: List[Tuple[str, float]] = []
@@ -75,10 +75,18 @@ def _envelopes(profile: dict) -> Tuple[List[Tuple[str, float]], List[Tuple[str, 
     sources += [("mix", n, e) for n, e in (profile.get("mixed_workloads") or {}).items()]
     for kind, name, entry in sources:
         if "rate" in entry:
-            rates.append((f"{kind} {name}: rate.production_offered_rps", entry["rate"]["production_offered_rps"]))
+            # v6: production_sustained_rps (capped by the provider ceiling);
+            # v3-v5: production_offered_rps.
+            key = "production_sustained_rps" if "production_sustained_rps" in entry["rate"] else "production_offered_rps"
+            rates.append((f"{kind} {name}: rate.{key}", entry["rate"][key]))
         if "concurrency" in entry:
             concs.append((f"{kind} {name}: concurrency.production_max", entry["concurrency"]["production_max"]))
     return rates, concs
+
+
+def _entries(profile: dict):
+    yield from (("class", n, e) for n, e in (profile.get("workload_classes") or {}).items())
+    yield from (("mix", n, e) for n, e in (profile.get("mixed_workloads") or {}).items())
 
 
 def _quality_findings(model_id: str, profile: dict) -> Iterable[Finding]:
@@ -100,6 +108,20 @@ def _quality_findings(model_id: str, profile: dict) -> Iterable[Finding]:
             "warn", "workload_shape_invalid", model_id,
             f"class {name} measured {detail} -- its envelope describes a different workload than it claims",
         )
+
+    # v6: each envelope carries its verdict; INCONCLUSIVE means nothing
+    # violated the SLO but there weren't enough requests to prove it.
+    for kind, name, entry in _entries(profile):
+        block = entry.get("rate") or entry.get("concurrency") or {}
+        if block.get("verdict") == "INCONCLUSIVE":
+            detail = "; ".join(
+                f"{c.get('name')}: n={c.get('n')} < {c.get('required_n')}" for c in block.get("inconclusive_checks", [])
+            )
+            yield Finding(
+                "info", "envelope_unconfirmed", model_id,
+                f"{kind} {name}: safe point is INCONCLUSIVE (no violation, too few requests to prove the SLO: {detail})"
+                + ("" if block.get("confirmed_safe") is None else f"; statistically confirmed safe: {block['confirmed_safe']}"),
+            )
 
     measurement = profile.get("measurement") or {}
     needed = measurement.get("min_requests_to_resolve_throttle_slo")

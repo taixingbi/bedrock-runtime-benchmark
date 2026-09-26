@@ -88,6 +88,23 @@ class SloProfileTests(unittest.TestCase):
         self.assertEqual(spec.slo_for("long_generation").tpot_p95_ms, 120)  # bronze
 
 
+class WorkloadE2ECapTests(unittest.TestCase):
+    def test_workload_latency_cap_is_applied_over_its_profile(self):
+        spec = load_experiment("experiments/token-sweep.yaml", MICRO)
+        for w in spec.workloads:
+            with self.subTest(workload=w.name):
+                slo = spec.slo_for(w.name)
+                self.assertEqual(slo.latency_p95_ms, w.latency_p95_ms)         # workload-level
+                self.assertEqual(slo.tpot_p95_ms, spec.slo_profiles[w.slo_profile].tpot_p95_ms)  # profile-level
+
+    def test_every_catalog_workload_has_its_own_e2e_cap(self):
+        from bedrock_benchmark.workload import load_workloads
+        caps = {n: w.latency_p95_ms for n, w in load_workloads().items()}
+        self.assertTrue(all(caps.values()))
+        self.assertLess(caps["short_chat"], caps["rag_answer"])
+        self.assertLess(caps["rag_answer"], caps["long_generation"])
+
+
 class SloProfileFilterTests(unittest.TestCase):
     def test_isolated_sweep_keeps_only_matching_workloads(self):
         spec = load_experiment("experiments/token-sweep.yaml", MICRO, only_slo_profiles={"gold"})
@@ -136,6 +153,8 @@ class ValidationTests(unittest.TestCase):
             MINIMAL.replace("[short_chat]", "[{name: w, input_tokens: 1, output_tokens: 1}]"),  # inline shape
             MINIMAL + "mix: {name: x, weights: {rag_answer: 1}}\n",            # mixes an unlisted workload
             MINIMAL + "transport: {max_connections: 64, executor_workers: 8}\n",
+            MINIMAL + "quota_headroom: 1.0\n",
+            MINIMAL + "confirmation: {repetitions: 0}\n",
         ]
         for text in bad:
             with self.subTest(text=text), self.assertRaises(ValueError):

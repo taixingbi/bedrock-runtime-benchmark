@@ -1,15 +1,26 @@
 # bedrock-runtime-benchmark
 
-`bedrock-runtime-benchmark` characterizes Bedrock model capacity under
-controlled workloads and derives SLO-aware operating envelopes for
-runtime admission and concurrency configuration.
+`bedrock-runtime-benchmark` empirically characterizes the **SLO-qualified
+operating envelope of a Bedrock inference profile** under controlled
+token workloads and provider constraints, and derives runtime admission
+and concurrency configuration from it.
+
+What it measures is not the bare model but the **Bedrock runtime
+operating envelope**: model + Bedrock serving stack + inference-profile
+routing + account/region quota + current provider conditions.
 
 It does not test the whole gateway, and it does not do release
 regression -- that's `bedrock-platform-eval`'s job. It answers exactly one
 question:
 
-> For a given Bedrock model/inference profile and workload shape, at a
-> given SLO, what's the safe concurrency/RPS/token envelope?
+> For a given Bedrock inference profile and workload shape, at a given
+> SLO and quota, what concurrency/RPS envelope is demonstrably safe?
+
+```
+workload -> SLO -> quota-aware sweep -> find the boundary -> confirm it
+statistically -> apply headroom + provider ceiling -> capacity-profile.yaml
+-> gateway admission-control configuration
+```
 
 ## Boundary
 
@@ -237,7 +248,9 @@ measurement:
   repetitions: 1
   window_policy: scheduled_in_window_for_rates__completed_in_window_for_throughput
   clock: monotonic_durations__wall_clock_timestamps
-  gate: point_estimate                      # or confidence_bound when slo.confidence is set
+  gate: pass_fail_inconclusive              # every check is PASS / FAIL / INCONCLUSIVE
+  confidence: 0.95
+  confirmation: {repetitions: 3, neighbors: 1}
   min_requests_to_resolve_throttle_slo: 2703
 sweep: {type: rate, quota_fractions: [0.25, ...], relative_to: provider_ceiling}
 workload_classes:
@@ -248,13 +261,20 @@ workload_classes:
     provider_constraints: {tokens_per_request: 576.0, ceiling_rps: 6.6667, binding_constraint: rpm, ...}
     sweep_values_rps: [1.6667, 3.3333, ...]
     rate:
-      max_safe_offered_rps: 8.3333          # the swept offered rate that passed the SLO
+      measured_safe_offered_rps: 8.3333     # best non-failing offered rate before the first FAIL
+      verdict: INCONCLUSIVE                 # PASS = statistically demonstrated
+      inconclusive_checks: [{name: throttle_rate, n: 1740, required_n: 2703, ...}]
+      confirmed_safe: 5.0                   # best strictly-PASS point, if any
       slo_goodput_rps: 8.1                  # what it actually delivered within SLO
-      saturation_offered_rps: 10.0
+      measured_burst_ceiling_rps: 10.0      # highest swept rate that didn't FAIL (may be burst)
+      provider_ceiling_rps: 6.6667          # from the quota
+      saturation_offered_rps: 13.3333
       saturation_status: resolved           # or not_reached / unresolved (+ unstable_region)
-      production_offered_rps: 6.6667        # headroom applied to OFFERED rate -- what a gateway limit reads
-    evidence: {n: 745, n_throttled: 0, throttle_rate_upper: 0.0036, peak_outstanding: 9, ...}
-provider: {headroom: 0.20}
+      production_sustained_rps: 6.0         # min(measured x 0.8, ceiling x 0.9) -- what a gateway limit reads
+      production_binding: provider_quota    # or measurement
+    sweep_points: [{value: 1.6667, verdict: INCONCLUSIVE, phase: discovery, n: 150, inconclusive: [...]}, ...]
+    evidence: {n: 1740, n_throttled: 0, throttle_rate_upper: 0.0017, verdict: {...}, peak_outstanding: 9, ...}
+provider: {headroom: 0.20, quota_headroom: 0.10}
 transport: {max_connections: 64, executor_workers: 64, total_max_attempts: 1, connect_timeout_s: 5, read_timeout_s: 60}
 ```
 
@@ -266,7 +286,7 @@ config review reads this file, and decides its own global/tenant/AIMD
 config FROM these per-class envelopes -- this repo never pre-packages
 a gateway control policy itself (see "Not in scope here" below).
 
-## Correctness fixes (schema v2 / v3 / v4)
+## Correctness fixes (schema v2 -- v6)
 
 A real review caught 5 measurement-correctness bugs before this
 artifact was ever used to actually inform a gateway config:
@@ -334,9 +354,10 @@ artifact was ever used to actually inform a gateway config:
    `production_rps` applied headroom to that goodput -- but a gateway
    admission limit is on offered load. Split into
    `max_safe_offered_rps` / `slo_goodput_rps` /
-   `production_offered_rps`.
+   `production_offered_rps` (v6: `measured_safe_offered_rps` /
+   `production_sustained_rps`, now also quota-capped).
 9. **A 0.1% throttle SLO was gated on too few samples.** See
-   "Statistical resolution" below.
+   "Verdicts" below.
 
 ### Schema v4 fixes
 
@@ -376,6 +397,22 @@ artifact was ever used to actually inform a gateway config:
     quotas are scoped by account and region, matching how Bedrock
     actually applies them.
 
+### Schema v6 fixes
+
+18. **The 95% bounds were computed but never gated.** No SLO set
+    `confidence`, so a few hundred clean requests "passed" a 0.1%
+    throttle SLO they couldn't statistically demonstrate. Now every
+    check is PASS / FAIL / INCONCLUSIVE -- see "Verdicts".
+19. **Production rate could exceed quota.** 20% headroom off a rate
+    that passed at 1.8x quota (burst) still recommended 1.44x quota.
+    Production is now also capped by the provider ceiling -- see
+    "Production rate".
+20. **One snapshot per point.** Repetitions defaulted to 1 everywhere.
+    The boundary is now re-measured in a confirmation phase -- see
+    "Two-phase sweep".
+21. **TTFT + TPOT alone missed user-visible E2E.** Each workload now
+    carries its own E2E cap -- see "SLO profiles".
+
 ## Measurement policy
 
 Every sweep point runs **warmup -> measurement window -> drain**:
@@ -398,19 +435,57 @@ seed+rep, so repetitions are independent Poisson samples). The SLO gate
 reads the pooled windows; per-repetition goodput is kept in `evidence`
 to show run-to-run spread.
 
-**Statistical resolution of the throttle SLO.** A 0.1% throttle SLO
-can't be demonstrated from a few hundred requests: 0 throttles out of
-540 (6 rps x 90s) has a 95% one-sided Wilson upper bound of ~0.5%.
-Resolving 0.1% at 95% needs ~2,700 measured requests per point.
-Every point therefore records `throttle_rate_upper` /
-`success_rate_lower`, and:
+### Verdicts: PASS / FAIL / INCONCLUSIVE
 
-- `slo.confidence` unset (default): gate on point estimates, as before;
-  `scripts/run.py` warns up front for rate points that can't reach the
-  required sample size.
-- `slo.confidence: 0.95`: gate on the bounds -- an under-sampled point
-  fails closed. Raise `duration_s` x `repetitions` to match (e.g.
-  6 rps needs ~450s of pooled window).
+Insufficient evidence is not failure. Every check at every point gets a
+verdict (`capacity.py`'s `evaluate`):
+
+- **latency checks** (TTFT / TPOT / E2E p95): PASS or FAIL; a configured
+  SLO with no measurement FAILs (not measured is not compliant).
+- **rate checks** (success, throttle), on one-sided Wilson bounds at
+  `confidence` (default 95%):
+  - observed violation (e.g. throttle rate above the limit) -> **FAIL**
+  - the bound clears the limit -> **PASS**
+  - no violation, but too few requests to prove it -> **INCONCLUSIVE**,
+    with `n` and `required_n` (0 throttles in 540 requests has a 95%
+    upper bound of ~0.5% -- resolving a 0.1% limit needs ~2,700)
+
+A point is FAIL if any check fails, else INCONCLUSIVE if any is
+inconclusive, else PASS. Saturation is the first FAIL; the recommended
+point is the best non-failing point before it and carries its verdict,
+alongside `confirmed_safe` -- the best strictly-PASS point, if any.
+`sweep_points` lists every point's verdict; `gateway_diff` reports an
+INCONCLUSIVE envelope as `envelope_unconfirmed`.
+
+### Production rate: measured AND quota-capped
+
+A rate sweep deliberately goes above quota to see throttling and burst
+behavior, and a short window can pass there on Bedrock's burst
+allowance -- that is observed serving, not a sustainable quota. So the
+rate block separates what was observed from what's safe to configure:
+
+```
+measured_safe_offered_rps    best non-failing rate before the first FAIL
+measured_burst_ceiling_rps   highest swept rate that didn't FAIL anywhere
+provider_ceiling_rps         min(RPM/60, TPM/tokens/60) from the quota
+production_sustained_rps     min(measured_safe x (1 - provider_headroom),
+                                 provider_ceiling x (1 - quota_headroom))
+```
+
+`production_binding` says which term won. Defaults: 20% off the
+measurement, 10% off the quota.
+
+### Two-phase sweep: discovery -> confirmation
+
+One 90s window per point is a capacity snapshot, not a profile. With
+`confirmation: {repetitions: 3, neighbors: 1}` (on in
+`rate-capacity.yaml`), the discovery pass (every value once) finds the
+transition region, then the candidate safe point and one neighbour each
+side are re-run 3 more times, pooled with discovery. The boundary then
+rests on repeated measurements -- and on ~4x the samples, which is what
+resolves INCONCLUSIVE throttle checks -- without paying for repetitions
+at every point. `sweep_points[].phase` and `.repetitions` show which
+points were confirmed.
 
 ## Quota-aware experiment design
 
@@ -513,9 +588,9 @@ experiment is rejected.
 ```yaml
 # catalog/workloads.yaml
 workloads:
-  short_chat:      {input_tokens: 512,  output_tokens: 64,   slo_profile: gold}
-  rag_answer:      {input_tokens: 4096, output_tokens: 256,  slo_profile: silver}
-  long_generation: {input_tokens: 4096, output_tokens: 1024, slo_profile: bronze}
+  short_chat:      {input_tokens: 512,  output_tokens: 64,   slo_profile: gold,   latency_p95_ms: 3000}
+  rag_answer:      {input_tokens: 4096, output_tokens: 256,  slo_profile: silver, latency_p95_ms: 10000}
+  long_generation: {input_tokens: 4096, output_tokens: 1024, slo_profile: bronze, latency_p95_ms: 60000}
 
 # experiments/token-sweep.yaml
 workloads: [short_chat, rag_answer, long_generation]
@@ -543,7 +618,14 @@ configured TPOT SLO with no TPOT measured fails closed, like TTFT.
 | `silver` | standard synchronous application | `rag_answer` | 1.5 s | 70 ms | 99% | 0.5% |
 | `bronze` | async, batch, throughput-oriented | `long_generation` | 3 s | 120 ms | 99% | 1% |
 
-`latency_p95_ms` remains available as an optional end-to-end gate.
+**End-to-end latency is workload-level, not profile-level.** TTFT and
+TPOT generalize across output lengths; E2E doesn't -- a 64-, 256- and
+1024-token output can't share one budget, and good TTFT + TPOT can still
+add up to an unacceptable total. So each workload sets its own
+`latency_p95_ms` cap in `catalog/workloads.yaml` (starting values:
+short_chat 3s, rag_answer 10s, long_generation 60s -- set them to what
+each product promises), applied on top of its profile.
+
 Isolated workloads are gated on their own
 profile. In a mix, every request counts toward goodput against its own
 class's profile, every class is gated on its own profile, and the blend
@@ -565,7 +647,7 @@ while the long class alone blows its latency SLO. The artifact gains:
 mixed_workloads:
   short70_long30:
     shares: {short_chat: 0.6, rag_answer: 0.3, long_generation: 0.1}
-    rate: {max_safe_offered_rps: ..., slo_goodput_rps: ..., production_offered_rps: ...}
+    rate: {measured_safe_offered_rps: ..., verdict: ..., slo_goodput_rps: ..., production_sustained_rps: ...}
     evidence: {...}
     classes_at_recommended_point: {short_chat: {...}, rag_answer: {...}, long_generation: {...}}
 ```
@@ -590,7 +672,7 @@ directly onto a gateway knob:
 
 | Gateway knob | Compared against | Finding |
 |---|---|---|
-| model `rpm_limit` (`gateway-model-quotas-dev`) | tightest `production_offered_rps x 60` across the model's classes and mixes | warn + proposal if above; warn if unset (fails open) |
+| model `rpm_limit` (`gateway-model-quotas-dev`) | tightest `production_sustained_rps x 60` across the model's classes and mixes | warn + proposal if above; warn if unset (fails open) |
 | tenant `rpm_limit` | same envelope | warn + proposal if one tenant alone exceeds it; info if tenants sum past it |
 | `CONCURRENCY_DEFAULT_TENANT_MAX` | tightest `production_max` | warn + proposal if one tenant can exceed it |
 | `CONCURRENCY_GLOBAL_MAX` x processes | tightest `production_max` | info only -- it spans all models |
@@ -603,7 +685,7 @@ config; the gateway's own review still decides.
 
 AIMD, tenant limiters, global admission control, queueing, fairness --
 all `bedrock-runtime-gateway`'s job. This repo outputs a safe operating
-envelope (`production_max`, `production_offered_rps`) and, at most, an
+envelope (`production_max`, `production_sustained_rps`) and, at most, an
 advisory diff against a gateway config snapshot; it never implements
 or applies the runtime logic that enforces it.
 

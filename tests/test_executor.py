@@ -34,16 +34,43 @@ class RunExperimentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(point.metrics.n, len(measured))
         self.assertTrue(all("window_start" in r.tags for r in report.all_results))
 
-    async def test_confidence_gating_rejects_an_unresolvable_clean_point(self):
-        """~16 clean requests can never demonstrate a 0.1% throttle SLO."""
+    async def test_unresolvable_clean_point_is_inconclusive_not_failed(self):
+        """~16 clean requests can't DEMONSTRATE a 0.1% throttle SLO -- but
+        insufficient evidence isn't failure: the point is INCONCLUSIVE,
+        still eligible, and says how many requests would settle it."""
         target = BedrockConverseTarget(model_id="m", client=FakeBedrockRuntimeClient())
 
         report = await run_experiment(
             _spec(slo=SloConfig(latency_p95_ms=3000, confidence=0.95)), target=target,
         )
 
-        self.assertEqual(report.profiles[0].points[0].metrics.n_throttled, 0)
-        self.assertIsNone(report.profiles[0].recommendation)
+        profile = report.profiles[0]
+        self.assertEqual(profile.points[0].metrics.n_throttled, 0)
+        rec = profile.recommendation
+        self.assertIsNotNone(rec)
+        self.assertEqual(rec.verdict.verdict, "INCONCLUSIVE")
+        self.assertIsNone(rec.confirmed_point)
+        throttle = next(c for c in rec.verdict.inconclusive_checks if c.name == "throttle_rate")
+        self.assertEqual(throttle.reason, "insufficient_samples")
+        self.assertGreater(throttle.required_n, 2000)
+        self.assertEqual(profile.verdicts[0].verdict, "INCONCLUSIVE")
+
+    async def test_confirmation_reruns_the_candidate_and_its_neighbours(self):
+        from bedrock_benchmark.experiments.schema import ConfirmationConfig
+        target = BedrockConverseTarget(model_id="m", client=FakeBedrockRuntimeClient())
+        spec = _spec(sweep=SweepConfig(type="rate", values=[20.0, 40.0, 80.0, 120.0]), repetitions=1,
+                     confirmation=ConfirmationConfig(repetitions=2, neighbors=1))
+
+        report = await run_experiment(spec, target=target)
+
+        points = report.profiles[0].points
+        best = report.profiles[0].recommendation.point.rps
+        i = [p.rps for p in points].index(best)
+        confirmed = {p.rps for p in points if p.phase == "confirmation"}
+        self.assertEqual(confirmed, {p.rps for p in points[max(0, i - 1):i + 2]})
+        for p in points:
+            self.assertEqual(len(p.repetitions), 3 if p.rps in confirmed else 1)
+        self.assertEqual({r.tags["phase"] for r in report.all_results}, {"discovery", "confirmation"})
 
     async def test_mix_sweeps_once_with_per_class_metrics(self):
         target = BedrockConverseTarget(model_id="m", client=FakeBedrockRuntimeClient())

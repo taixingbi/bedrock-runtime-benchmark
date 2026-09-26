@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
 import yaml
@@ -46,7 +47,8 @@ class ShippedConstraintsTests(unittest.TestCase):
             for w in spec.workloads:
                 with self.subTest(path=path.name, workload=w.name):
                     self.assertIn(w.slo_profile, slos.profiles)
-                    self.assertEqual(spec.slo_for(w.name), slos.get(w.slo_profile))
+                    # profile-level components + the workload's own E2E cap
+                    self.assertEqual(spec.slo_for(w.name), replace(slos.get(w.slo_profile), latency_p95_ms=w.latency_p95_ms))
 
     def test_catalog_binds_every_workload_to_an_existing_profile(self):
         slos = load_slo()

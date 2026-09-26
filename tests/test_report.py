@@ -43,11 +43,11 @@ class BuildCapacityProfileTests(unittest.TestCase):
         defaults.update(overrides)
         return ExperimentSpec(**defaults)
 
-    def test_schema_version_is_5(self):
+    def test_schema_version_is_6(self):
         spec = self._spec()
         report = ExperimentReport(spec=spec, profiles=[ProfileReport(workload_name="short", recommendation=None)])
         profile = build_capacity_profile(report)
-        self.assertEqual(profile["schema_version"], 5)
+        self.assertEqual(profile["schema_version"], 6)
 
     def test_concurrency_sweep_writes_a_concurrency_block_not_rate(self):
         spec = self._spec(sweep_type="concurrency")
@@ -104,12 +104,35 @@ class BuildCapacityProfileTests(unittest.TestCase):
 
         rate = build_capacity_profile(report)["workload_classes"]["short"]["rate"]
 
-        self.assertEqual(rate["max_safe_offered_rps"], 6.0)
+        self.assertEqual(rate["measured_safe_offered_rps"], 6.0)
         self.assertEqual(rate["slo_goodput_rps"], 5.8)
         # Not floored to an int (unlike concurrency) -- fractional RPS is meaningful.
-        self.assertAlmostEqual(rate["production_offered_rps"], 4.8, places=4)
+        self.assertAlmostEqual(rate["production_sustained_rps"], 4.8, places=4)
+        self.assertEqual(rate["production_binding"], "measurement")  # no provider ceiling known here
         self.assertNotIn("measured_sustainable_rps", rate)
         self.assertNotIn("production_rps", rate)
+
+    def test_production_rps_is_capped_by_the_provider_ceiling(self):
+        """A short window passed at 1.8x quota (burst allowance): 20%
+        headroom off that would still exceed quota. Production must be
+        min(measured x 0.8, ceiling x 0.9)."""
+        from bedrock_benchmark.ceiling import ProviderCeiling
+        spec = self._spec(sweep_type="rate", sweep_values=[6, 9, 12])
+        spec.provider_ceilings = {"short": ProviderCeiling(tokens_per_request=576, rpm_rps=5.0, tpm_rps=None)}
+        rec = Recommendation(
+            point=SweepPoint(concurrency=None, rps=9.0, metrics=_metrics(slo_goodput_rps=8.9)),
+            saturation_point=SweepPoint(concurrency=None, rps=12.0, metrics=_metrics(throttle_rate=0.3)),
+            burst_point=SweepPoint(concurrency=None, rps=9.0, metrics=_metrics()),
+        )
+        report = ExperimentReport(spec=spec, profiles=[ProfileReport(workload_name="short", recommendation=rec)])
+
+        rate = build_capacity_profile(report)["workload_classes"]["short"]["rate"]
+
+        self.assertEqual(rate["measured_safe_offered_rps"], 9.0)
+        self.assertEqual(rate["measured_burst_ceiling_rps"], 9.0)
+        self.assertEqual(rate["provider_ceiling_rps"], 5.0)
+        self.assertAlmostEqual(rate["production_sustained_rps"], 4.5)   # 5.0 x 0.9, not 9.0 x 0.8 = 7.2
+        self.assertEqual(rate["production_binding"], "provider_quota")
 
     def test_evidence_and_measurement_blocks_are_recorded(self):
         spec = self._spec(warmup_s=10.0, repetitions=3, slo=SloConfig(ttft_p95_ms=1000, confidence=0.95))
@@ -126,12 +149,14 @@ class BuildCapacityProfileTests(unittest.TestCase):
         profile = build_capacity_profile(report)
 
         m = profile["measurement"]
-        self.assertEqual((m["warmup_s"], m["repetitions"], m["gate"]), (10.0, 3, "confidence_bound"))
+        self.assertEqual((m["warmup_s"], m["repetitions"], m["gate"]), (10.0, 3, "pass_fail_inconclusive"))
+        self.assertEqual(m["confidence"], 0.95)
         self.assertGreater(m["min_requests_to_resolve_throttle_slo"], 2000)
         ev = profile["workload_classes"]["short"]["evidence"]
         self.assertEqual(ev["n"], 3000)
         self.assertEqual(ev["throttle_rate_upper"], 0.0009)
         self.assertEqual(ev["repetition_slo_goodput_rps"], [5.0, 5.2, 5.1])
+        self.assertEqual(ev["verdict"]["verdict"], "PASS")  # Recommendation's default verdict
 
     def test_no_global_concurrency_rollup_is_derived_from_isolated_per_class_maxima(self):
         """The other real bug this fixes: there is no scientifically

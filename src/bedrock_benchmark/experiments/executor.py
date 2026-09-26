@@ -11,8 +11,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Union
 
-from ..analysis.capacity import Recommendation, SweepAnalysis, SweepPoint, analyze_sweep, recommend
-from ..analysis.metrics import DEFAULT_CONFIDENCE, MeasurementWindow, compute_run_metrics
+from ..analysis.capacity import Recommendation, SweepAnalysis, SweepPoint, Verdict, analyze_sweep, point_verdict, recommend
+from ..analysis.metrics import DEFAULT_CONFIDENCE, compute_run_metrics
 from ..calibration import CalibrationResult, calibrate_profile, estimate_profile, resolve_counter
 from ..client import BedrockConverseTarget
 from ..results import RequestResult
@@ -38,6 +38,8 @@ class ProfileReport:
     # Always set -- also when there's no recommendation, so the report
     # can say WHY (never passed vs non-monotonic from the first point).
     analysis: Optional[SweepAnalysis] = None
+    # PASS / FAIL / INCONCLUSIVE per point, aligned with `points`.
+    verdicts: List[Verdict] = field(default_factory=list)
 
 
 @dataclass
@@ -67,9 +69,15 @@ def calibrate_workloads(spec: ExperimentSpec, target: BedrockConverseTarget) -> 
     return out
 
 
+def _value(point: SweepPoint) -> float:
+    return point.concurrency if point.concurrency is not None else point.rps
+
+
 def _slo_kwargs(slo, *, latency: bool = True) -> dict:
+    # Rate gates are always judged three-way at `confidence` (default 95%):
+    # observed violation -> FAIL, bound clears -> PASS, else INCONCLUSIVE.
     kwargs = dict(success_rate_min=slo.success_rate_min, throttle_rate_max=slo.throttle_rate_max,
-                  gate_on_bounds=slo.confidence is not None)
+                  confidence=slo.confidence or DEFAULT_CONFIDENCE)
     if latency:
         kwargs.update(ttft_p95_slo_ms=slo.ttft_p95_ms, latency_p95_slo_ms=slo.latency_p95_ms,
                       tpot_p95_slo_ms=slo.tpot_p95_ms)
@@ -131,15 +139,14 @@ async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress:
             class_gate = None
         confidence = blend_slo.confidence or DEFAULT_CONFIDENCE
 
-        points: List[SweepPoint] = []
-        for value in spec.sweep_values(subject.name):
-            offered_rps = value if spec.sweep.type == "rate" else None
+        # Per sweep value: every repetition's results + window, pooled.
+        acc: Dict[float, dict] = {}
 
-            point_results: List[RequestResult] = []
-            windows: List[MeasurementWindow] = []
-            per_rep = []
-            peak = 0
-            for rep in range(spec.repetitions):
+        async def measure(value: float, reps: int, phase: str) -> None:
+            state = acc.setdefault(value, {"results": [], "windows": [], "per_rep": [], "peak": 0})
+            offered_rps = value if spec.sweep.type == "rate" else None
+            for _ in range(reps):
+                rep = len(state["windows"])
                 # A distinct seed per repetition -- the same seed would
                 # replay one identical arrival pattern R times, which
                 # isn't R independent samples.
@@ -154,58 +161,85 @@ async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress:
                         target, subject, rps=value, duration_s=spec.duration_s, warmup_s=spec.warmup_s,
                         stream=spec.stream, seed=seed,
                     )
-
                 target.reset_peak()
                 results = await runner.run()
-                peak = max(peak, target.peak_outstanding)
+                state["peak"] = max(state["peak"], target.peak_outstanding)
                 window = runner.window
                 for r in results:
                     r.tags.update({
                         # The runner already tagged the drawn class;
                         # `subject` differs from it only for a mix.
                         "subject": subject.name, "sweep_type": spec.sweep.type, "sweep_value": value,
-                        "repetition": rep,
+                        "repetition": rep, "phase": phase,
                         # Persisted so the JSONL alone is enough to
                         # re-derive every metric with the same window.
                         "window_start": window.start, "window_end": window.end,
                         "measured": window.contains(r.scheduled_at),
                     })
-                point_results.extend(results)
-                windows.append(window)
-                per_rep.append(compute_run_metrics(
+                state["results"].extend(results)
+                state["windows"].append(window)
+                state["per_rep"].append(compute_run_metrics(
                     results, windows=[window], offered_rps=offered_rps, confidence=confidence, **metric_slo,
                 ))
+                report.all_results.extend(results)
 
-            report.all_results.extend(point_results)
+        def build(value: float, phase: str) -> SweepPoint:
+            state = acc[value]
+            offered_rps = value if spec.sweep.type == "rate" else None
             class_metrics = {}
             if shares is not None:
                 for class_name, share in shares.items():
-                    own = [r for r in point_results if r.tags.get("workload") == class_name]
+                    own = [r for r in state["results"] if r.tags.get("workload") == class_name]
                     c = class_slos[class_name]
                     class_metrics[class_name] = compute_run_metrics(
-                        own, windows=windows, offered_rps=None if offered_rps is None else offered_rps * share,
+                        own, windows=state["windows"], offered_rps=None if offered_rps is None else offered_rps * share,
                         ttft_slo_ms=c.ttft_p95_ms, latency_slo_ms=c.latency_p95_ms, tpot_slo_ms=c.tpot_p95_ms,
                         confidence=c.confidence or DEFAULT_CONFIDENCE,
                     )
-            point = SweepPoint(
+            return SweepPoint(
                 concurrency=int(value) if spec.sweep.type == "concurrency" else None,
                 rps=value if spec.sweep.type == "rate" else None,
                 metrics=compute_run_metrics(
-                    point_results, windows=windows, offered_rps=offered_rps, confidence=confidence, **metric_slo,
+                    state["results"], windows=state["windows"], offered_rps=offered_rps, confidence=confidence,
+                    **metric_slo,
                 ),
-                repetitions=per_rep,
+                repetitions=state["per_rep"],
                 class_metrics=class_metrics,
-                peak_outstanding=peak,
-                client_limited=peak > target.executor_workers,
+                peak_outstanding=state["peak"],
+                client_limited=state["peak"] > target.executor_workers,
+                phase=phase,
             )
+
+        # Phase 1 -- discovery: every value, spec.repetitions each.
+        values = spec.sweep_values(subject.name)
+        points: List[SweepPoint] = []
+        for value in values:
+            await measure(value, spec.repetitions, "discovery")
+            point = build(value, "discovery")
             points.append(point)
             if on_progress is not None:
                 on_progress(subject.name, value, point)
+
+        # Phase 2 -- confirmation: re-run the candidate safe point and its
+        # neighbours, pooled with discovery, so the boundary rests on
+        # repeated measurements instead of one 90s snapshot.
+        if spec.confirmation is not None:
+            candidate = recommend(points, class_gate, **gate_kwargs)
+            if candidate is not None:
+                i = values.index(_value(candidate.point))
+                n = spec.confirmation.neighbors
+                for value in values[max(0, i - n):i + n + 1]:
+                    await measure(value, spec.confirmation.repetitions, "confirmation")
+                    confirmed = build(value, "confirmation")
+                    points[values.index(value)] = confirmed
+                    if on_progress is not None:
+                        on_progress(subject.name, value, confirmed)
 
         report.profiles.append(ProfileReport(
             workload_name=subject.name, points=points, mix_shares=shares,
             recommendation=recommend(points, class_gate, **gate_kwargs),
             analysis=analyze_sweep(points, class_gate, **gate_kwargs),
+            verdicts=[point_verdict(p, class_gate, **gate_kwargs) for p in points],
         ))
 
     return report

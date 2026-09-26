@@ -104,6 +104,19 @@ class GatewayDiffTests(unittest.TestCase):
         result = diff([profile], {"models": {MODEL: {"rpm_limit": 400}}})
         self.assertNotIn("model_rpm_above_envelope", _kinds(result))
 
+    def test_v6_sustained_rps_and_unconfirmed_envelope(self):
+        profile = _profile(schema_version=6, workload_classes={"short_chat": {
+            "rate": {"production_sustained_rps": 4.5, "production_offered_rps": 99.0, "verdict": "INCONCLUSIVE",
+                     "confirmed_safe": 1.67,
+                     "inconclusive_checks": [{"name": "throttle_rate", "n": 450, "required_n": 2703}]},
+        }})
+        result = diff([profile], {"models": {MODEL: {"rpm_limit": 400}}})
+        above = next(f for f in result.findings if f.kind == "model_rpm_above_envelope")
+        self.assertEqual(above.proposed, 270)  # 4.5 rps -- the sustained (quota-capped) value, not 99
+        unconfirmed = next(f for f in result.findings if f.kind == "envelope_unconfirmed")
+        self.assertIn("2703", unconfirmed.message)
+        self.assertIn("1.67", unconfirmed.message)
+
     def test_rejects_pre_v3_profiles(self):
         with self.assertRaises(ValueError):
             diff([_profile(schema_version=2)], {})

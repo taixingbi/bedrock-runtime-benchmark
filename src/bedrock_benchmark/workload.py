@@ -42,10 +42,13 @@ class WorkloadProfile:
     name: str
     input_tokens: int
     output_tokens: int  # used as max_tokens on the request -- the model may emit fewer
-    # Named SLO from the experiment's slo_profiles (None = the default
-    # `slo:`) -- a 512-token generation shouldn't be held to the same
-    # end-to-end latency as a 64-token one.
+    # SLO profile from constraints/slo.yaml (TTFT/TPOT/success/throttle),
+    # bound in the catalog.
     slo_profile: Optional[str] = None
+    # Workload-level end-to-end sanity cap, p95 -- business-defined per
+    # workload, because a 64-, 256- and 1024-token output can't share
+    # one E2E budget. Overrides any latency_p95_ms in the profile.
+    latency_p95_ms: Optional[float] = None
     # Padding length in chars, set by calibration.py from a provider
     # token count. None = the 4-chars/token estimate.
     filler_chars: Optional[int] = None
@@ -116,6 +119,8 @@ def load_workloads(path: str = DEFAULT_WORKLOADS_FILE) -> Dict[str, WorkloadProf
         workload = WorkloadProfile(name=name, **cfg)
         if not workload.slo_profile:
             raise ValueError(f"{path}: workload {name!r} needs an explicit slo_profile")
+        if workload.latency_p95_ms is not None and workload.latency_p95_ms <= 0:
+            raise ValueError(f"{path}: workload {name!r} latency_p95_ms must be > 0")
         if workload.input_tokens <= 0 or workload.output_tokens <= 0:
             raise ValueError(f"{path}: workload {name!r} token counts must be > 0")
         catalog[name] = workload

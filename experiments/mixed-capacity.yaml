@@ -36,6 +36,7 @@ sweep:
   quota_fractions: [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 2.5]
 
 provider_headroom: 0.20
+quota_headroom: 0.10
 
 transport:
   max_connections: 64

@@ -14,7 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
-from .metrics import RunMetrics
+from .metrics import DEFAULT_CONFIDENCE, RunMetrics, min_samples_to_resolve_rate
 
 
 @dataclass
@@ -41,57 +41,128 @@ class SweepPoint:
     # Bedrock, and can never be recommended (fails closed).
     peak_outstanding: Optional[int] = None
     client_limited: bool = False
+    # "discovery" (one pass over every value) or "confirmation" (re-run
+    # near the boundary with extra repetitions, pooled with discovery).
+    phase: str = "discovery"
 
 
-def meets_slo(
+PASS, FAIL, INCONCLUSIVE = "PASS", "FAIL", "INCONCLUSIVE"
+
+
+@dataclass
+class Check:
+    name: str  # ttft_p95 | tpot_p95 | latency_p95 | success_rate | throttle_rate | client
+    verdict: str
+    observed: Optional[float] = None
+    threshold: Optional[float] = None
+    reason: Optional[str] = None
+    n: Optional[int] = None
+    required_n: Optional[int] = None
+
+    def to_dict(self) -> dict:
+        return {k: v for k, v in self.__dict__.items() if v is not None}
+
+
+@dataclass
+class Verdict:
+    """PASS / FAIL / INCONCLUSIVE for one sweep point, with the per-check
+    breakdown. Insufficient evidence is NOT failure: a point with zero
+    throttles in 180 requests can't demonstrate a 0.1% throttle SLO
+    (that needs ~2,700), but it didn't violate it either -- it's
+    INCONCLUSIVE, and the artifact says how many requests would settle
+    it. FAIL is reserved for an observed violation."""
+    verdict: str
+    checks: List[Check] = field(default_factory=list)
+
+    @property
+    def inconclusive_checks(self) -> List[Check]:
+        return [c for c in self.checks if c.verdict == INCONCLUSIVE]
+
+    def to_dict(self) -> dict:
+        return {"verdict": self.verdict, "checks": [c.to_dict() for c in self.checks]}
+
+
+def _combine(checks: List[Check]) -> str:
+    verdicts = {c.verdict for c in checks}
+    if FAIL in verdicts:
+        return FAIL
+    return INCONCLUSIVE if INCONCLUSIVE in verdicts else PASS
+
+
+def _rate_check(name: str, observed: float, bound: Optional[float], limit: float, *, upper: bool,
+                n: int, confidence: float) -> Check:
+    """upper=True: a max-rate limit (throttle); False: a min-rate limit
+    (success). Observed violation -> FAIL; the confidence bound clears
+    the limit -> PASS; otherwise INCONCLUSIVE with the sample size that
+    would resolve it (for a zero-event observation)."""
+    violated = observed > limit if upper else observed < limit
+    if violated:
+        return Check(name, FAIL, observed=observed, threshold=limit, reason="observed_violation", n=n)
+    if bound is not None and (bound <= limit if upper else bound >= limit):
+        return Check(name, PASS, observed=observed, threshold=limit, n=n)
+    tolerated = limit if upper else 1.0 - limit
+    required = min_samples_to_resolve_rate(tolerated, confidence=confidence) if tolerated > 0 else None
+    return Check(name, INCONCLUSIVE, observed=observed, threshold=limit, reason="insufficient_samples",
+                 n=n, required_n=required)
+
+
+def _latency_check(name: str, observed: Optional[float], limit: Optional[float]) -> Optional[Check]:
+    if limit is None:
+        return None
+    # A configured latency SLO with no measurement (non-streaming TTFT,
+    # < 2 output tokens for TPOT) is a missing/invalid measurement -- the
+    # same fail-closed rule as before, not "inconclusive".
+    if observed is None:
+        return Check(name, FAIL, threshold=limit, reason="not_measured")
+    return Check(name, PASS if observed <= limit else FAIL, observed=observed, threshold=limit)
+
+
+def evaluate(
     metrics: RunMetrics, *,
     success_rate_min: float = 0.99, throttle_rate_max: float = 0.001,
     ttft_p95_slo_ms: Optional[float] = None, latency_p95_slo_ms: Optional[float] = None,
-    tpot_p95_slo_ms: Optional[float] = None,
-    gate_on_bounds: bool = False,
-) -> bool:
-    """gate_on_bounds=True gates the two rate SLOs on their confidence
-    bounds (success_rate_lower / throttle_rate_upper) instead of the
-    raw point estimates -- a point must DEMONSTRATE it meets the SLO
-    at the measured sample size, not merely fail to observe a
-    violation. Too few requests then fails closed, the same way a
-    configured-but-unmeasured TTFT SLO does below."""
+    tpot_p95_slo_ms: Optional[float] = None, confidence: Optional[float] = None,
+) -> Verdict:
+    confidence = confidence or metrics.bound_confidence or DEFAULT_CONFIDENCE
     if metrics.n == 0:
-        return False
-    success_rate = metrics.success_rate
-    throttle_rate = metrics.throttle_rate
-    if gate_on_bounds:
-        if metrics.success_rate_lower is None or metrics.throttle_rate_upper is None:
-            return False
-        success_rate = metrics.success_rate_lower
-        throttle_rate = metrics.throttle_rate_upper
-    if success_rate < success_rate_min:
-        return False
-    if throttle_rate > throttle_rate_max:
-        return False
-    # A configured TTFT SLO with no TTFT measurement at all (e.g.
-    # stream: false, or every streaming call failed before its first
-    # token) is a missing/invalid measurement, not a pass -- same fix
-    # as metrics.py's per-request meets_slo, and for the same reason:
-    # the old form silently skipped the check when ttft_p95_ms was None.
-    if ttft_p95_slo_ms is not None and (metrics.ttft_p95_ms is None or metrics.ttft_p95_ms > ttft_p95_slo_ms):
-        return False
-    if tpot_p95_slo_ms is not None and (metrics.tpot_p95_ms is None or metrics.tpot_p95_ms > tpot_p95_slo_ms):
-        return False
-    if latency_p95_slo_ms is not None and metrics.latency_p95_ms > latency_p95_slo_ms:
-        return False
-    return True
+        return Verdict(FAIL, [Check("requests", FAIL, observed=0, reason="no_requests", n=0)])
+    checks = [c for c in (
+        _latency_check("ttft_p95", metrics.ttft_p95_ms, ttft_p95_slo_ms),
+        _latency_check("tpot_p95", metrics.tpot_p95_ms, tpot_p95_slo_ms),
+        _latency_check("latency_p95", metrics.latency_p95_ms, latency_p95_slo_ms),
+    ) if c is not None]
+    checks.append(_rate_check("success_rate", metrics.success_rate, metrics.success_rate_lower, success_rate_min,
+                              upper=False, n=metrics.n, confidence=confidence))
+    checks.append(_rate_check("throttle_rate", metrics.throttle_rate, metrics.throttle_rate_upper, throttle_rate_max,
+                              upper=True, n=metrics.n, confidence=confidence))
+    return Verdict(_combine(checks), checks)
+
+
+def meets_slo(metrics: RunMetrics, *, gate_on_bounds: bool = False, **slo_kwargs) -> bool:
+    """Boolean view of evaluate(): not FAIL (no observed violation), or
+    with gate_on_bounds=True strictly PASS (statistically demonstrated)."""
+    verdict = evaluate(metrics, **slo_kwargs).verdict
+    return verdict == PASS if gate_on_bounds else verdict != FAIL
+
+
+def point_verdict(point: SweepPoint, class_slo: Optional[Dict[str, dict]] = None, **slo_kwargs) -> Verdict:
+    """The blend (point.metrics) is judged with slo_kwargs; each class of
+    a mixed point with its own entry in class_slo (falling back to
+    slo_kwargs), so every class meets ITS SLO. Check names are prefixed
+    with the class for a mix."""
+    if point.client_limited:
+        return Verdict(FAIL, [Check("client", FAIL, observed=point.peak_outstanding, reason="client_limited")])
+    blend = evaluate(point.metrics, **slo_kwargs)
+    checks = list(blend.checks)
+    for name, m in point.class_metrics.items():
+        for c in evaluate(m, **(class_slo or {}).get(name, slo_kwargs)).checks:
+            c.name = f"{name}.{c.name}"
+            checks.append(c)
+    return Verdict(_combine(checks), checks)
 
 
 def point_meets_slo(point: SweepPoint, class_slo: Optional[Dict[str, dict]] = None, **slo_kwargs) -> bool:
-    """The blend (point.metrics) is judged with slo_kwargs; each class of
-    a mixed point with its own entry in class_slo (falling back to
-    slo_kwargs), so every class meets ITS SLO."""
-    if point.client_limited:
-        return False
-    return meets_slo(point.metrics, **slo_kwargs) and all(
-        meets_slo(m, **(class_slo or {}).get(name, slo_kwargs)) for name, m in point.class_metrics.items()
-    )
+    return point_verdict(point, class_slo, **slo_kwargs).verdict != FAIL
 
 
 @dataclass
@@ -141,6 +212,8 @@ def analyze_sweep(points: List[SweepPoint], class_slo: Optional[Dict[str, dict]]
 
 @dataclass
 class Recommendation:
+    # Highest-goodput point in the leading run of non-FAIL points (PASS
+    # or INCONCLUSIVE) -- the measured safe operating point.
     point: SweepPoint
     # The sweep's saturation edge -- the first point that FAILED the
     # SLO, set only when the sweep is cleanly monotonic
@@ -149,26 +222,46 @@ class Recommendation:
     # were non-monotonic (unresolved: see analysis).
     saturation_point: Optional[SweepPoint]
     analysis: SweepAnalysis = field(default_factory=lambda: SweepAnalysis(status="resolved"))
+    # `point`'s verdict: PASS = statistically demonstrated; INCONCLUSIVE =
+    # no violation observed but not enough requests to prove the rate SLOs.
+    verdict: Verdict = field(default_factory=lambda: Verdict(PASS))
+    # Best point in the leading run that is strictly PASS, if any.
+    confirmed_point: Optional[SweepPoint] = None
+    # Highest swept value anywhere that didn't FAIL -- what the service
+    # sustained in a short window, possibly above quota on burst capacity.
+    burst_point: Optional[SweepPoint] = None
 
 
 def recommend(points: List[SweepPoint], class_slo: Optional[Dict[str, dict]] = None, **slo_kwargs) -> Optional[Recommendation]:
-    """Among the LEADING run of passing points (everything up to the
-    first failure), picks the highest slo_goodput_rps -- ties broken
-    toward the LOWER concurrency/rps. Points that pass only after an
-    earlier failure are never recommended: a pass above a failure is
-    exactly the noise a conservative envelope must not bet on. Returns
-    None if no leading point passes (including a sweep whose very first
-    point failed) -- see analyze_sweep for the why."""
+    """Among the LEADING run of non-failing points (everything up to the
+    first FAIL), picks the highest slo_goodput_rps -- ties broken toward
+    the LOWER concurrency/rps. INCONCLUSIVE points are eligible (no
+    violation was observed) but the recommendation carries their
+    verdict. Points that pass only after an earlier failure are never
+    recommended: a pass above a failure is exactly the noise a
+    conservative envelope must not bet on. Returns None if no leading
+    point passes -- see analyze_sweep for the why."""
     analysis = analyze_sweep(points, class_slo, **slo_kwargs)
     if analysis.stable_pass_max is None:
         return None
     ordered = sorted(points, key=_key)
+    verdicts = {id(p): point_verdict(p, class_slo, **slo_kwargs) for p in ordered}
+
+    def goodput(p: SweepPoint):
+        return (p.metrics.slo_goodput_rps or 0.0, -(_key(p) or 0))
+
     stable = [p for p in ordered if _key(p) <= analysis.stable_pass_max]
-    best = max(stable, key=lambda p: (p.metrics.slo_goodput_rps or 0.0, -(_key(p) or 0)))
+    best = max(stable, key=goodput)
+    confirmed = [p for p in stable if verdicts[id(p)].verdict == PASS]
+    non_failing = [p for p in ordered if verdicts[id(p)].verdict != FAIL]
     saturation = None
     if analysis.status == "resolved":
         saturation = next(p for p in ordered if _key(p) == analysis.confirmed_fail_from)
-    return Recommendation(point=best, saturation_point=saturation, analysis=analysis)
+    return Recommendation(
+        point=best, saturation_point=saturation, analysis=analysis, verdict=verdicts[id(best)],
+        confirmed_point=max(confirmed, key=goodput) if confirmed else None,
+        burst_point=max(non_failing, key=_key) if non_failing else None,
+    )
 
 
 def apply_headroom(value: float, *, headroom: float) -> float:
