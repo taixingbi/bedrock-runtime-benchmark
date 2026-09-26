@@ -11,7 +11,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, List, Optional
+from typing import Callable, Collection, List, Optional
 
 import yaml
 
@@ -125,8 +125,10 @@ def _warn_if_throttle_slo_unresolvable(spec: ExperimentSpec) -> None:
 def run_file(
     path: str, model: ModelConfig, *, results_dir: str = "results", target_factory: Optional[TargetFactory] = None,
     slo_file: str = DEFAULT_SLO_FILE, workloads_file: str = DEFAULT_WORKLOADS_FILE,
+    only_slo_profiles: Optional[Collection[str]] = None,
 ) -> RunOutcome:
-    spec = load_experiment(path, model, slo_file=slo_file, workloads_file=workloads_file)
+    spec = load_experiment(path, model, slo_file=slo_file, workloads_file=workloads_file,
+                           only_slo_profiles=only_slo_profiles)
     print(f"running experiment: {spec.name} on {model.name} ({model.model_id})")
     print(f"sweep: {describe_sweep(spec)}")
     for name in spec.subject_names:

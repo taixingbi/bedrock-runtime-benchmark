@@ -6,6 +6,7 @@ after another, then print a summary table.
     python scripts/run_all.py                                  # all experiments x all enabled models
     python scripts/run_all.py --model nova-micro --model nova-pro
     python scripts/run_all.py experiments/rate-capacity.yaml   # one experiment, all models
+    python scripts/run_all.py --model nova-micro --slo-profile gold   # only gold workloads
     python scripts/run_all.py --gateway-config my-gateway.yaml
 
 Sequential on purpose -- runs share each model's Bedrock quota, so
@@ -42,6 +43,8 @@ def main() -> int:
     parser.add_argument("--slo-file", default=DEFAULT_SLO_FILE, help=f"SLO profiles (default: {DEFAULT_SLO_FILE})")
     parser.add_argument("--quota-file", default=DEFAULT_QUOTA_FILE, help=f"per-model quotas (default: {DEFAULT_QUOTA_FILE})")
     parser.add_argument("--account", help="AWS account whose quotas apply (default: the live account from STS)")
+    parser.add_argument("--slo-profile", action="append", dest="slo_profiles", metavar="NAME",
+                        help="run only workloads bound to this SLO profile, e.g. gold (repeatable)")
     parser.add_argument("--model", action="append", dest="models", metavar="NAME",
                         help="run only this model (repeatable; default: every enabled model)")
     parser.add_argument("--results-dir", help="batch output dir (default: results/run-all-<timestamp>)")
@@ -58,7 +61,8 @@ def main() -> int:
         return 1
 
     print(f"quota account: {models[0].account} ({args.quota_file})")
-    print(format_plan(plan(paths, models, slo_file=args.slo_file, workloads_file=args.workloads_file)))
+    print(format_plan(plan(paths, models, slo_file=args.slo_file, workloads_file=args.workloads_file,
+                           only_slo_profiles=args.slo_profiles)))
     if args.dry_run:
         return 0
 
@@ -68,7 +72,7 @@ def main() -> int:
 
     results_dir = Path(args.results_dir or f"results/run-all-{time.strftime('%Y%m%d-%H%M%S')}")
     batch = run_batch(paths, models, results_dir=results_dir, fail_fast=args.fail_fast, gateway_config=gateway_config,
-                      slo_file=args.slo_file, workloads_file=args.workloads_file)
+                      slo_file=args.slo_file, workloads_file=args.workloads_file, only_slo_profiles=args.slo_profiles)
 
     print(f"\n{'=' * 78}\nSUMMARY\n{'=' * 78}")
     print(format_summary(batch))

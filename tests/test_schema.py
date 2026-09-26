@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from bedrock_benchmark.experiments.schema import load_experiment
+from bedrock_benchmark.experiments.schema import NoMatchingWorkloads, load_experiment
 from bedrock_benchmark.models import ModelConfig, load_models
 
 MICRO = ModelConfig(name="nova-micro", model_id="us.amazon.nova-micro-v1:0", quota_rpm=400, quota_tpm=8_000_000)
@@ -86,6 +86,32 @@ class SloProfileTests(unittest.TestCase):
         self.assertEqual(spec.slo_for("short_chat").tpot_p95_ms, 40)        # gold
         self.assertEqual(spec.slo_for("rag_answer").tpot_p95_ms, 70)        # silver
         self.assertEqual(spec.slo_for("long_generation").tpot_p95_ms, 120)  # bronze
+
+
+class SloProfileFilterTests(unittest.TestCase):
+    def test_isolated_sweep_keeps_only_matching_workloads(self):
+        spec = load_experiment("experiments/token-sweep.yaml", MICRO, only_slo_profiles={"gold"})
+        self.assertEqual([w.name for w in spec.workloads], ["short_chat"])
+        self.assertEqual(set(spec.provider_ceilings), {"short_chat"})
+
+    def test_several_profiles(self):
+        spec = load_experiment("experiments/token-sweep.yaml", MICRO, only_slo_profiles={"gold", "bronze"})
+        self.assertEqual([w.name for w in spec.workloads], ["short_chat", "long_generation"])
+
+    def test_nothing_matching_is_a_skip_not_an_error(self):
+        with self.assertRaisesRegex(NoMatchingWorkloads, "bronze"):
+            load_experiment("experiments/rate-capacity.yaml", MICRO, only_slo_profiles={"bronze"})
+
+    def test_partial_mix_is_skipped_whole_mix_runs(self):
+        with self.assertRaisesRegex(NoMatchingWorkloads, "partial mix"):
+            load_experiment("experiments/mixed-capacity.yaml", MICRO, only_slo_profiles={"gold"})
+        spec = load_experiment("experiments/mixed-capacity.yaml", MICRO,
+                               only_slo_profiles={"gold", "silver", "bronze"})
+        self.assertEqual(len(spec.workloads), 3)
+
+    def test_unknown_profile_is_an_error(self):
+        with self.assertRaisesRegex(ValueError, "gld"):
+            load_experiment("experiments/rate-capacity.yaml", MICRO, only_slo_profiles={"gld"})
 
 
 class ValidationTests(unittest.TestCase):

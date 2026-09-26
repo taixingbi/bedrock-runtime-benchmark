@@ -183,8 +183,16 @@ python3.11 -m venv .venv && .venv/bin/pip install -e ".[dev]"   # same install C
 .venv/bin/python scripts/run_all.py                    # 4 experiments x 5 models ~= 5.5h
 .venv/bin/python scripts/run_all.py --model nova-micro --model nova-pro
 .venv/bin/python scripts/run_all.py experiments/rate-capacity.yaml
+.venv/bin/python scripts/run_all.py --model nova-micro --slo-profile gold   # only gold workloads
 .venv/bin/python scripts/run_all.py --gateway-config my-gateway.yaml   # + gateway diff at the end
 ```
+
+`--slo-profile NAME` (repeatable) runs only the workloads bound to that
+profile in `catalog/workloads.yaml`: an isolated sweep keeps its
+matching workloads (`token-sweep --slo-profile gold` runs just
+`short_chat`); a mix runs only if every class matches -- a partial mix
+is a different mix, so it's skipped; an experiment with nothing
+matching is skipped. The plan lists every skip and why.
 
 Results are grouped by model:
 

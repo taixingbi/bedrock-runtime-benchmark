@@ -25,7 +25,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Collection, Dict, List, Optional
 
 import yaml
 
@@ -149,13 +149,24 @@ class ExperimentSpec:
         return [round(f * ceiling, 4) for f in self.sweep.quota_fractions]
 
 
+class NoMatchingWorkloads(Exception):
+    """Raised by load_experiment when an --slo-profile filter leaves the
+    experiment nothing to run -- a skip, not an error."""
+
+
 _MODEL_KEYS = ("target", "quota_snapshot", "quota")
 _SLO_KEYS = ("slo", "slo_profiles")
 
 
 def load_experiment(
     path: str, model: ModelConfig, *, slo_file: str = DEFAULT_SLO_FILE, workloads_file: str = DEFAULT_WORKLOADS_FILE,
+    only_slo_profiles: Optional[Collection[str]] = None,
 ) -> ExperimentSpec:
+    """only_slo_profiles (e.g. {"gold"}) keeps just the workloads bound to
+    those profiles. An isolated sweep keeps its matching workloads; a mix
+    runs only if EVERY class matches (dropping classes would silently
+    make it a different mix); with nothing left, NoMatchingWorkloads is
+    raised so the caller can skip the experiment."""
     raw = yaml.safe_load(Path(path).read_text())
 
     present = [k for k in _MODEL_KEYS if k in raw]
@@ -174,6 +185,8 @@ def load_experiment(
     sweep = raw["sweep"]
     transport = raw.get("transport") or {}
     workloads = _resolve_workloads(raw.get("workloads"), path, workloads_file)
+    if only_slo_profiles is not None:
+        workloads = _filter_by_slo_profile(workloads, raw, set(only_slo_profiles), slos.profiles, slo_file)
 
     spec = ExperimentSpec(
         name=raw["name"],
@@ -205,6 +218,24 @@ def load_experiment(
     spec.provider_ceilings = _ceilings(spec, model)
     _validate_sweep(spec, model, path)
     return spec
+
+
+def _filter_by_slo_profile(workloads, raw, only, defined, slo_file: str) -> List[WorkloadProfile]:
+    unknown = sorted(only - set(defined))
+    if unknown:
+        raise ValueError(f"--slo-profile {unknown} not defined in {slo_file} (has: {sorted(defined)})")
+    if raw.get("mix"):
+        classes = set((raw["mix"].get("weights") or {}))
+        others = sorted(f"{w.name} ({w.slo_profile})" for w in workloads if w.name in classes and w.slo_profile not in only)
+        if others:
+            raise NoMatchingWorkloads(
+                f"mix {raw['mix'].get('name')!r} also includes {', '.join(others)} -- a partial mix is a different mix"
+            )
+        return workloads
+    kept = [w for w in workloads if w.slo_profile in only]
+    if not kept:
+        raise NoMatchingWorkloads(f"no workloads bound to {sorted(only)}")
+    return kept
 
 
 def _resolve_workloads(names, path: str, workloads_file: str) -> List[WorkloadProfile]:

@@ -25,12 +25,12 @@ import time
 import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional
+from typing import Collection, List, Optional
 
 import yaml
 
 from .constraints import DEFAULT_SLO_FILE
-from .experiments.schema import load_experiment
+from .experiments.schema import NoMatchingWorkloads, load_experiment
 from .gateway_diff import GatewayDiff, diff
 from .models import ModelConfig
 from .workload import DEFAULT_WORKLOADS_FILE
@@ -44,6 +44,8 @@ class PlannedRun:
     model: ModelConfig
     sweep: str
     estimated_s: float
+    # Set when an --slo-profile filter leaves this pair nothing to run.
+    skip_reason: Optional[str] = None
 
 
 @dataclass
@@ -89,7 +91,7 @@ class BatchResult:
 
 def plan(
     paths: List[str], models: List[ModelConfig], *, slo_file: str = DEFAULT_SLO_FILE,
-    workloads_file: str = DEFAULT_WORKLOADS_FILE,
+    workloads_file: str = DEFAULT_WORKLOADS_FILE, only_slo_profiles: Optional[Collection[str]] = None,
 ) -> List[PlannedRun]:
     """Binds (and so validates) every pair before any runs -- a typo in
     one file, or a model missing the quota a rate sweep needs, fails in
@@ -97,7 +99,13 @@ def plan(
     out = []
     for model in models:
         for path in paths:
-            spec = load_experiment(path, model, slo_file=slo_file, workloads_file=workloads_file)
+            try:
+                spec = load_experiment(path, model, slo_file=slo_file, workloads_file=workloads_file,
+                                       only_slo_profiles=only_slo_profiles)
+            except NoMatchingWorkloads as skip:
+                out.append(PlannedRun(path=path, experiment=Path(path).stem, model=model, sweep="",
+                                      estimated_s=0.0, skip_reason=str(skip)))
+                continue
             out.append(PlannedRun(
                 path=path, experiment=spec.name, model=model,
                 sweep=describe_sweep(spec), estimated_s=estimated_duration_s(spec),
@@ -106,13 +114,17 @@ def plan(
 
 
 def format_plan(planned: List[PlannedRun]) -> str:
+    runs = [p for p in planned if p.skip_reason is None]
     lines = [f"{'#':<3} {'model':<14} {'experiment':<20} {'est.':>5}  sweep"]
-    for i, p in enumerate(planned, 1):
+    for i, p in enumerate(runs, 1):
         lines.append(f"{i:<3} {p.model.name:<14} {p.experiment:<20} {p.estimated_s / 60:>4.0f}m  {p.sweep}")
-    total = sum(p.estimated_s for p in planned)
-    n_models = len({p.model.name for p in planned})
+    for p in planned:
+        if p.skip_reason is not None:
+            lines.append(f"--  {p.model.name:<14} {p.experiment:<20} skip  {p.skip_reason}")
+    total = sum(p.estimated_s for p in runs)
+    n_models = len({p.model.name for p in runs})
     lines.append(
-        f"total: {len(planned)} runs ({n_models} models), >= {total / 60:.0f} min (plus drain time), run sequentially"
+        f"total: {len(runs)} runs ({n_models} models), >= {total / 60:.0f} min (plus drain time), run sequentially"
     )
     return "\n".join(lines)
 
@@ -121,9 +133,11 @@ def run_batch(
     paths: List[str], models: List[ModelConfig], *, results_dir: Path, fail_fast: bool = False,
     gateway_config: Optional[dict] = None, target_factory: Optional[TargetFactory] = None,
     slo_file: str = DEFAULT_SLO_FILE, workloads_file: str = DEFAULT_WORKLOADS_FILE,
+    only_slo_profiles: Optional[Collection[str]] = None,
 ) -> BatchResult:
     batch = BatchResult(results_dir=results_dir)
-    planned = plan(paths, models, slo_file=slo_file, workloads_file=workloads_file)
+    planned = [p for p in plan(paths, models, slo_file=slo_file, workloads_file=workloads_file,
+                               only_slo_profiles=only_slo_profiles) if p.skip_reason is None]
     total = len(planned)
 
     for i, p in enumerate(planned, 1):
@@ -135,7 +149,8 @@ def run_batch(
         start = time.perf_counter()
         try:
             outcome = run_file(p.path, p.model, results_dir=str(results_dir), target_factory=target_factory,
-                               slo_file=slo_file, workloads_file=workloads_file)
+                               slo_file=slo_file, workloads_file=workloads_file,
+                               only_slo_profiles=only_slo_profiles)
         except KeyboardInterrupt:
             raise
         except Exception as exc:  # noqa: BLE001 - one broken run shouldn't sink the batch

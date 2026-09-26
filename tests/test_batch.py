@@ -128,6 +128,45 @@ class BatchTests(unittest.TestCase):
         self.assertIn("gateway_diff", yaml.safe_load((self.dir / "out" / "summary.yaml").read_text()))
 
 
+class SloProfileFilterBatchTests(unittest.TestCase):
+    def test_plan_marks_skips_and_the_dry_run_shows_them(self):
+        paths = sorted(str(p) for p in Path("experiments").glob("*.yaml"))
+        micro = load_models(names=["nova-micro"])
+        planned = plan(paths, micro, only_slo_profiles={"gold"})
+        skipped = {p.experiment: p.skip_reason for p in planned if p.skip_reason}
+        self.assertEqual(set(skipped), {"mixed-capacity"})
+        proc = subprocess.run(
+            [sys.executable, "scripts/run_all.py", "--dry-run", "--model", "nova-micro", "--slo-profile", "gold"],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("skip", proc.stdout)
+        self.assertIn("total: 3 runs", proc.stdout)
+
+    def test_run_batch_runs_only_matching_workloads(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            (d / "slo.yaml").write_text("profiles:\n  gold: {latency_p95_ms: 3000}\n  bronze: {latency_p95_ms: 9000}\n")
+            (d / "workloads.yaml").write_text(
+                "workloads:\n"
+                "  chat: {input_tokens: 100, output_tokens: 16, slo_profile: gold}\n"
+                "  gen: {input_tokens: 100, output_tokens: 16, slo_profile: bronze}\n"
+            )
+            both = _experiment("both", workloads=["chat", "gen"])
+            only_gen = _experiment("only_gen", workloads=["gen"])
+            paths = []
+            for spec in (both, only_gen):
+                (d / f"{spec['name']}.yaml").write_text(yaml.safe_dump(spec))
+                paths.append(str(d / f"{spec['name']}.yaml"))
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                batch = run_batch(paths, [FAST], results_dir=d / "out", slo_file=str(d / "slo.yaml"),
+                                  workloads_file=str(d / "workloads.yaml"), target_factory=_fake_factory(),
+                                  only_slo_profiles={"gold"})
+            self.assertEqual([r.experiment for r in batch.results], ["both"])  # only_gen skipped
+            profile = yaml.safe_load(Path(batch.results[0].profile_path).read_text())
+            self.assertEqual(list(profile["workload_classes"]), ["chat"])
+
+
 class PlanTests(unittest.TestCase):
     def test_estimate_counts_subjects_points_repetitions_warmup_and_window(self):
         micro = load_models(names=["nova-micro"])[0]

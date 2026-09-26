@@ -31,6 +31,8 @@ def main() -> int:
     parser.add_argument("--slo-file", default=DEFAULT_SLO_FILE, help=f"SLO profiles (default: {DEFAULT_SLO_FILE})")
     parser.add_argument("--quota-file", default=DEFAULT_QUOTA_FILE, help=f"per-model quotas (default: {DEFAULT_QUOTA_FILE})")
     parser.add_argument("--account", help="AWS account whose quotas apply (default: the live account from STS)")
+    parser.add_argument("--slo-profile", action="append", dest="slo_profiles", metavar="NAME",
+                        help="run only workloads bound to this SLO profile, e.g. gold (repeatable)")
     parser.add_argument("--model", action="append", dest="models", metavar="NAME",
                         help="run only this model (repeatable; default: every enabled model)")
     parser.add_argument("--results-dir", default="results", help="output root; files go to <results-dir>/<model>/")
@@ -39,7 +41,7 @@ def main() -> int:
     models = load_models(args.models_file, names=args.models, quota_file=args.quota_file,
                          account=args.account or current_account_id())
     batch = run_batch([args.experiment], models, results_dir=Path(args.results_dir), slo_file=args.slo_file,
-                      workloads_file=args.workloads_file)
+                      workloads_file=args.workloads_file, only_slo_profiles=args.slo_profiles)
     if len(batch.results) > 1:
         print(f"\n{format_summary(batch)}")
     return batch.exit_code
