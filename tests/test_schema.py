@@ -139,7 +139,7 @@ class SloProfileFilterTests(unittest.TestCase):
 class ValidationTests(unittest.TestCase):
     def test_defaults(self):
         spec = _load_text(MINIMAL)
-        self.assertEqual((spec.warmup_s, spec.repetitions, spec.slo.confidence), (0.0, 1, None))
+        self.assertEqual((spec.warmup_s, spec.repetitions, spec.slo.confidence), (0.0, 1, 0.95))  # constraints/slo.yaml sets it
         self.assertEqual(spec.transport.total_max_attempts, 1)
         self.assertEqual(spec.workload_validation_tolerance_pct, 10.0)
 

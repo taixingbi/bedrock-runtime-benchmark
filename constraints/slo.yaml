@@ -23,7 +23,8 @@
 #    so each workload sets its own latency_p95_ms cap in catalog/workloads.yaml)
 #   success_rate_min   fraction of requests that must succeed
 #   throttle_rate_max  max fraction throttled (429)
-#   confidence         optional (default 0.95): success/throttle are judged
+#   confidence         one-sided confidence (0.95 below; 0.95 if omitted):
+#                      latency exceedance, success and throttle are judged
 #                      PASS / FAIL / INCONCLUSIVE on exact (Clopper-Pearson)
 #                      bounds -- an observed violation FAILs; too few
 #                      requests to prove the limit is INCONCLUSIVE, not a
@@ -39,6 +40,7 @@ profiles:
     tpot_p95_ms: 40
     success_rate_min: 0.995
     throttle_rate_max: 0.001
+    confidence: 0.95
 
   silver:
     # Standard synchronous application workloads.
@@ -46,6 +48,7 @@ profiles:
     tpot_p95_ms: 70
     success_rate_min: 0.99
     throttle_rate_max: 0.005
+    confidence: 0.95
 
   bronze:
     # Async, batch, or throughput-oriented workloads.
@@ -53,3 +56,4 @@ profiles:
     tpot_p95_ms: 120
     success_rate_min: 0.99
     throttle_rate_max: 0.01
+    confidence: 0.95

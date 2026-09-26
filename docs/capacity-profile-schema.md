@@ -33,7 +33,7 @@ constraints:                                       # what every number was judge
   slo:                                                                       # constraints/slo.yaml -- POLICY input
     role: policy_input
     profiles:
-      gold: {ttft_p95_ms: 800, tpot_p95_ms: 40, latency_p95_ms: null, success_rate_min: 0.995, throttle_rate_max: 0.001, confidence: null}
+      gold: {ttft_p95_ms: 800, tpot_p95_ms: 40, latency_p95_ms: null, success_rate_min: 0.995, throttle_rate_max: 0.001, confidence: 0.95}
   workloads:                                                                 # catalog/workloads.yaml -- the E2E cap is per workload
     short_chat: {input_tokens: 512, output_tokens: 64, slo_profile: gold, latency_p95_ms: 3000}
 measurement:
