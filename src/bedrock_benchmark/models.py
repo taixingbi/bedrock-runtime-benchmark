@@ -6,7 +6,7 @@ this file, not a new experiment.
 
 The models file says only WHICH models exist and how to reach them.
 Their quotas live in constraints/quota.yaml (see constraints.py) and
-are joined in here by model name -- quotas differ by an order of
+are joined in here by (account, the model's region, model name) -- quotas differ by an order of
 magnitude across models (50 RPM for nova-pro, 1000 for qwen3-32b), and
 quota-relative rate sweeps bracket each model's own ceiling. Check the
 numbers with `scripts/fetch_quota.py --all`.
@@ -20,7 +20,7 @@ from typing import List, Optional
 
 import yaml
 
-from .constraints import DEFAULT_QUOTA_FILE, load_quotas
+from .constraints import DEFAULT_QUOTA_FILE, load_quotas, resolve_account
 
 DEFAULT_MODELS_FILE = "scripts/models.yaml"
 
@@ -43,25 +43,30 @@ class ModelConfig:
     # estimate. Force one with count_tokens | converse_usage | estimate.
     token_counting: str = "auto"
     enabled: bool = True
+    # The AWS account whose quota was joined in (constraints/quota.yaml).
+    account: Optional[str] = None
 
 
 def load_models(
     path: str = DEFAULT_MODELS_FILE, *, names: Optional[List[str]] = None, include_disabled: bool = False,
-    quota_file: str = DEFAULT_QUOTA_FILE,
+    quota_file: str = DEFAULT_QUOTA_FILE, account: Optional[str] = None,
 ) -> List[ModelConfig]:
     """Enabled models in file order (every model with include_disabled);
     `names` selects specific ones, disabled or not, and must all exist.
-    Each model's quota is joined in from quota_file by name."""
+    Each model's quota is joined in from quota_file for `account` (the
+    live account -- see constraints.resolve_account) and its own region."""
     raw = yaml.safe_load(Path(path).read_text()) or {}
     quotas = load_quotas(quota_file)
+    account = resolve_account(quotas, account, path=quota_file)
     models = []
     for entry in raw.get("models") or []:
         misplaced = [k for k in ("quota", "output_burndown") if k in entry]
         if misplaced:
             raise ValueError(f"{path}: {entry.get('name')}: {misplaced} belong in {quota_file}, not the models file")
-        quota = quotas.get(entry.get("name"))
+        region = entry.get("region", "us-east-1")
+        quota = quotas.get((account, region, entry.get("name")))
         models.append(ModelConfig(
-            **entry,
+            **entry, account=account,
             quota_rpm=quota.rpm if quota else None, quota_tpm=quota.tpm if quota else None,
             output_burndown=quota.output_burndown if quota else 1.0,
         ))
@@ -73,7 +78,7 @@ def load_models(
         if m.name in seen:
             raise ValueError(f"duplicate model name {m.name!r} in {path}")
         seen.add(m.name)
-    orphans = sorted(set(quotas) - seen)
+    orphans = sorted({name for _, _, name in quotas} - seen)
     if orphans:
         raise ValueError(f"{quota_file}: quotas for models not in {path}: {orphans} (typo?)")
 

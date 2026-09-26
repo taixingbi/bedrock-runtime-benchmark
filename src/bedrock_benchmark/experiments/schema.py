@@ -15,10 +15,10 @@ magnitude across models and RPM vs TPM binds differently per workload
 shape. Fixed rps values would be far over one model's ceiling and
 nowhere near another's.
 
-SLOs come from constraints/slo.yaml, never from the experiment: each
-workload names a profile (`slo_profile: long_generation`) or gets the
-file's default, so the same workload class is judged identically in
-every experiment (see constraints.py).
+SLOs come from constraints/slo.yaml, never from the experiment: every
+workload names its profile explicitly (`slo_profile: long_generation`)
+-- there is no default -- so the same workload class is judged
+identically in every experiment (see constraints.py).
 """
 from __future__ import annotations
 
@@ -115,10 +115,13 @@ class ExperimentSpec:
     token_counting: str = "auto"
     calibration_tolerance_pct: float = 2.0
     output_burndown: float = 1.0  # from constraints/quota.yaml, for the artifact
-    # Every profile from constraints/slo.yaml (workloads opt in via
-    # WorkloadProfile.slo_profile); `slo` above is its default profile.
+    quota_account: Optional[str] = None  # the AWS account the quota was taken for
+    # Every profile from constraints/slo.yaml; each workload names one via
+    # WorkloadProfile.slo_profile. For a loaded spec, `slo` above is the
+    # STRICTEST success/throttle gate among the profiles its workloads
+    # use (no latency) -- what a mixed blend and the sample-size check
+    # are held to.
     slo_profiles: Dict[str, SloConfig] = field(default_factory=dict)
-    slo_default: str = "default"
     # The models-file entry this spec is bound to (None only for specs
     # built directly in code, e.g. tests).
     model_name: Optional[str] = None
@@ -174,7 +177,7 @@ def load_experiment(path: str, model: ModelConfig, *, slo_file: str = DEFAULT_SL
         description=raw.get("description", ""),
         target=TargetConfig(model_id=model.model_id, region=model.region),
         quota_snapshot=QuotaSnapshot(rpm=model.quota_rpm, tpm=model.quota_tpm),
-        slo=slos.get(None),
+        slo=SloConfig(),  # replaced by the strictest used gate below, after validation
         workloads=workloads,
         duration_s=raw.get("duration_s", 60.0),
         warmup_s=raw.get("warmup_s", 0.0),
@@ -188,16 +191,34 @@ def load_experiment(path: str, model: ModelConfig, *, slo_file: str = DEFAULT_SL
         workload_validation_tolerance_pct=raw.get("workload_validation_tolerance_pct", 10.0),
         output_validation_tolerance_pct=raw.get("output_validation_tolerance_pct", 25.0),
         slo_profiles=dict(slos.profiles),
-        slo_default=slos.default,
         token_counting=model.token_counting,
         output_burndown=model.output_burndown,
+        quota_account=model.account,
         calibration_tolerance_pct=raw.get("calibration_tolerance_pct", 2.0),
         model_name=model.name,
     )
+    missing = [w.name for w in spec.workloads if not w.slo_profile]
+    if missing:
+        raise ValueError(
+            f"{path}: workloads {missing} need an explicit `slo_profile:` "
+            f"(one of {sorted(slos.profiles)} from {slo_file})"
+        )
     _validate(spec)
+    spec.slo = _strictest_gate([spec.slo_profiles[w.slo_profile] for w in spec.workloads])
     spec.provider_ceilings = _ceilings(spec, model)
     _validate_sweep(spec, model, path)
     return spec
+
+
+def _strictest_gate(profiles: List[SloConfig]) -> SloConfig:
+    """Success/throttle gates only -- latency always comes from each
+    workload's own profile."""
+    confidences = [p.confidence for p in profiles if p.confidence is not None]
+    return SloConfig(
+        success_rate_min=max(p.success_rate_min for p in profiles),
+        throttle_rate_max=min(p.throttle_rate_max for p in profiles),
+        confidence=max(confidences) if confidences else None,
+    )
 
 
 def _ceilings(spec: ExperimentSpec, model: ModelConfig) -> Dict[str, ProviderCeiling]:

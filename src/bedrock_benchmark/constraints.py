@@ -1,8 +1,8 @@
 """Constraints -- the two inputs every capacity number is judged against:
 
     constraints/
-      slo.yaml     SLO:   what quality we REQUIRE (per traffic class)
-      quota.yaml   quota: what capacity the PROVIDER ALLOWS (per model)
+      slo.yaml     SLO:   what quality we REQUIRE (named profiles per use case)
+      quota.yaml   quota: what capacity the PROVIDER ALLOWS (per account/region/model)
 
 Both are defined once, outside experiments and outside the models
 list, so every experiment x model run is judged by the same SLO for the
@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, List, Optional, Tuple
 
 import yaml
 
@@ -42,11 +42,10 @@ class SloConfig:
 
 @dataclass
 class SloProfiles:
-    default: str
     profiles: Dict[str, SloConfig] = field(default_factory=dict)
 
-    def get(self, name: Optional[str]) -> SloConfig:
-        return self.profiles[name or self.default]
+    def get(self, name: str) -> SloConfig:
+        return self.profiles[name]
 
 
 @dataclass
@@ -58,28 +57,73 @@ class Quota:
     output_burndown: float = 1.0
 
 
+# (account id, region, model name) -> Quota
+QuotaTable = Dict[Tuple[str, str, str], Quota]
+
+
 def load_slo(path: str = DEFAULT_SLO_FILE) -> SloProfiles:
     raw = yaml.safe_load(Path(path).read_text()) or {}
+    if "default" in raw:
+        raise ValueError(f"{path}: no `default:` -- every workload names its slo_profile explicitly")
     profiles = {name: SloConfig(**(cfg or {})) for name, cfg in (raw.get("profiles") or {}).items()}
     if not profiles:
         raise ValueError(f"{path}: needs at least one entry under `profiles:`")
-    default = raw.get("default")
-    if default not in profiles:
-        raise ValueError(f"{path}: `default: {default}` must name one of the profiles {sorted(profiles)}")
     for name, p in profiles.items():
         if p.confidence is not None and not 0 < p.confidence < 1:
             raise ValueError(f"{path}: profiles.{name}.confidence must be in (0, 1)")
         if not 0 <= p.throttle_rate_max <= 1 or not 0 <= p.success_rate_min <= 1:
             raise ValueError(f"{path}: profiles.{name} rates must be in [0, 1]")
-    return SloProfiles(default=default, profiles=profiles)
+    return SloProfiles(profiles=profiles)
 
 
-def load_quotas(path: str = DEFAULT_QUOTA_FILE) -> Dict[str, Quota]:
+def load_quotas(path: str = DEFAULT_QUOTA_FILE) -> QuotaTable:
     raw = yaml.safe_load(Path(path).read_text()) or {}
-    quotas = {}
-    for name, cfg in raw.items():
-        quota = Quota(**(cfg or {}))
-        if quota.output_burndown <= 0:
-            raise ValueError(f"{path}: {name}.output_burndown must be > 0")
-        quotas[name] = quota
-    return quotas
+    accounts = raw.get("accounts")
+    if not isinstance(accounts, dict) or not accounts:
+        raise ValueError(f"{path}: expected `accounts: {{<account id>: {{<region>: {{<model>: {{rpm, tpm}}}}}}}}`")
+    table: QuotaTable = {}
+    for account, regions in accounts.items():
+        account = str(account)
+        if not account.isdigit() or len(account) != 12:
+            raise ValueError(f"{path}: account {account!r} must be a 12-digit AWS account id (quote it in YAML)")
+        for region, models in (regions or {}).items():
+            for name, cfg in (models or {}).items():
+                quota = Quota(**(cfg or {}))
+                if quota.output_burndown <= 0:
+                    raise ValueError(f"{path}: {account}/{region}/{name}.output_burndown must be > 0")
+                table[(account, region, name)] = quota
+    return table
+
+
+def quota_accounts(table: QuotaTable) -> List[str]:
+    return sorted({account for account, _, _ in table})
+
+
+def resolve_account(table: QuotaTable, requested: Optional[str], *, path: str = DEFAULT_QUOTA_FILE) -> str:
+    """The account whose quotas apply. `requested` is the live account
+    (STS) or an explicit --account. With neither, a file holding exactly
+    one account is used as-is (offline dry runs, CI); otherwise it's an
+    error -- never guess which account's quota a sweep is built on."""
+    accounts = quota_accounts(table)
+    if requested is not None:
+        requested = str(requested)
+        if requested not in accounts:
+            raise ValueError(
+                f"{path} has no quotas for AWS account {requested} (has: {accounts}) -- add them "
+                f"(scripts/fetch_quota.py --all prints the lines) rather than sweeping around another account's quota"
+            )
+        return requested
+    if len(accounts) == 1:
+        return accounts[0]
+    raise ValueError(f"{path} lists several accounts {accounts}; pass --account or run with AWS credentials")
+
+
+def current_account_id() -> Optional[str]:
+    """The live AWS account from STS, or None without usable credentials
+    (offline dry runs still work against a single-account quota file)."""
+    try:
+        import boto3
+
+        return str(boto3.client("sts").get_caller_identity()["Account"])
+    except Exception:  # noqa: BLE001 - no creds / no network: caller falls back
+        return None

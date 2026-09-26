@@ -24,7 +24,7 @@ OTHER = ModelConfig(name="other", model_id="m.other-v1:0", quota_rpm=1200, quota
 def _experiment(name: str, **extra) -> dict:
     spec = {
         "name": name,
-        "workloads": [{"name": "short", "input_tokens": 100, "output_tokens": 16}],
+        "workloads": [{"name": "short", "input_tokens": 100, "output_tokens": 16, "slo_profile": "fast"}],
         "sweep": {"type": "rate", "quota_fractions": [1.0]},
         "warmup_s": 0.02, "duration_s": 0.1, "stream": False, "seed": 1,
     }
@@ -48,7 +48,7 @@ class BatchTests(unittest.TestCase):
         # Non-streaming fakes have no TTFT, so a latency-only SLO file --
         # also exercises passing a custom SLO file through the batch.
         self.slo_file = self.dir / "slo.yaml"
-        self.slo_file.write_text("default: fast\nprofiles:\n  fast: {latency_p95_ms: 3000}\n")
+        self.slo_file.write_text("profiles:\n  fast: {latency_p95_ms: 3000}\n")
 
     def tearDown(self):
         self._tmp.cleanup()

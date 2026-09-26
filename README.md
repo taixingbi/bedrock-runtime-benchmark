@@ -93,8 +93,8 @@ Three independent inputs, combined at run time:
 scripts/models.yaml        WHICH models: name (= results folder), model_id, region
 experiments/*.yaml         WHAT load: workloads + sweep -- no model, no SLO, no quota
 constraints/
-  ├─ slo.yaml              SLO:   what quality we REQUIRE  (per traffic class)
-  └─ quota.yaml            quota: what the provider ALLOWS (per model)
+  ├─ slo.yaml              SLO:   what quality we REQUIRE  (named profiles per use case)
+  └─ quota.yaml            quota: what the provider ALLOWS (per account / region / model)
         ↓
 every experiment x every model -> capacity-profile.yaml (judged against the constraints)
 ```
@@ -110,6 +110,16 @@ every experiment x every model -> capacity-profile.yaml (judged against the cons
   copy can drift and every run of the same workload class is judged
   the same way. `--slo-file` / `--quota-file` point a run at other
   constraint files (e.g. a stricter SLO).
+  - `slo.yaml`: named profiles only (`interactive`, `long_generation`),
+    **no default** -- every workload in every experiment names its
+    `slo_profile:` explicitly, or the experiment fails to load.
+  - `quota.yaml`: scoped like Bedrock quotas themselves --
+    `accounts: {<account id>: {<region>: {<model name>: {rpm, tpm}}}}`.
+    The account comes from the live credentials (STS; `--account`
+    overrides) and the region from each model's entry; a run on an
+    account with no quotas listed fails rather than sweeping around
+    another account's numbers. Offline (no credentials), a file with
+    exactly one account is used as-is.
 
 Rate sweeps are written as `quota_fractions` of each sweep subject's
 **provider ceiling** -- the request rate the model's quota allows for
@@ -125,7 +135,7 @@ Quotas cap requests AND tokens, and which binds depends on the
 workload (a short request on nova-micro is RPM-bound; a long one on a
 tight-TPM model can be TPM-bound). `max_tokens`, not actual output,
 counts because Bedrock reserves input + max_tokens against TPM when a
-request starts. `output_burndown` (models file, default 1) covers models
+request starts. `output_burndown` (`constraints/quota.yaml`, default 1) covers models
 that bill output tokens at a multiple. Every class/mix in the artifact
 records it:
 
@@ -205,9 +215,8 @@ schema_version: 5
 experiment: rate-capacity
 model: {name: nova-micro, provider: bedrock, model_id: ..., region: ...}
 constraints:                                       # what every number was judged against
-  quota: {rpm: 400, tpm: 8000000, output_burndown: 1.0}                     # constraints/quota.yaml
-  slo:                                                                       # constraints/slo.yaml
-    default: interactive
+  quota: {account: "646821141010", region: us-east-1, rpm: 400, tpm: 8000000, output_burndown: 1.0}  # constraints/quota.yaml
+  slo:                                                                       # constraints/slo.yaml -- profiles this run's workloads use
     profiles:
       interactive: {ttft_p95_ms: 1000, latency_p95_ms: 3000, success_rate_min: 0.99, throttle_rate_max: 0.001, confidence: null}
       long_generation: {ttft_p95_ms: 1000, latency_p95_ms: 10000, ...}
@@ -350,7 +359,10 @@ artifact was ever used to actually inform a gateway config:
 17. **SLO and quota numbers were copied into every file.** The same
     `slo:` block lived in 4 experiments and quotas in the models list.
     Both now live once under `constraints/` (schema v5 groups them in
-    the artifact's `constraints:` block); loaders reject copies.
+    the artifact's `constraints:` block); loaders reject copies. SLO
+    profiles are always named explicitly per workload (no implicit
+    default), and quotas are scoped by account and region, matching
+    how Bedrock actually applies them.
 
 ## Measurement policy
 
@@ -399,7 +411,7 @@ be true for some certified models. `scripts/fetch_quota.py` and
 number before an experiment is written, not a name for it to just do.
 
 ```bash
-.venv/bin/python scripts/fetch_quota.py --all                                 # check constraints/quota.yaml
+.venv/bin/python scripts/fetch_quota.py --all                                 # check constraints/quota.yaml (live account)
 .venv/bin/python scripts/fetch_quota.py --model-id us.amazon.nova-pro-v1:0    # one model, for a new entry
 ```
 
@@ -481,33 +493,34 @@ models legitimately stop a little early).
 
 ## SLO profiles
 
-SLOs live in `constraints/slo.yaml` -- one definition shared by every
-experiment and model. TTFT can be shared, but a 512-token generation
-can't be held to the same end-to-end budget as a 64-token reply, so
-there are named profiles and a default:
+SLOs live in `constraints/slo.yaml` as named profiles per workload /
+use case -- one definition shared by every experiment and model. TTFT
+can be shared, but a 512-token generation can't be held to a 64-token
+reply's end-to-end budget:
 
 ```yaml
 # constraints/slo.yaml
-default: interactive
 profiles:
   interactive:     {ttft_p95_ms: 1000, latency_p95_ms: 3000,  success_rate_min: 0.99, throttle_rate_max: 0.001}
   long_generation: {ttft_p95_ms: 1000, latency_p95_ms: 10000, success_rate_min: 0.99, throttle_rate_max: 0.001}
 ```
 
-An experiment's workloads only NAME a profile (or get the default):
+There is **no default**: every workload -- including each class of a
+mixed workload -- names its profile, so reading an experiment tells you
+exactly which SLO each class is held to:
 
 ```yaml
 workloads:
-  - {name: short_short, input_tokens: 512,  output_tokens: 64}
+  - {name: short_short, input_tokens: 512,  output_tokens: 64,  slo_profile: interactive}
   - {name: long_long,   input_tokens: 4096, output_tokens: 512, slo_profile: long_generation}
 ```
 
 Isolated workloads are gated on their own profile. In a mix, every
 request counts toward goodput against its own class's SLO, every class
-is gated on its own profile, and the blend only on the default
-profile's success/throttle gates. The answer is therefore model +
-workload class + SLO class + quota -> envelope, never one universal
-concurrency.
+is gated on its own profile, and the blend on the STRICTEST
+success/throttle gate among the profiles its classes use (latency
+always per class). The answer is therefore model + workload class +
+SLO profile + quota -> envelope, never one universal concurrency.
 
 ## Mixed workloads
 

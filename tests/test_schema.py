@@ -11,7 +11,7 @@ NO_QUOTA = ModelConfig(name="mystery", model_id="x.y-v1:0")
 
 MINIMAL = (
     "name: minimal\n"
-    "workloads: [{name: w, input_tokens: 100, output_tokens: 16}]\n"
+    "workloads: [{name: w, input_tokens: 100, output_tokens: 16, slo_profile: interactive}]\n"
     "sweep: {type: concurrency, values: [1]}\n"
 )
 
@@ -105,7 +105,8 @@ class ValidationTests(unittest.TestCase):
             MINIMAL.replace("values: [1]", "quota_fractions: [1.0]"),  # concurrency can't be quota-relative
             MINIMAL.replace("{type: concurrency, values: [1]}", "{type: rate}"),
             MINIMAL.replace("values: [1]", "values: [1, 128]"),  # > transport.max_connections (64)
-            MINIMAL.replace("output_tokens: 16}", "output_tokens: 16, slo_profile: nope}"),
+            MINIMAL.replace("slo_profile: interactive", "slo_profile: nope"),
+            MINIMAL.replace(", slo_profile: interactive", ""),  # no explicit profile
             MINIMAL + "transport: {max_connections: 64, executor_workers: 8}\n",
         ]
         for text in bad:

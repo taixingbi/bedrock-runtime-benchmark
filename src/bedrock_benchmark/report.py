@@ -224,7 +224,7 @@ def build_capacity_profile(report: ExperimentReport) -> dict:
             if r.tags.get("workload") == workload.name and r.tags.get("measured", True)
         ]
         entry: dict = {
-            "slo_profile": workload.slo_profile or spec.slo_default,
+            "slo_profile": workload.slo_profile,
             "observed": _observed_tokens(own_results),
             "workload_validation": _workload_validation(workload, own_results, report),
         }
@@ -265,13 +265,19 @@ def build_capacity_profile(report: ExperimentReport) -> dict:
         # (constraints/slo.yaml; each workload class names its profile).
         "constraints": {
             "quota": {
+                "account": spec.quota_account,
+                "region": spec.target.region,
                 "rpm": spec.quota_snapshot.rpm,
                 "tpm": spec.quota_snapshot.tpm,
                 "output_burndown": spec.output_burndown,
             },
+            # The profiles this experiment's workloads use (each class
+            # names its own under workload_classes.<name>.slo_profile).
             "slo": {
-                "default": spec.slo_default,
-                "profiles": {n: _slo_dict(c) for n, c in spec.slo_profiles.items()} or {spec.slo_default: _slo_dict(spec.slo)},
+                "profiles": {
+                    n: _slo_dict(spec.slo_profiles[n])
+                    for n in sorted({w.slo_profile for w in spec.workloads if w.slo_profile in spec.slo_profiles})
+                },
             },
         },
         "measurement": {

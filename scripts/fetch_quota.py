@@ -27,16 +27,18 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from bedrock_benchmark.constraints import DEFAULT_QUOTA_FILE  # noqa: E402
+from bedrock_benchmark.constraints import DEFAULT_QUOTA_FILE, current_account_id  # noqa: E402
 from bedrock_benchmark.models import DEFAULT_MODELS_FILE, load_models  # noqa: E402
 from bedrock_benchmark.quota import fetch_quota_snapshot  # noqa: E402
 
 
-def check_all(models_file: str, quota_file: str, table_name: str) -> int:
-    """Exit 1 if any quota-file entry differs from the live value (or
-    can't be determined)."""
+def check_all(models_file: str, quota_file: str, table_name: str, account: str) -> int:
+    """Exit 1 if any quota-file entry (for the live account, each model's
+    region) differs from the live value, or can't be determined."""
     stale = 0
-    for m in load_models(models_file, include_disabled=True, quota_file=quota_file):
+    models = load_models(models_file, include_disabled=True, quota_file=quota_file, account=account)
+    print(f"account {models[0].account} ({quota_file})")
+    for m in models:
         q = fetch_quota_snapshot(m.model_id, region=m.region, table_name=table_name)
         if q.source == "unknown":
             print(f"?  {m.name:<14} {m.model_id}: live quota unknown")
@@ -48,7 +50,7 @@ def check_all(models_file: str, quota_file: str, table_name: str) -> int:
             print(f"ok {m.name:<14} rpm={q.rpm:.0f} tpm={q.tpm:.0f} ({q.source})")
         else:
             stale += 1
-            print(f"!! {m.name:<14} {quota_file} rpm={filed[0]} tpm={filed[1]} -> live rpm={q.rpm} tpm={q.tpm} ({q.source})")
+            print(f"!! {m.name:<14} {m.region} rpm={filed[0]} tpm={filed[1]} -> live rpm={q.rpm} tpm={q.tpm} ({q.source})")
             print(f"   {m.name}: {{rpm: {int(q.rpm) if q.rpm is not None else 'null'}, "
                   f"tpm: {int(q.tpm) if q.tpm is not None else 'null'}}}")
     return 1 if stale else 0
@@ -61,12 +63,14 @@ def main() -> None:
     target.add_argument("--model-id")
     parser.add_argument("--models-file", default=DEFAULT_MODELS_FILE)
     parser.add_argument("--quota-file", default=DEFAULT_QUOTA_FILE)
+    parser.add_argument("--account", help="default: the live account from STS")
     parser.add_argument("--region", default="us-east-1")
     parser.add_argument("--table-name", default="gateway-model-quotas-dev")
     args = parser.parse_args()
 
     if args.all:
-        raise SystemExit(check_all(args.models_file, args.quota_file, args.table_name))
+        raise SystemExit(check_all(args.models_file, args.quota_file, args.table_name,
+                                   args.account or current_account_id()))
 
     quota = fetch_quota_snapshot(args.model_id, region=args.region, table_name=args.table_name)
 

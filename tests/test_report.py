@@ -234,7 +234,7 @@ class BuildCapacityProfileTests(unittest.TestCase):
 
         c = profile["constraints"]
         self.assertEqual((c["quota"]["rpm"], c["quota"]["tpm"], c["quota"]["output_burndown"]), (400, 8_000_000, 1.0))
-        self.assertEqual(c["slo"]["profiles"][c["slo"]["default"]]["success_rate_min"], 0.99)
+        self.assertNotIn("default", c["slo"])
         self.assertNotIn("quota_snapshot", profile)
         self.assertNotIn("slo", profile)
         self.assertEqual(profile["transport"]["total_max_attempts"], 1)
