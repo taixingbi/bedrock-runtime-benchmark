@@ -14,16 +14,16 @@ workloads:
   short_chat:
     input_tokens: 512
     output_tokens: 64
-    slo_profile: interactive_short
+    slo_profile: gold
 
   # Retrieval-augmented answer: long context, medium answer.
   rag_answer:
     input_tokens: 4096
     output_tokens: 256
-    slo_profile: interactive_medium
+    slo_profile: silver
 
   # Long generation: long context, long output (summaries, drafts).
   long_generation:
     input_tokens: 4096
     output_tokens: 1024
-    slo_profile: long_generation
+    slo_profile: bronze

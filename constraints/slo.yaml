@@ -4,35 +4,38 @@
 # The same model serves every profile, so each profile yields its own
 # safe envelope per model -- a gateway's request_class -> limits.
 #
-# Gated on per-request latency components rather than end-to-end
-# latency, so one profile stays meaningful across output lengths:
+# Three service classes, by business criticality of the request -- not
+# by model:
 #
 #   ttft_p95_ms        time to first token, p95 (streaming only)
-#   tpot_p95_ms        time per output token after the first, p95:
-#                      (latency - TTFT) / (output_tokens - 1)
-#   latency_p95_ms     optional end-to-end latency, p95
+#   latency_p95_ms     end-to-end latency, p95
+#   tpot_p95_ms        optional: time per output token after the first,
+#                      p95 = (latency - TTFT) / (output_tokens - 1)
 #   success_rate_min   fraction of requests that must succeed
 #   throttle_rate_max  max fraction throttled (429)
 #   confidence         optional, e.g. 0.95: gate success/throttle on
 #                      Wilson bounds instead of point estimates. Requests
 #                      per point needed to resolve throttle_rate_max at
-#                      95%: ~2,700 (0.001), ~540 (0.005)
+#                      95%: ~2,700 (0.001), ~540 (0.005), ~270 (0.01)
 
 profiles:
-  interactive_short:
-    ttft_p95_ms: 1000
-    tpot_p95_ms: 50
-    success_rate_min: 0.99
+  gold:
+    # Real-time, latency-sensitive, business-critical workloads.
+    ttft_p95_ms: 800
+    latency_p95_ms: 3000
+    success_rate_min: 0.995
     throttle_rate_max: 0.001
 
-  interactive_medium:
-    ttft_p95_ms: 1200
-    tpot_p95_ms: 60
-    success_rate_min: 0.99
-    throttle_rate_max: 0.001
-
-  long_generation:
+  silver:
+    # Standard synchronous application workloads.
     ttft_p95_ms: 1500
-    tpot_p95_ms: 70
+    latency_p95_ms: 6000
     success_rate_min: 0.99
     throttle_rate_max: 0.005
+
+  bronze:
+    # Async, batch, or throughput-oriented workloads.
+    ttft_p95_ms: 3000
+    latency_p95_ms: 15000
+    success_rate_min: 0.99
+    throttle_rate_max: 0.01

@@ -20,17 +20,16 @@ def _write(text: str) -> str:
 
 
 class ShippedConstraintsTests(unittest.TestCase):
-    def test_slo_file_defines_the_three_profiles_on_ttft_and_tpot(self):
+    def test_slo_file_defines_gold_silver_bronze(self):
         slos = load_slo()
-        self.assertEqual(set(slos.profiles), {"interactive_short", "interactive_medium", "long_generation"})
-        for name, p in slos.profiles.items():
-            with self.subTest(profile=name):
-                self.assertIsNotNone(p.ttft_p95_ms)
-                self.assertIsNotNone(p.tpot_p95_ms)
-        short, medium, long_ = (slos.get(n) for n in ("interactive_short", "interactive_medium", "long_generation"))
-        self.assertLess(short.ttft_p95_ms, medium.ttft_p95_ms)
-        self.assertLess(medium.ttft_p95_ms, long_.ttft_p95_ms)
-        self.assertLess(short.tpot_p95_ms, long_.tpot_p95_ms)
+        self.assertEqual(set(slos.profiles), {"gold", "silver", "bronze"})
+        gold, silver, bronze = (slos.get(n) for n in ("gold", "silver", "bronze"))
+        # Each class is strictly more relaxed than the one above it.
+        for field in ("ttft_p95_ms", "latency_p95_ms", "throttle_rate_max"):
+            with self.subTest(field=field):
+                self.assertLess(getattr(gold, field), getattr(silver, field))
+                self.assertLess(getattr(silver, field), getattr(bronze, field))
+        self.assertGreaterEqual(gold.success_rate_min, silver.success_rate_min)
 
     def test_quota_file_covers_every_shipped_model_for_the_account_and_its_region(self):
         table = load_quotas()
@@ -54,7 +53,7 @@ class ShippedConstraintsTests(unittest.TestCase):
         catalog = load_workloads()
         self.assertEqual(
             {n: w.slo_profile for n, w in catalog.items()},
-            {"short_chat": "interactive_short", "rag_answer": "interactive_medium", "long_generation": "long_generation"},
+            {"short_chat": "gold", "rag_answer": "silver", "long_generation": "bronze"},
         )
         for w in catalog.values():
             self.assertIn(w.slo_profile, slos.profiles)
@@ -85,8 +84,7 @@ class SloFileTests(unittest.TestCase):
                 Path(path).unlink()
 
     def test_custom_slo_file_is_used_by_experiments(self):
-        path = _write("profiles:\n  interactive_short: {tpot_p95_ms: 5}\n"
-                      "  interactive_medium: {tpot_p95_ms: 6}\n  long_generation: {tpot_p95_ms: 7}\n")
+        path = _write("profiles:\n  gold: {tpot_p95_ms: 5}\n  silver: {tpot_p95_ms: 6}\n  bronze: {tpot_p95_ms: 7}\n")
         try:
             spec = load_experiment("experiments/token-sweep.yaml", MICRO, slo_file=path)
             self.assertEqual(spec.slo_for("short_chat").tpot_p95_ms, 5)
@@ -96,9 +94,9 @@ class SloFileTests(unittest.TestCase):
             Path(path).unlink()
 
     def test_catalog_binding_a_profile_the_slo_file_lacks_is_rejected(self):
-        path = _write("profiles: {interactive_short: {tpot_p95_ms: 1}}\n")
+        path = _write("profiles: {gold: {tpot_p95_ms: 1}}\n")
         try:
-            with self.assertRaisesRegex(ValueError, "long_generation"):
+            with self.assertRaisesRegex(ValueError, "bronze"):
                 load_experiment("experiments/token-sweep.yaml", MICRO, slo_file=path)
         finally:
             Path(path).unlink()
@@ -106,9 +104,9 @@ class SloFileTests(unittest.TestCase):
     def test_blend_gate_is_the_strictest_among_used_profiles(self):
         path = _write(
             "profiles:\n"
-            "  interactive_short: {tpot_p95_ms: 50, success_rate_min: 0.99, throttle_rate_max: 0.01}\n"
-            "  interactive_medium: {tpot_p95_ms: 60, success_rate_min: 0.99, throttle_rate_max: 0.01}\n"
-            "  long_generation: {tpot_p95_ms: 70, success_rate_min: 0.999, throttle_rate_max: 0.001, confidence: 0.95}\n"
+            "  gold: {tpot_p95_ms: 50, success_rate_min: 0.99, throttle_rate_max: 0.01}\n"
+            "  silver: {tpot_p95_ms: 60, success_rate_min: 0.99, throttle_rate_max: 0.01}\n"
+            "  bronze: {tpot_p95_ms: 70, success_rate_min: 0.999, throttle_rate_max: 0.001, confidence: 0.95}\n"
         )
         try:
             gate = load_experiment("experiments/mixed-capacity.yaml", MICRO, slo_file=path).slo

@@ -95,7 +95,7 @@ scripts/models.yaml        WHICH models: name (= results folder), model_id, regi
 scripts/workloads.yaml     WHICH requests: workload shapes, each bound to an SLO profile
 experiments/*.yaml         HOW to load them: workload names + sweep -- no shapes, no SLO, no quota
 constraints/
-  ├─ slo.yaml              SLO:   what quality we REQUIRE  (profiles on TTFT + TPOT)
+  ├─ slo.yaml              SLO:   what quality we REQUIRE  (gold / silver / bronze)
   └─ quota.yaml            quota: what the provider ALLOWS (per account / region / model)
         ↓
 every experiment x every model -> capacity-profile.yaml (judged against the constraints)
@@ -112,10 +112,9 @@ every experiment x every model -> capacity-profile.yaml (judged against the cons
   copy can drift and every run of the same workload class is judged
   the same way. `--slo-file` / `--quota-file` point a run at other
   constraint files (e.g. a stricter SLO).
-  - `slo.yaml`: named SLO profiles (`interactive_short`,
-    `interactive_medium`, `long_generation`) on TTFT + TPOT -- by
-    request class, not by model; **no default** -- each workload in the
-    catalog binds its profile explicitly.
+  - `slo.yaml`: three service classes (`gold`, `silver`, `bronze`) by
+    business criticality of the request, not by model; **no default** --
+    each workload in the catalog binds its profile explicitly.
   - `quota.yaml`: scoped like Bedrock quotas themselves --
     `accounts: {<account id>: {<region>: {<model name>: {rpm, tpm}}}}`.
     The account comes from the live credentials (STS; `--account`
@@ -221,7 +220,7 @@ constraints:                                       # what every number was judge
   quota: {account: "646821141010", region: us-east-1, rpm: 400, tpm: 8000000, output_burndown: 1.0}  # constraints/quota.yaml
   slo:                                                                       # constraints/slo.yaml -- profiles this run's workloads use
     profiles:
-      interactive_short: {ttft_p95_ms: 1000, tpot_p95_ms: 50, latency_p95_ms: null, success_rate_min: 0.99, throttle_rate_max: 0.001, confidence: null}
+      gold: {ttft_p95_ms: 800, tpot_p95_ms: null, latency_p95_ms: 3000, success_rate_min: 0.995, throttle_rate_max: 0.001, confidence: null}
 measurement:
   warmup_s: 10
   window_s: 90
@@ -233,7 +232,7 @@ measurement:
 sweep: {type: rate, quota_fractions: [0.25, ...], relative_to: provider_ceiling}
 workload_classes:
   short_chat:
-    slo_profile: interactive_short
+    slo_profile: gold
     observed: {input_tokens_p50: 505, output_tokens_p50: 61}
     workload_validation: {input: {...}, output: {...}, valid: true}
     provider_constraints: {tokens_per_request: 576.0, ceiling_rps: 6.6667, binding_constraint: rpm, ...}
@@ -504,9 +503,9 @@ experiment is rejected.
 ```yaml
 # scripts/workloads.yaml
 workloads:
-  short_chat:      {input_tokens: 512,  output_tokens: 64,   slo_profile: interactive_short}
-  rag_answer:      {input_tokens: 4096, output_tokens: 256,  slo_profile: interactive_medium}
-  long_generation: {input_tokens: 4096, output_tokens: 1024, slo_profile: long_generation}
+  short_chat:      {input_tokens: 512,  output_tokens: 64,   slo_profile: gold}
+  rag_answer:      {input_tokens: 4096, output_tokens: 256,  slo_profile: silver}
+  long_generation: {input_tokens: 4096, output_tokens: 1024, slo_profile: bronze}
 
 # experiments/token-sweep.yaml
 workloads: [short_chat, rag_answer, long_generation]
@@ -514,33 +513,29 @@ workloads: [short_chat, rag_answer, long_generation]
 
 ## SLO profiles
 
-SLOs live in `constraints/slo.yaml`, separate from workloads, as named
-profiles by request class -- not by model; the same model serves every
-profile and gets one envelope per profile, which maps onto a gateway's
-`request_class -> concurrency / rate limit`.
+SLOs live in `constraints/slo.yaml`, separate from workloads, as three
+service classes by business criticality of the request -- not by
+model. The same model serves every class and gets one envelope per
+class (strict gold -> lower safe rps/concurrency, relaxed bronze ->
+higher), which maps onto a gateway's `request_class -> concurrency /
+rate limit`.
 
-Profiles gate on the two latency components instead of end-to-end
-latency, so one profile stays meaningful across output lengths:
+| Profile | For | Workload | TTFT p95 | E2E p95 | Success | Throttle |
+|---|---|---|---|---|---|---|
+| `gold` | real-time, latency-sensitive, business-critical | `short_chat` | 800 ms | 3 s | 99.5% | 0.1% |
+| `silver` | standard synchronous application | `rag_answer` | 1.5 s | 6 s | 99% | 0.5% |
+| `bronze` | async, batch, throughput-oriented | `long_generation` | 3 s | 15 s | 99% | 1% |
 
-- **TTFT** -- time to first token (streaming).
-- **TPOT** -- time per output token after the first:
-  `(latency - TTFT) / (output_tokens - 1)`, per streamed request with
-  >= 2 output tokens. A configured TPOT SLO with no TPOT measured
-  fails closed, like TTFT.
-
-| Profile | Workload | TTFT p95 | TPOT p95 | Success | Throttle |
-|---|---|---|---|---|---|
-| `interactive_short` | `short_chat` | 1000 ms | 50 ms | 99% | 0.1% |
-| `interactive_medium` | `rag_answer` | 1200 ms | 60 ms | 99% | 0.1% |
-| `long_generation` | `long_generation` | 1500 ms | 70 ms | 99% | 0.5% |
-
-`latency_p95_ms` is still available as an optional end-to-end gate.
-Isolated workloads are gated on their own profile. In a mix, every
-request counts toward goodput against its own class's profile, every
-class is gated on its own profile, and the blend on the STRICTEST
-success/throttle gate among its classes' profiles (latency components
-always per class). Resolving a throttle limit statistically needs
-~2,700 requests per point at 0.1%, ~540 at 0.5% (95% confidence).
+A profile may also set `tpot_p95_ms` -- time per output token after the
+first, `(latency - TTFT) / (output_tokens - 1)` per streamed request
+with >= 2 output tokens; like TTFT, a configured TPOT SLO with no TPOT
+measured fails closed. Isolated workloads are gated on their own
+profile. In a mix, every request counts toward goodput against its own
+class's profile, every class is gated on its own profile, and the blend
+on the STRICTEST success/throttle gate among its classes' profiles
+(latency always per class). Resolving a throttle limit statistically
+needs ~2,700 requests per point for gold's 0.1%, ~540 for silver's
+0.5%, ~270 for bronze's 1% (95% confidence).
 
 ## Mixed workloads
 
