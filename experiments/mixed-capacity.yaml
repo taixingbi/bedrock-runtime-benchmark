@@ -7,32 +7,24 @@
 #
 # Rates are quota_fractions of the mix's provider ceiling --
 # min(RPM, TPM / avg tokens per request), see rate-capacity.yaml.
-# Each class is judged against its own SLO profile from
-# constraints/slo.yaml (short: tier1_interactive, long_long:
-# tier3_throughput) -- a real mix of request classes on one model. The mixed_workloads
+# Each class is judged against its own SLO profile (bound in
+# scripts/workloads.yaml) -- a real mix of request classes on one model. The mixed_workloads
 # envelope is valid for THIS mix's shares only -- a different traffic
 # mix needs its own run.
 name: mixed-capacity
 description: |
   Poisson rate sweep at 0.25x..2.5x of the model's provider ceiling,
-  70% short (512/64) + 30% long_long (4096/512), 10s warmup + 90s
-  window per point (~13 min per model).
+  60% short_chat + 30% rag_answer + 10% long_generation, 10s warmup +
+  90s window per point (~13 min per model).
 
-workloads:
-  - name: short
-    input_tokens: 512
-    output_tokens: 64
-    slo_profile: tier1_interactive
-  - name: long_long
-    input_tokens: 4096
-    output_tokens: 512
-    slo_profile: tier3_throughput
+workloads: [short_chat, rag_answer, long_generation]
 
 mix:
-  name: short70_long30
+  name: chat60_rag30_gen10
   weights:
-    short: 0.7
-    long_long: 0.3
+    short_chat: 0.6
+    rag_answer: 0.3
+    long_generation: 0.1
 
 warmup_s: 10
 duration_s: 90

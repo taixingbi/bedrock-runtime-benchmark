@@ -13,14 +13,10 @@
 # ~1.0x and ~1.9x quota, so the sweep extends to 2.5x to find the edge.
 name: rate-capacity
 description: |
-  Poisson rate sweep at 0.25x..2.5x of each model's provider ceiling, "short"
-  workload, 10s warmup + 90s window per point (~13 min per model).
+  Poisson rate sweep at 0.25x..2.5x of each model's provider ceiling,
+  short_chat workload, 10s warmup + 90s window per point (~13 min per model).
 
-workloads:
-  - name: short
-    input_tokens: 512
-    output_tokens: 64
-    slo_profile: tier1_interactive
+workloads: [short_chat]
 
 warmup_s: 10
 duration_s: 90

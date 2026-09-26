@@ -22,6 +22,7 @@ from .experiments.executor import ExperimentReport, run_experiment
 from .constraints import DEFAULT_SLO_FILE
 from .experiments.schema import ExperimentSpec, load_experiment
 from .models import ModelConfig
+from .workload import DEFAULT_WORKLOADS_FILE
 from .report import build_capacity_profile
 from .storage import write_jsonl
 
@@ -93,7 +94,7 @@ def _make_progress_printer():
             f"  [{elapsed:6.0f}s] {workload_name:<12} value={sweep_value:<6} "
             f"n={m.n:<5} success={m.success_rate:.3f} throttle={m.throttle_rate:.4f} "
             f"(<={m.throttle_rate_upper}) "
-            f"ttft_p95={ttft:<10} latency_p95={m.latency_p95_ms}ms slo_goodput={goodput}"
+            f"ttft_p95={ttft:<10} tpot_p95={m.tpot_p95_ms}ms latency_p95={m.latency_p95_ms}ms slo_goodput={goodput}"
         )
 
     return printer
@@ -123,9 +124,9 @@ def _warn_if_throttle_slo_unresolvable(spec: ExperimentSpec) -> None:
 
 def run_file(
     path: str, model: ModelConfig, *, results_dir: str = "results", target_factory: Optional[TargetFactory] = None,
-    slo_file: str = DEFAULT_SLO_FILE,
+    slo_file: str = DEFAULT_SLO_FILE, workloads_file: str = DEFAULT_WORKLOADS_FILE,
 ) -> RunOutcome:
-    spec = load_experiment(path, model, slo_file=slo_file)
+    spec = load_experiment(path, model, slo_file=slo_file, workloads_file=workloads_file)
     print(f"running experiment: {spec.name} on {model.name} ({model.model_id})")
     print(f"sweep: {describe_sweep(spec)}")
     for name in spec.subject_names:
@@ -157,7 +158,8 @@ def run_file(
         if rec is None:
             continue
         for class_name, m in rec.point.class_metrics.items():
-            print(f"    {class_name}: n={m.n} latency_p95={m.latency_p95_ms}ms ttft_p95={m.ttft_p95_ms}ms "
+            print(f"    {class_name}: n={m.n} ttft_p95={m.ttft_p95_ms}ms tpot_p95={m.tpot_p95_ms}ms "
+                  f"latency_p95={m.latency_p95_ms}ms "
                   f"slo_goodput={m.slo_goodput_rps}")
 
     run_id = str(uuid.uuid4())[:8]

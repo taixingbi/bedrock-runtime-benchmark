@@ -19,12 +19,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from bedrock_benchmark.batch import format_summary, run_batch  # noqa: E402
 from bedrock_benchmark.constraints import DEFAULT_QUOTA_FILE, DEFAULT_SLO_FILE, current_account_id  # noqa: E402
 from bedrock_benchmark.models import DEFAULT_MODELS_FILE, load_models  # noqa: E402
+from bedrock_benchmark.workload import DEFAULT_WORKLOADS_FILE  # noqa: E402
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("experiment", help="path to an experiment YAML file")
     parser.add_argument("--models-file", default=DEFAULT_MODELS_FILE, help=f"default: {DEFAULT_MODELS_FILE}")
+    parser.add_argument("--workloads-file", default=DEFAULT_WORKLOADS_FILE,
+                        help=f"workload catalog (default: {DEFAULT_WORKLOADS_FILE})")
     parser.add_argument("--slo-file", default=DEFAULT_SLO_FILE, help=f"SLO profiles (default: {DEFAULT_SLO_FILE})")
     parser.add_argument("--quota-file", default=DEFAULT_QUOTA_FILE, help=f"per-model quotas (default: {DEFAULT_QUOTA_FILE})")
     parser.add_argument("--account", help="AWS account whose quotas apply (default: the live account from STS)")
@@ -35,7 +38,8 @@ def main() -> int:
 
     models = load_models(args.models_file, names=args.models, quota_file=args.quota_file,
                          account=args.account or current_account_id())
-    batch = run_batch([args.experiment], models, results_dir=Path(args.results_dir), slo_file=args.slo_file)
+    batch = run_batch([args.experiment], models, results_dir=Path(args.results_dir), slo_file=args.slo_file,
+                      workloads_file=args.workloads_file)
     if len(batch.results) > 1:
         print(f"\n{format_summary(batch)}")
     return batch.exit_code

@@ -46,15 +46,15 @@ class QuotaRelativeSweepTests(unittest.TestCase):
     def test_rate_sweep_resolves_against_the_tpm_ceiling_when_tpm_binds(self):
         tight_tpm = ModelConfig(name="t", model_id="m.t-v1:0", quota_rpm=10_000, quota_tpm=600_000)
         spec = load_experiment("experiments/rate-capacity.yaml", tight_tpm)  # short: 576 tokens/request
-        ceiling = spec.provider_ceilings["short"]
+        ceiling = spec.provider_ceilings["short_chat"]
         self.assertEqual(ceiling.binding, "tpm")
         i = spec.sweep.quota_fractions.index(1.0)
-        self.assertAlmostEqual(spec.sweep_values("short")[i], round(600_000 / 576 / 60, 4))
+        self.assertAlmostEqual(spec.sweep_values("short_chat")[i], round(600_000 / 576 / 60, 4))
 
     def test_tpm_only_quota_is_enough_for_a_relative_sweep(self):
         tpm_only = ModelConfig(name="t", model_id="m.t-v1:0", quota_tpm=600_000)
         spec = load_experiment("experiments/rate-capacity.yaml", tpm_only)
-        self.assertEqual(spec.provider_ceilings["short"].binding, "tpm")
+        self.assertEqual(spec.provider_ceilings["short_chat"].binding, "tpm")
 
 
 if __name__ == "__main__":

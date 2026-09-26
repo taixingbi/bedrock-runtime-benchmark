@@ -25,6 +25,12 @@ DEFAULT_QUOTA_FILE = "constraints/quota.yaml"
 @dataclass
 class SloConfig:
     ttft_p95_ms: Optional[float] = None
+    # Time per output token (decode speed), p95: (latency - TTFT) /
+    # (output_tokens - 1) per streamed request. Unlike end-to-end
+    # latency it doesn't grow with output length, so one number is
+    # meaningful for a 64-token reply and a 1024-token generation alike.
+    tpot_p95_ms: Optional[float] = None
+    # End-to-end latency, p95 -- optional; TTFT + TPOT usually say more.
     latency_p95_ms: Optional[float] = None
     # Result-quality gates -- distinct from the two latencies above
     # (response SPEED), these are about whether responses came back at

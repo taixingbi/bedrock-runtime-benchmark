@@ -1,0 +1,29 @@
+# Workload catalog -- every request shape the benchmark sends, defined
+# once. Experiments only LIST workloads by name (`workloads: [short_chat]`),
+# they never define shapes; SLOs live in constraints/slo.yaml. The two
+# are kept separate and joined only here, by an explicit slo_profile per
+# workload -- a workload describes a business request class, and its
+# profile says what quality that class is promised.
+#
+#   input_tokens   prompt size the padding is calibrated to (calibration.py)
+#   output_tokens  max_tokens for the request; the prompt asks for ~this much
+#   slo_profile    a profile name from constraints/slo.yaml (required)
+
+workloads:
+  # Chat-style reply: short prompt, short answer, user waiting.
+  short_chat:
+    input_tokens: 512
+    output_tokens: 64
+    slo_profile: interactive_short
+
+  # Retrieval-augmented answer: long context, medium answer.
+  rag_answer:
+    input_tokens: 4096
+    output_tokens: 256
+    slo_profile: interactive_medium
+
+  # Long generation: long context, long output (summaries, drafts).
+  long_generation:
+    input_tokens: 4096
+    output_tokens: 1024
+    slo_profile: long_generation

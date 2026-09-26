@@ -1,7 +1,8 @@
 import unittest
 
 from bedrock_benchmark.analysis.metrics import (
-    MeasurementWindow, compute_run_metrics, min_samples_to_resolve_rate, percentile, wilson_lower, wilson_upper,
+    MeasurementWindow, compute_run_metrics, min_samples_to_resolve_rate, percentile, tpot_ms, wilson_lower,
+    wilson_upper,
 )
 from bedrock_benchmark.results import RequestResult
 
@@ -83,6 +84,38 @@ class ComputeRunMetricsTests(unittest.TestCase):
         m = compute_run_metrics(results, duration_s=10.0, ttft_slo_ms=1000.0)
         self.assertEqual(m.slo_goodput_rps, 0.0)
 
+
+
+class TpotTests(unittest.TestCase):
+    def test_tpot_is_decode_time_per_token_after_the_first(self):
+        # 100ms to first token, 1100ms total, 11 tokens -> 1000ms over 10 tokens
+        self.assertEqual(tpot_ms(_result(ttft_ms=100.0, latency_ms=1100.0, output_tokens=11)), 100.0)
+
+    def test_no_tpot_without_ttft_or_with_under_two_tokens_or_on_failure(self):
+        self.assertIsNone(tpot_ms(_result(ttft_ms=None, latency_ms=500.0, output_tokens=10)))
+        self.assertIsNone(tpot_ms(_result(ttft_ms=100.0, latency_ms=500.0, output_tokens=1)))
+        self.assertIsNone(tpot_ms(_result(ttft_ms=100.0, latency_ms=500.0, output_tokens=10, success=False)))
+
+    def test_tpot_percentiles_and_goodput_gate(self):
+        fast = _result(ttft_ms=100.0, latency_ms=100.0 + 9 * 40.0, output_tokens=10)   # 40ms/token
+        slow = _result(ttft_ms=100.0, latency_ms=100.0 + 9 * 90.0, output_tokens=10)   # 90ms/token
+        m = compute_run_metrics([fast, slow], duration_s=10.0, tpot_slo_ms=50.0)
+        self.assertAlmostEqual(m.tpot_p50_ms, 65.0, places=3)
+        self.assertEqual(m.slo_goodput_rps, 0.1)  # only `fast` meets 50ms/token
+
+    def test_configured_tpot_slo_with_no_tpot_fails_closed(self):
+        m = compute_run_metrics([_result(ttft_ms=None, latency_ms=100.0, output_tokens=10)],
+                                duration_s=10.0, tpot_slo_ms=50.0)
+        self.assertEqual(m.slo_goodput_rps, 0.0)
+
+    def test_per_class_tpot_slo(self):
+        results = [
+            _result(ttft_ms=100.0, latency_ms=100.0 + 9 * 60.0, output_tokens=10, tags={"workload": "chat"}),  # 60 > 50
+            _result(ttft_ms=100.0, latency_ms=100.0 + 9 * 60.0, output_tokens=10, tags={"workload": "gen"}),   # 60 <= 70
+        ]
+        m = compute_run_metrics(results, duration_s=10.0,
+                                slo_by_workload={"chat": (None, None, 50.0), "gen": (None, None, 70.0)})
+        self.assertEqual(m.slo_goodput_rps, 0.1)
 
 
 class PerClassSloTests(unittest.TestCase):

@@ -15,10 +15,11 @@ magnitude across models and RPM vs TPM binds differently per workload
 shape. Fixed rps values would be far over one model's ceiling and
 nowhere near another's.
 
-SLOs come from constraints/slo.yaml, never from the experiment: every
-workload names its SLO tier explicitly (`slo_profile: tier3_throughput`)
--- there is no default -- so the same workload class is judged
-identically in every experiment (see constraints.py).
+Workloads come from the catalog (scripts/workloads.yaml) and SLOs from
+constraints/slo.yaml -- never from the experiment, which only LISTS
+workload names. Each catalog workload binds its slo_profile explicitly
+(there is no default), so the same workload is judged identically in
+every experiment (see constraints.py, workload.py).
 """
 from __future__ import annotations
 
@@ -32,7 +33,7 @@ from ..ceiling import ProviderCeiling, provider_ceiling
 from ..client import TransportConfig
 from ..constraints import DEFAULT_SLO_FILE, SloConfig, load_slo
 from ..models import ModelConfig
-from ..workload import WorkloadProfile
+from ..workload import DEFAULT_WORKLOADS_FILE, WorkloadProfile, load_workloads
 
 
 @dataclass
@@ -152,7 +153,9 @@ _MODEL_KEYS = ("target", "quota_snapshot", "quota")
 _SLO_KEYS = ("slo", "slo_profiles")
 
 
-def load_experiment(path: str, model: ModelConfig, *, slo_file: str = DEFAULT_SLO_FILE) -> ExperimentSpec:
+def load_experiment(
+    path: str, model: ModelConfig, *, slo_file: str = DEFAULT_SLO_FILE, workloads_file: str = DEFAULT_WORKLOADS_FILE,
+) -> ExperimentSpec:
     raw = yaml.safe_load(Path(path).read_text())
 
     present = [k for k in _MODEL_KEYS if k in raw]
@@ -170,7 +173,7 @@ def load_experiment(path: str, model: ModelConfig, *, slo_file: str = DEFAULT_SL
     slos = load_slo(slo_file)
     sweep = raw["sweep"]
     transport = raw.get("transport") or {}
-    workloads = [WorkloadProfile(**w) for w in raw["workloads"]]
+    workloads = _resolve_workloads(raw.get("workloads"), path, workloads_file)
 
     spec = ExperimentSpec(
         name=raw["name"],
@@ -197,17 +200,26 @@ def load_experiment(path: str, model: ModelConfig, *, slo_file: str = DEFAULT_SL
         calibration_tolerance_pct=raw.get("calibration_tolerance_pct", 2.0),
         model_name=model.name,
     )
-    missing = [w.name for w in spec.workloads if not w.slo_profile]
-    if missing:
-        raise ValueError(
-            f"{path}: workloads {missing} need an explicit `slo_profile:` "
-            f"(one of {sorted(slos.profiles)} from {slo_file})"
-        )
     _validate(spec)
     spec.slo = _strictest_gate([spec.slo_profiles[w.slo_profile] for w in spec.workloads])
     spec.provider_ceilings = _ceilings(spec, model)
     _validate_sweep(spec, model, path)
     return spec
+
+
+def _resolve_workloads(names, path: str, workloads_file: str) -> List[WorkloadProfile]:
+    if not isinstance(names, list) or not names or not all(isinstance(n, str) for n in names):
+        raise ValueError(
+            f"{path}: `workloads:` must be a list of workload names from {workloads_file} "
+            f"(e.g. [short_chat]) -- shapes and SLO bindings are defined there, not in experiments"
+        )
+    catalog = load_workloads(workloads_file)
+    unknown = [n for n in names if n not in catalog]
+    if unknown:
+        raise ValueError(f"{path}: unknown workloads {unknown}; {workloads_file} defines {sorted(catalog)}")
+    if len(set(names)) != len(names):
+        raise ValueError(f"{path}: workloads listed twice: {names}")
+    return [catalog[n] for n in names]
 
 
 def _strictest_gate(profiles: List[SloConfig]) -> SloConfig:
@@ -269,7 +281,7 @@ def _validate(spec: ExperimentSpec) -> None:
         raise ValueError(f"token_counting must be one of {STRATEGIES}, got {spec.token_counting!r}")
     unknown_profiles = sorted({w.slo_profile for w in spec.workloads if w.slo_profile} - set(spec.slo_profiles))
     if unknown_profiles:
-        raise ValueError(f"workloads reference SLO profiles not in the SLO file: {unknown_profiles}")
+        raise ValueError(f"workloads bind SLO profiles not defined in the SLO file: {unknown_profiles}")
     for name, profile in spec.slo_profiles.items():
         if profile.confidence is not None and not 0 < profile.confidence < 1:
             raise ValueError(f"slo_profiles.{name}.confidence must be in (0, 1)")

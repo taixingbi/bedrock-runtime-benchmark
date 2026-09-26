@@ -24,7 +24,7 @@ OTHER = ModelConfig(name="other", model_id="m.other-v1:0", quota_rpm=1200, quota
 def _experiment(name: str, **extra) -> dict:
     spec = {
         "name": name,
-        "workloads": [{"name": "short", "input_tokens": 100, "output_tokens": 16, "slo_profile": "fast"}],
+        "workloads": ["short"],
         "sweep": {"type": "rate", "quota_fractions": [1.0]},
         "warmup_s": 0.02, "duration_s": 0.1, "stream": False, "seed": 1,
     }
@@ -49,6 +49,8 @@ class BatchTests(unittest.TestCase):
         # also exercises passing a custom SLO file through the batch.
         self.slo_file = self.dir / "slo.yaml"
         self.slo_file.write_text("profiles:\n  fast: {latency_p95_ms: 3000}\n")
+        self.workloads_file = self.dir / "workloads.yaml"
+        self.workloads_file.write_text("workloads:\n  short: {input_tokens: 100, output_tokens: 16, slo_profile: fast}\n")
 
     def tearDown(self):
         self._tmp.cleanup()
@@ -63,7 +65,8 @@ class BatchTests(unittest.TestCase):
 
     def _run(self, paths, models, **kwargs):
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-            return run_batch(paths, models, results_dir=self.dir / "out", slo_file=str(self.slo_file), **kwargs)
+            return run_batch(paths, models, results_dir=self.dir / "out", slo_file=str(self.slo_file),
+                             workloads_file=str(self.workloads_file), **kwargs)
 
     def test_runs_every_model_x_experiment_into_per_model_folders(self):
         paths = self._write(_experiment("a"), _experiment("b"))
@@ -128,8 +131,8 @@ class BatchTests(unittest.TestCase):
 class PlanTests(unittest.TestCase):
     def test_estimate_counts_subjects_points_repetitions_warmup_and_window(self):
         micro = load_models(names=["nova-micro"])[0]
-        spec = load_experiment("experiments/token-sweep.yaml", micro)  # 4 workloads x 4 points
-        self.assertEqual(estimated_duration_s(spec), 4 * 4 * 1 * (10 + 90))
+        spec = load_experiment("experiments/token-sweep.yaml", micro)  # 3 workloads x 4 points
+        self.assertEqual(estimated_duration_s(spec), 3 * 4 * 1 * (10 + 90))
         mixed = load_experiment("experiments/mixed-capacity.yaml", micro)  # a mix is ONE subject
         self.assertEqual(estimated_duration_s(mixed), 1 * 8 * 1 * (10 + 90))
 

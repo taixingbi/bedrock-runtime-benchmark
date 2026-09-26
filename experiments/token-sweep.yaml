@@ -1,37 +1,20 @@
-# Does capacity depend on workload SHAPE, not just load? The 2x2
-# input/output grid -- short-short, output-heavy, input-heavy,
-# long-long -- each concurrency-swept. One result per shape is the
-# evidence for per-tenant-class concurrency config; a single shape
-# doesn't generalize to every class.
+# Does capacity depend on workload SHAPE, not just load? Each request
+# class in the catalog (scripts/workloads.yaml) -- short chat, RAG
+# answer, long generation -- concurrency-swept on its own. One result
+# per class is the evidence for per-request-class concurrency config; a
+# single shape doesn't generalize to every class.
 #
-# SLO tiers (constraints/slo.yaml) are named per workload by request
-# class: short chat -> tier1_interactive, long-context short answer
-# (RAG-like) -> tier2_standard, 512-token generations -> tier3_throughput.
+# Each workload is judged against the SLO profile the catalog binds it to.
 #
-# Slow: 4 workloads x 4 points x (10s warmup + 90s window) ~= 27 min per
+# Slow: 3 workloads x 4 points x (10s warmup + 90s window) ~= 20 min per
 # model. Run it for a capacity re-baseline, not on every change.
 name: token-sweep
 description: |
-  Concurrency 1/2/4/6 repeated across 4 input/output token shapes.
-  One capacity-profile entry per shape.
+  Concurrency 1/2/4/6 repeated across the catalog's three request
+  classes (short_chat / rag_answer / long_generation). One
+  capacity-profile entry per workload.
 
-workloads:
-  - name: short_short
-    input_tokens: 512
-    output_tokens: 64
-    slo_profile: tier1_interactive
-  - name: short_output_heavy
-    input_tokens: 512
-    output_tokens: 512
-    slo_profile: tier3_throughput
-  - name: long_input_short_output
-    input_tokens: 4096
-    output_tokens: 64
-    slo_profile: tier2_standard
-  - name: long_long
-    input_tokens: 4096
-    output_tokens: 512
-    slo_profile: tier3_throughput
+workloads: [short_chat, rag_answer, long_generation]
 
 warmup_s: 10
 duration_s: 90

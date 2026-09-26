@@ -1,51 +1,38 @@
-# SLO -- what quality we REQUIRE, as three tiers by BUSINESS REQUEST
-# class, not by model. The same model serves every tier:
+# SLO -- what quality we REQUIRE, as named profiles. Kept separate from
+# workloads: scripts/workloads.yaml binds each workload to one of these
+# profiles explicitly (no default), and experiments only list workloads.
+# The same model serves every profile, so each profile yields its own
+# safe envelope per model -- a gateway's request_class -> limits.
 #
-#   same model
-#   ├── short chat       -> tier1_interactive
-#   ├── RAG answer       -> tier2_standard
-#   └── long generation  -> tier3_throughput
-#
-# never "nova-pro = tier 1, nova-micro = tier 3". Each tier yields its own
-# safe envelope per model (strict tier 1 -> lower safe rps/concurrency,
-# relaxed tier 3 -> higher), which maps directly onto a gateway's
-# request_class -> concurrency / rate limit.
-#
-# There is no implicit default: every workload in every experiment (and
-# every class of a mixed workload) names its tier explicitly --
-#   workloads:
-#     - {name: short_chat, input_tokens: 512, output_tokens: 64, slo_profile: tier1_interactive}
+# Gated on per-request latency components rather than end-to-end
+# latency, so one profile stays meaningful across output lengths:
 #
 #   ttft_p95_ms        time to first token, p95 (streaming only)
-#   latency_p95_ms     end-to-end latency, p95
+#   tpot_p95_ms        time per output token after the first, p95:
+#                      (latency - TTFT) / (output_tokens - 1)
+#   latency_p95_ms     optional end-to-end latency, p95
 #   success_rate_min   fraction of requests that must succeed
 #   throttle_rate_max  max fraction throttled (429)
 #   confidence         optional, e.g. 0.95: gate success/throttle on
 #                      Wilson bounds instead of point estimates. Requests
 #                      per point needed to resolve throttle_rate_max at
-#                      95%: ~2,700 (0.001), ~540 (0.005), ~270 (0.01)
+#                      95%: ~2,700 (0.001), ~540 (0.005)
 
 profiles:
-  # Tier 1 -- latency-sensitive interactive traffic: chatbot, agent UI,
-  # a user waiting. TTFT matters most; strictest throttling.
-  tier1_interactive:
-    ttft_p95_ms: 800
-    latency_p95_ms: 3000
-    success_rate_min: 0.995
+  interactive_short:
+    ttft_p95_ms: 1000
+    tpot_p95_ms: 50
+    success_rate_min: 0.99
     throttle_rate_max: 0.001
 
-  # Tier 2 -- normal interactive / enterprise application traffic: RAG,
-  # internal copilot, ordinary API calls. Latency and capacity balanced.
-  tier2_standard:
+  interactive_medium:
+    ttft_p95_ms: 1200
+    tpot_p95_ms: 60
+    success_rate_min: 0.99
+    throttle_rate_max: 0.001
+
+  long_generation:
     ttft_p95_ms: 1500
-    latency_p95_ms: 6000
+    tpot_p95_ms: 70
     success_rate_min: 0.99
     throttle_rate_max: 0.005
-
-  # Tier 3 -- long generation / background / batch-style traffic:
-  # summarization, offline jobs. Throughput first; higher latency allowed.
-  tier3_throughput:
-    ttft_p95_ms: 3000
-    latency_p95_ms: 15000
-    success_rate_min: 0.99
-    throttle_rate_max: 0.01

@@ -2,9 +2,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import yaml
+
 from bedrock_benchmark.constraints import load_quotas, load_slo, resolve_account
 from bedrock_benchmark.experiments.schema import load_experiment
 from bedrock_benchmark.models import ModelConfig, load_models
+from bedrock_benchmark.workload import load_workloads
 
 MICRO = ModelConfig(name="nova-micro", model_id="us.amazon.nova-micro-v1:0", quota_rpm=400, quota_tpm=8_000_000)
 
@@ -17,18 +20,17 @@ def _write(text: str) -> str:
 
 
 class ShippedConstraintsTests(unittest.TestCase):
-    def test_slo_file_defines_three_tiers_and_no_default(self):
+    def test_slo_file_defines_the_three_profiles_on_ttft_and_tpot(self):
         slos = load_slo()
-        self.assertEqual(set(slos.profiles), {"tier1_interactive", "tier2_standard", "tier3_throughput"})
-        t1, t2, t3 = (slos.get(n) for n in ("tier1_interactive", "tier2_standard", "tier3_throughput"))
-        # Each tier is strictly more relaxed than the one above it.
-        self.assertLess(t1.ttft_p95_ms, t2.ttft_p95_ms)
-        self.assertLess(t2.ttft_p95_ms, t3.ttft_p95_ms)
-        self.assertLess(t1.latency_p95_ms, t2.latency_p95_ms)
-        self.assertLess(t2.latency_p95_ms, t3.latency_p95_ms)
-        self.assertLess(t1.throttle_rate_max, t2.throttle_rate_max)
-        self.assertLess(t2.throttle_rate_max, t3.throttle_rate_max)
-        self.assertGreaterEqual(t1.success_rate_min, t2.success_rate_min)
+        self.assertEqual(set(slos.profiles), {"interactive_short", "interactive_medium", "long_generation"})
+        for name, p in slos.profiles.items():
+            with self.subTest(profile=name):
+                self.assertIsNotNone(p.ttft_p95_ms)
+                self.assertIsNotNone(p.tpot_p95_ms)
+        short, medium, long_ = (slos.get(n) for n in ("interactive_short", "interactive_medium", "long_generation"))
+        self.assertLess(short.ttft_p95_ms, medium.ttft_p95_ms)
+        self.assertLess(medium.ttft_p95_ms, long_.ttft_p95_ms)
+        self.assertLess(short.tpot_p95_ms, long_.tpot_p95_ms)
 
     def test_quota_file_covers_every_shipped_model_for_the_account_and_its_region(self):
         table = load_quotas()
@@ -47,19 +49,22 @@ class ShippedConstraintsTests(unittest.TestCase):
                     self.assertIn(w.slo_profile, slos.profiles)
                     self.assertEqual(spec.slo_for(w.name), slos.get(w.slo_profile))
 
-    def test_workloads_bind_tiers_by_request_class(self):
-        """Tier = business request class, from the workload's shape:
-        short chat -> 1, long context + short answer (RAG) -> 2,
-        long generation -> 3."""
-        def expected(w):
-            if w.output_tokens >= 512:
-                return "tier3_throughput"
-            return "tier2_standard" if w.input_tokens >= 4096 else "tier1_interactive"
+    def test_catalog_binds_every_workload_to_an_existing_profile(self):
+        slos = load_slo()
+        catalog = load_workloads()
+        self.assertEqual(
+            {n: w.slo_profile for n, w in catalog.items()},
+            {"short_chat": "interactive_short", "rag_answer": "interactive_medium", "long_generation": "long_generation"},
+        )
+        for w in catalog.values():
+            self.assertIn(w.slo_profile, slos.profiles)
 
+    def test_experiments_only_list_catalog_workloads(self):
+        catalog = load_workloads()
         for path in sorted(Path("experiments").glob("*.yaml")):
-            for w in load_experiment(str(path), MICRO).workloads:
-                with self.subTest(path=path.name, workload=w.name):
-                    self.assertEqual(w.slo_profile, expected(w))
+            raw = yaml.safe_load(path.read_text())
+            with self.subTest(path=path.name):
+                self.assertTrue(all(isinstance(n, str) and n in catalog for n in raw["workloads"]))
 
 
 class SloFileTests(unittest.TestCase):
@@ -80,20 +85,20 @@ class SloFileTests(unittest.TestCase):
                 Path(path).unlink()
 
     def test_custom_slo_file_is_used_by_experiments(self):
-        path = _write("profiles:\n  tier1_interactive: {latency_p95_ms: 500}\n"
-                      "  tier2_standard: {latency_p95_ms: 700}\n  tier3_throughput: {latency_p95_ms: 900}\n")
+        path = _write("profiles:\n  interactive_short: {tpot_p95_ms: 5}\n"
+                      "  interactive_medium: {tpot_p95_ms: 6}\n  long_generation: {tpot_p95_ms: 7}\n")
         try:
             spec = load_experiment("experiments/token-sweep.yaml", MICRO, slo_file=path)
-            self.assertEqual(spec.slo_for("short_short").latency_p95_ms, 500)
-            self.assertEqual(spec.slo_for("long_input_short_output").latency_p95_ms, 700)
-            self.assertEqual(spec.slo_for("long_long").latency_p95_ms, 900)
+            self.assertEqual(spec.slo_for("short_chat").tpot_p95_ms, 5)
+            self.assertEqual(spec.slo_for("rag_answer").tpot_p95_ms, 6)
+            self.assertEqual(spec.slo_for("long_generation").tpot_p95_ms, 7)
         finally:
             Path(path).unlink()
 
-    def test_experiment_naming_a_profile_the_slo_file_lacks_is_rejected(self):
-        path = _write("profiles: {tier1_interactive: {latency_p95_ms: 1}}\n")
+    def test_catalog_binding_a_profile_the_slo_file_lacks_is_rejected(self):
+        path = _write("profiles: {interactive_short: {tpot_p95_ms: 1}}\n")
         try:
-            with self.assertRaisesRegex(ValueError, "tier3_throughput"):
+            with self.assertRaisesRegex(ValueError, "long_generation"):
                 load_experiment("experiments/token-sweep.yaml", MICRO, slo_file=path)
         finally:
             Path(path).unlink()
@@ -101,13 +106,14 @@ class SloFileTests(unittest.TestCase):
     def test_blend_gate_is_the_strictest_among_used_profiles(self):
         path = _write(
             "profiles:\n"
-            "  tier1_interactive: {latency_p95_ms: 3000, success_rate_min: 0.99, throttle_rate_max: 0.01}\n"
-            "  tier3_throughput: {latency_p95_ms: 10000, success_rate_min: 0.999, throttle_rate_max: 0.001, confidence: 0.95}\n"
+            "  interactive_short: {tpot_p95_ms: 50, success_rate_min: 0.99, throttle_rate_max: 0.01}\n"
+            "  interactive_medium: {tpot_p95_ms: 60, success_rate_min: 0.99, throttle_rate_max: 0.01}\n"
+            "  long_generation: {tpot_p95_ms: 70, success_rate_min: 0.999, throttle_rate_max: 0.001, confidence: 0.95}\n"
         )
         try:
             gate = load_experiment("experiments/mixed-capacity.yaml", MICRO, slo_file=path).slo
             self.assertEqual((gate.success_rate_min, gate.throttle_rate_max, gate.confidence), (0.999, 0.001, 0.95))
-            self.assertIsNone(gate.latency_p95_ms)  # latency always from each class's own profile
+            self.assertIsNone(gate.tpot_p95_ms)  # latency components always from each class's own profile
         finally:
             Path(path).unlink()
 
@@ -115,7 +121,7 @@ class SloFileTests(unittest.TestCase):
 class ExperimentRejectsInlineConstraintsTests(unittest.TestCase):
     MINIMAL = (
         "name: minimal\n"
-        "workloads: [{name: w, input_tokens: 100, output_tokens: 16, slo_profile: tier1_interactive}]\n"
+        "workloads: [short_chat]\n"
         "sweep: {type: concurrency, values: [1]}\n"
     )
 
@@ -128,13 +134,21 @@ class ExperimentRejectsInlineConstraintsTests(unittest.TestCase):
             finally:
                 Path(path).unlink()
 
-    def test_workload_without_a_profile_is_rejected(self):
-        path = _write(self.MINIMAL.replace(", slo_profile: tier1_interactive", ""))
+    def test_inline_workload_shape_is_rejected(self):
+        path = _write(self.MINIMAL.replace("[short_chat]", "[{name: w, input_tokens: 1, output_tokens: 1}]"))
         try:
-            with self.assertRaisesRegex(ValueError, "explicit `slo_profile:`"):
+            with self.assertRaisesRegex(ValueError, "list of workload names"):
                 load_experiment(path, MICRO)
         finally:
             Path(path).unlink()
+
+    def test_catalog_workload_without_a_profile_is_rejected(self):
+        catalog = _write("workloads: {w: {input_tokens: 1, output_tokens: 1}}\n")
+        try:
+            with self.assertRaisesRegex(ValueError, "explicit slo_profile"):
+                load_workloads(catalog)
+        finally:
+            Path(catalog).unlink()
 
     def test_inline_quota_is_rejected(self):
         path = _write(self.MINIMAL + "quota: {rpm: 1}\n")

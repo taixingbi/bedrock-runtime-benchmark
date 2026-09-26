@@ -47,7 +47,8 @@ for either: a gateway's per-tenant-class concurrency config should be
 ## Core abstractions
 
 - **`WorkloadProfile`** (`workload.py`) -- a named input/output token
-  shape (e.g. "short" = 512 in / 64 out). Capacity depends heavily on
+  shape (e.g. `short_chat` = 512 in / 64 out), defined once in the
+  catalog `scripts/workloads.yaml`. Capacity depends heavily on
   this; see `token-sweep.yaml`. Input padding is calibrated per model
   from the provider's own token count (`calibration.py`).
 - **`WorkloadMix`** (`workload.py`) -- weighted classes for a mixed-
@@ -87,13 +88,14 @@ the configured SLO, which is what a gateway config actually needs.
 
 ## Models, experiments and constraints
 
-Three independent inputs, combined at run time:
+Independent inputs, combined at run time:
 
 ```
 scripts/models.yaml        WHICH models: name (= results folder), model_id, region
-experiments/*.yaml         WHAT load: workloads + sweep -- no model, no SLO, no quota
+scripts/workloads.yaml     WHICH requests: workload shapes, each bound to an SLO profile
+experiments/*.yaml         HOW to load them: workload names + sweep -- no shapes, no SLO, no quota
 constraints/
-  ├─ slo.yaml              SLO:   what quality we REQUIRE  (3 tiers by request class)
+  ├─ slo.yaml              SLO:   what quality we REQUIRE  (profiles on TTFT + TPOT)
   └─ quota.yaml            quota: what the provider ALLOWS (per account / region / model)
         ↓
 every experiment x every model -> capacity-profile.yaml (judged against the constraints)
@@ -110,10 +112,10 @@ every experiment x every model -> capacity-profile.yaml (judged against the cons
   copy can drift and every run of the same workload class is judged
   the same way. `--slo-file` / `--quota-file` point a run at other
   constraint files (e.g. a stricter SLO).
-  - `slo.yaml`: three tiers by business request class
-    (`tier1_interactive`, `tier2_standard`, `tier3_throughput`) -- not
-    by model; **no default** -- every workload in every experiment names
-    its `slo_profile:` explicitly, or the experiment fails to load.
+  - `slo.yaml`: named SLO profiles (`interactive_short`,
+    `interactive_medium`, `long_generation`) on TTFT + TPOT -- by
+    request class, not by model; **no default** -- each workload in the
+    catalog binds its profile explicitly.
   - `quota.yaml`: scoped like Bedrock quotas themselves --
     `accounts: {<account id>: {<region>: {<model name>: {rpm, tpm}}}}`.
     The account comes from the live credentials (STS; `--account`
@@ -157,10 +159,10 @@ absolute (and may not exceed `transport.max_connections`).
 
 | Experiment | Sweep | Per model |
 |---|---|---|
-| `concurrency-sweep.yaml` | concurrency 1/2/4/6/8, short workload | ~11 min |
-| `rate-capacity.yaml` | 0.25x-2.5x quota, short workload -- the canonical production-envelope run | ~13 min |
-| `mixed-capacity.yaml` | 0.25x-2.5x quota, 70% short / 30% long_long | ~13 min |
-| `token-sweep.yaml` | 4 input/output shapes x concurrency 1/2/4/6 | ~27 min |
+| `concurrency-sweep.yaml` | concurrency 1/2/4/6/8, `short_chat` | ~11 min |
+| `rate-capacity.yaml` | 0.25x-2.5x ceiling, `short_chat` -- the canonical production-envelope run | ~13 min |
+| `mixed-capacity.yaml` | 0.25x-2.5x ceiling, 60% `short_chat` / 30% `rag_answer` / 10% `long_generation` | ~13 min |
+| `token-sweep.yaml` | each catalog workload x concurrency 1/2/4/6 | ~20 min |
 
 Keep `constraints/quota.yaml` current with `scripts/fetch_quota.py --all` (see
 "Quota-aware experiment design" below) -- a stale quota shifts every
@@ -219,7 +221,7 @@ constraints:                                       # what every number was judge
   quota: {account: "646821141010", region: us-east-1, rpm: 400, tpm: 8000000, output_burndown: 1.0}  # constraints/quota.yaml
   slo:                                                                       # constraints/slo.yaml -- profiles this run's workloads use
     profiles:
-      tier1_interactive: {ttft_p95_ms: 800, latency_p95_ms: 3000, success_rate_min: 0.995, throttle_rate_max: 0.001, confidence: null}
+      interactive_short: {ttft_p95_ms: 1000, tpot_p95_ms: 50, latency_p95_ms: null, success_rate_min: 0.99, throttle_rate_max: 0.001, confidence: null}
 measurement:
   warmup_s: 10
   window_s: 90
@@ -230,8 +232,8 @@ measurement:
   min_requests_to_resolve_throttle_slo: 2703
 sweep: {type: rate, quota_fractions: [0.25, ...], relative_to: provider_ceiling}
 workload_classes:
-  short:
-    slo_profile: tier1_interactive
+  short_chat:
+    slo_profile: interactive_short
     observed: {input_tokens_p50: 505, output_tokens_p50: 61}
     workload_validation: {input: {...}, output: {...}, valid: true}
     provider_constraints: {tokens_per_request: 576.0, ceiling_rps: 6.6667, binding_constraint: rpm, ...}
@@ -352,7 +354,7 @@ artifact was ever used to actually inform a gateway config:
     after a fail: no saturation claimed; `unstable_region` and
     `confirmed_fail_from` instead). Only the leading run of passes is
     eligible for the recommendation.
-15. **One SLO for every workload.** See "SLO tiers".
+15. **One SLO for every workload.** See "SLO profiles".
 16. **Input padding trusted 4 chars ≈ 1 token.** Real runs measured
     ~46% of the requested input. Padding is now calibrated per model
     from the provider's own count -- see "Input-token calibration".
@@ -360,9 +362,10 @@ artifact was ever used to actually inform a gateway config:
     `slo:` block lived in 4 experiments and quotas in the models list.
     Both now live once under `constraints/` (schema v5 groups them in
     the artifact's `constraints:` block); loaders reject copies. SLO
-    tiers are always named explicitly per workload (no implicit
-    default) and defined by request class, not model; quotas are scoped
-    by account and region, matching how Bedrock actually applies them.
+    profiles are bound explicitly per workload in the workload catalog
+    (no implicit default) and defined by request class, not model;
+    quotas are scoped by account and region, matching how Bedrock
+    actually applies them.
 
 ## Measurement policy
 
@@ -491,52 +494,59 @@ emitted 110 tokens) -- `run.py` warns and `gateway_diff.py` raises
 (input, default 10) and `output_validation_tolerance_pct` (default 25 --
 models legitimately stop a little early).
 
-## SLO tiers
+## Workload catalog
 
-SLOs live in `constraints/slo.yaml` as **three tiers by business
-request class -- not by model**. The same model serves every tier:
-
-```
-same model
-├── short chat       -> tier1_interactive
-├── RAG answer       -> tier2_standard
-└── long generation  -> tier3_throughput
-```
-
-never "nova-pro = tier 1, nova-micro = tier 3".
-
-| Tier | Typical workload | TTFT p95 | E2E p95 | Success | Throttle | Focus |
-|---|---|---|---|---|---|---|
-| `tier1_interactive` | chatbot, agent UI, user waiting | 800 ms | 3 s | 99.5% | 0.1% | TTFT first, strictest limits |
-| `tier2_standard` | RAG, internal copilot, ordinary API | 1.5 s | 6 s | 99% | 0.5% | latency / capacity balance |
-| `tier3_throughput` | long generation, summarization, offline jobs | 3 s | 15 s | 99% | 1% | throughput first, latency relaxed |
-
-There is **no default**: every workload -- including each class of a
-mixed workload -- names its tier:
+Every request shape is defined once in `scripts/workloads.yaml` and
+bound there -- explicitly, no default -- to an SLO profile.
+Experiments only list workload names; a shape or SLO inside an
+experiment is rejected.
 
 ```yaml
+# scripts/workloads.yaml
 workloads:
-  - {name: short_short,             input_tokens: 512,  output_tokens: 64,  slo_profile: tier1_interactive}
-  - {name: long_input_short_output, input_tokens: 4096, output_tokens: 64,  slo_profile: tier2_standard}
-  - {name: long_long,               input_tokens: 4096, output_tokens: 512, slo_profile: tier3_throughput}
+  short_chat:      {input_tokens: 512,  output_tokens: 64,   slo_profile: interactive_short}
+  rag_answer:      {input_tokens: 4096, output_tokens: 256,  slo_profile: interactive_medium}
+  long_generation: {input_tokens: 4096, output_tokens: 1024, slo_profile: long_generation}
+
+# experiments/token-sweep.yaml
+workloads: [short_chat, rag_answer, long_generation]
 ```
 
-Each tier therefore yields its own envelope per model -- strict tier 1
--> lower safe rps/concurrency, relaxed tier 3 -> higher -- which maps
-directly onto a gateway's `request_class -> concurrency / rate limit`.
-Isolated workloads are gated on their own tier. In a mix, every
-request counts toward goodput against its own class's tier, every class
-is gated on its own tier, and the blend on the STRICTEST success/throttle
-gate among its classes' tiers (latency always per class).
+## SLO profiles
 
-Looser throttle limits also need fewer samples to resolve statistically:
-~2,700 requests per point for tier 1's 0.1%, ~540 for tier 2's 0.5%,
-~270 for tier 3's 1% (95% confidence).
+SLOs live in `constraints/slo.yaml`, separate from workloads, as named
+profiles by request class -- not by model; the same model serves every
+profile and gets one envelope per profile, which maps onto a gateway's
+`request_class -> concurrency / rate limit`.
+
+Profiles gate on the two latency components instead of end-to-end
+latency, so one profile stays meaningful across output lengths:
+
+- **TTFT** -- time to first token (streaming).
+- **TPOT** -- time per output token after the first:
+  `(latency - TTFT) / (output_tokens - 1)`, per streamed request with
+  >= 2 output tokens. A configured TPOT SLO with no TPOT measured
+  fails closed, like TTFT.
+
+| Profile | Workload | TTFT p95 | TPOT p95 | Success | Throttle |
+|---|---|---|---|---|---|
+| `interactive_short` | `short_chat` | 1000 ms | 50 ms | 99% | 0.1% |
+| `interactive_medium` | `rag_answer` | 1200 ms | 60 ms | 99% | 0.1% |
+| `long_generation` | `long_generation` | 1500 ms | 70 ms | 99% | 0.5% |
+
+`latency_p95_ms` is still available as an optional end-to-end gate.
+Isolated workloads are gated on their own profile. In a mix, every
+request counts toward goodput against its own class's profile, every
+class is gated on its own profile, and the blend on the STRICTEST
+success/throttle gate among its classes' profiles (latency components
+always per class). Resolving a throttle limit statistically needs
+~2,700 requests per point at 0.1%, ~540 at 0.5% (95% confidence).
 
 ## Mixed workloads
 
 `experiments/mixed-capacity.yaml` sweeps ONE offered rate where each
-arrival draws its class by weight (70% short / 30% long_long), so
+arrival draws its class by weight (60% short_chat / 30% rag_answer /
+10% long_generation), so
 classes genuinely overlap in flight. A point passes only if the SLO
 holds for the blend **and every class** -- a blended p95 can look fine
 while the long class alone blows its latency SLO. The artifact gains:
@@ -544,10 +554,10 @@ while the long class alone blows its latency SLO. The artifact gains:
 ```yaml
 mixed_workloads:
   short70_long30:
-    shares: {short: 0.7, long_long: 0.3}
+    shares: {short_chat: 0.6, rag_answer: 0.3, long_generation: 0.1}
     rate: {max_safe_offered_rps: ..., slo_goodput_rps: ..., production_offered_rps: ...}
     evidence: {...}
-    classes_at_recommended_point: {short: {...}, long_long: {...}}
+    classes_at_recommended_point: {short_chat: {...}, rag_answer: {...}, long_generation: {...}}
 ```
 
 It's valid for that mix's shares only -- a different traffic mix

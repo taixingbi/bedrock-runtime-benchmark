@@ -26,7 +26,12 @@ from __future__ import annotations
 
 import random
 from dataclasses import dataclass, field
-from typing import List, Optional, Tuple
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+
+import yaml
+
+DEFAULT_WORKLOADS_FILE = "scripts/workloads.yaml"
 
 _CHARS_PER_TOKEN_ESTIMATE = 4
 _FILLER_WORD = "benchmark "  # 10 chars incl. space -- deliberately plain, no semantic content to bias the model
@@ -93,3 +98,25 @@ class WorkloadMix:
         profiles = [p for p, _ in self.entries]
         weights = [w for _, w in self.entries]
         return rng.choices(profiles, weights=weights, k=1)[0]
+
+
+def load_workloads(path: str = DEFAULT_WORKLOADS_FILE) -> Dict[str, WorkloadProfile]:
+    """The workload catalog: name -> WorkloadProfile. Every workload
+    binds an slo_profile explicitly; whether that profile exists is
+    checked against the SLO file when an experiment loads."""
+    raw = yaml.safe_load(Path(path).read_text()) or {}
+    entries = raw.get("workloads")
+    if not isinstance(entries, dict) or not entries:
+        raise ValueError(f"{path}: expected `workloads: {{<name>: {{input_tokens, output_tokens, slo_profile}}}}`")
+    catalog = {}
+    for name, cfg in entries.items():
+        cfg = dict(cfg or {})
+        if "name" in cfg:
+            raise ValueError(f"{path}: {name}: the key is the name -- drop `name:`")
+        workload = WorkloadProfile(name=name, **cfg)
+        if not workload.slo_profile:
+            raise ValueError(f"{path}: workload {name!r} needs an explicit slo_profile")
+        if workload.input_tokens <= 0 or workload.output_tokens <= 0:
+            raise ValueError(f"{path}: workload {name!r} token counts must be > 0")
+        catalog[name] = workload
+    return catalog

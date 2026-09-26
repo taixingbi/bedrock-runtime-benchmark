@@ -74,6 +74,16 @@ def min_samples_to_resolve_rate(max_rate: float, *, confidence: float = DEFAULT_
     return math.ceil(z2 * (1 - max_rate) / max_rate)
 
 
+def tpot_ms(r: RequestResult) -> Optional[float]:
+    """Time per output token for one request: the decode time after the
+    first token, spread over the remaining tokens. None unless it's a
+    successful streamed request with >= 2 output tokens (TTFT unknown or
+    nothing decoded after the first token -> no meaningful TPOT)."""
+    if not r.success or r.ttft_ms is None or r.latency_ms is None or not r.output_tokens or r.output_tokens < 2:
+        return None
+    return (r.latency_ms - r.ttft_ms) / (r.output_tokens - 1)
+
+
 def percentile(values: List[float], pct: float) -> float:
     if not values:
         return 0.0
@@ -99,6 +109,9 @@ class RunMetrics:
     ttft_p50_ms: Optional[float] = None
     ttft_p95_ms: Optional[float] = None
     ttft_p99_ms: Optional[float] = None
+    tpot_p50_ms: Optional[float] = None
+    tpot_p95_ms: Optional[float] = None
+    tpot_p99_ms: Optional[float] = None
     # None until an SLO is actually configured -- see compute_run_metrics.
     slo_goodput_rps: Optional[float] = None
     # slo_goodput_rps / offered_rps -- "what fraction of what you asked
@@ -120,7 +133,8 @@ def compute_run_metrics(
     windows: Optional[Sequence[MeasurementWindow]] = None,
     ttft_slo_ms: Optional[float] = None, latency_slo_ms: Optional[float] = None,
     offered_rps: Optional[float] = None, confidence: float = DEFAULT_CONFIDENCE,
-    slo_by_workload: Optional[Dict[str, Tuple[Optional[float], Optional[float]]]] = None,
+    slo_by_workload: Optional[Dict[str, Tuple[Optional[float], ...]]] = None,
+    tpot_slo_ms: Optional[float] = None,
 ) -> RunMetrics:
     """With `windows` (the normal path -- one per repetition), two
     different populations are used, each for the question it answers
@@ -136,7 +150,7 @@ def compute_run_metrics(
       duration_s) overstates throughput by up to one full concurrency
       level's worth of requests per run.
 
-    `slo_by_workload` ({workload: (ttft_slo_ms, latency_slo_ms)}) judges
+    `slo_by_workload` ({workload: (ttft_slo_ms, latency_slo_ms[, tpot_slo_ms])}) judges
     each request against its own class's SLO -- for a mixed workload,
     where a long generation and a short reply have different latency
     budgets. Requests whose class isn't listed use the scalar SLOs.
@@ -166,18 +180,26 @@ def compute_run_metrics(
     n_throttled = sum(1 for r in population if r.throttled)
     latencies = [r.latency_ms for r in population if r.latency_ms is not None]
     ttfts = [r.ttft_ms for r in population if r.ttft_ms is not None]
+    tpots = [t for t in (tpot_ms(r) for r in population) if t is not None]
     output_tokens = [r.output_tokens for r in completed if r.output_tokens is not None]
 
     slo_goodput_rps = None
     slo_efficiency = None
-    has_class_slo = bool(slo_by_workload) and any(
-        t is not None or lat is not None for t, lat in slo_by_workload.values()
-    )
-    if ttft_slo_ms is not None or latency_slo_ms is not None or has_class_slo:
+    default_slo = (ttft_slo_ms, latency_slo_ms, tpot_slo_ms)
+    class_slo = {k: (tuple(v) + (None, None, None))[:3] for k, v in (slo_by_workload or {}).items()}
+    has_class_slo = any(any(x is not None for x in v) for v in class_slo.values())
+    if any(x is not None for x in default_slo) or has_class_slo:
         def meets_slo(r: RequestResult) -> bool:
             if not r.success:
                 return False
-            ttft_slo, latency_slo = (slo_by_workload or {}).get(r.tags.get("workload"), (ttft_slo_ms, latency_slo_ms))
+            ttft_slo, latency_slo, tpot_slo = class_slo.get(r.tags.get("workload"), default_slo)
+            # Same fail-closed rule as TTFT below: a configured TPOT SLO
+            # with no TPOT measured (non-streaming, < 2 output tokens) is
+            # a missing measurement, not a pass.
+            if tpot_slo is not None:
+                t = tpot_ms(r)
+                if t is None or t > tpot_slo:
+                    return False
             if latency_slo is not None and (r.latency_ms is None or r.latency_ms > latency_slo):
                 return False
             # A TTFT SLO is configured but this result has no TTFT at
@@ -209,6 +231,9 @@ def compute_run_metrics(
         ttft_p50_ms=round(percentile(ttfts, 50), 2) if ttfts else None,
         ttft_p95_ms=round(percentile(ttfts, 95), 2) if ttfts else None,
         ttft_p99_ms=round(percentile(ttfts, 99), 2) if ttfts else None,
+        tpot_p50_ms=round(percentile(tpots, 50), 3) if tpots else None,
+        tpot_p95_ms=round(percentile(tpots, 95), 3) if tpots else None,
+        tpot_p99_ms=round(percentile(tpots, 99), 3) if tpots else None,
         slo_goodput_rps=slo_goodput_rps,
         slo_efficiency=slo_efficiency,
         n_throttled=n_throttled,

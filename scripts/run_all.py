@@ -30,12 +30,15 @@ import yaml  # noqa: E402
 from bedrock_benchmark.batch import format_plan, format_summary, plan, run_batch  # noqa: E402
 from bedrock_benchmark.constraints import DEFAULT_QUOTA_FILE, DEFAULT_SLO_FILE, current_account_id  # noqa: E402
 from bedrock_benchmark.models import DEFAULT_MODELS_FILE, load_models  # noqa: E402
+from bedrock_benchmark.workload import DEFAULT_WORKLOADS_FILE  # noqa: E402
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("experiments", nargs="*", help="experiment YAMLs (default: experiments/*.yaml)")
     parser.add_argument("--models-file", default=DEFAULT_MODELS_FILE, help=f"default: {DEFAULT_MODELS_FILE}")
+    parser.add_argument("--workloads-file", default=DEFAULT_WORKLOADS_FILE,
+                        help=f"workload catalog (default: {DEFAULT_WORKLOADS_FILE})")
     parser.add_argument("--slo-file", default=DEFAULT_SLO_FILE, help=f"SLO profiles (default: {DEFAULT_SLO_FILE})")
     parser.add_argument("--quota-file", default=DEFAULT_QUOTA_FILE, help=f"per-model quotas (default: {DEFAULT_QUOTA_FILE})")
     parser.add_argument("--account", help="AWS account whose quotas apply (default: the live account from STS)")
@@ -55,7 +58,7 @@ def main() -> int:
         return 1
 
     print(f"quota account: {models[0].account} ({args.quota_file})")
-    print(format_plan(plan(paths, models, slo_file=args.slo_file)))
+    print(format_plan(plan(paths, models, slo_file=args.slo_file, workloads_file=args.workloads_file)))
     if args.dry_run:
         return 0
 
@@ -65,7 +68,7 @@ def main() -> int:
 
     results_dir = Path(args.results_dir or f"results/run-all-{time.strftime('%Y%m%d-%H%M%S')}")
     batch = run_batch(paths, models, results_dir=results_dir, fail_fast=args.fail_fast, gateway_config=gateway_config,
-                      slo_file=args.slo_file)
+                      slo_file=args.slo_file, workloads_file=args.workloads_file)
 
     print(f"\n{'=' * 78}\nSUMMARY\n{'=' * 78}")
     print(format_summary(batch))

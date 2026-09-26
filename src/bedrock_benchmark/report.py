@@ -136,6 +136,9 @@ def _evidence(point) -> dict:
         "success_rate": m.success_rate,
         "success_rate_lower": m.success_rate_lower,
         "bound_confidence": m.bound_confidence,
+        "ttft_p95_ms": m.ttft_p95_ms,
+        "tpot_p95_ms": m.tpot_p95_ms,
+        "latency_p95_ms": m.latency_p95_ms,
         "peak_outstanding": point.peak_outstanding,
     }
     if len(point.repetitions) > 1:
@@ -176,6 +179,7 @@ def _workload_validation(workload: WorkloadProfile, results: List[RequestResult]
 def _slo_dict(slo) -> dict:
     return {
         "ttft_p95_ms": slo.ttft_p95_ms,
+        "tpot_p95_ms": slo.tpot_p95_ms,
         "latency_p95_ms": slo.latency_p95_ms,
         "success_rate_min": slo.success_rate_min,
         "throttle_rate_max": slo.throttle_rate_max,
@@ -244,7 +248,7 @@ def build_capacity_profile(report: ExperimentReport) -> dict:
             entry["classes_at_recommended_point"] = {
                 name: {
                     "n": m.n, "slo_goodput_rps": m.slo_goodput_rps, "throttle_rate": m.throttle_rate,
-                    "ttft_p95_ms": m.ttft_p95_ms, "latency_p95_ms": m.latency_p95_ms,
+                    "ttft_p95_ms": m.ttft_p95_ms, "tpot_p95_ms": m.tpot_p95_ms, "latency_p95_ms": m.latency_p95_ms,
                 }
                 for name, m in rec.point.class_metrics.items()
             }

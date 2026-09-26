@@ -71,7 +71,8 @@ def _slo_kwargs(slo, *, latency: bool = True) -> dict:
     kwargs = dict(success_rate_min=slo.success_rate_min, throttle_rate_max=slo.throttle_rate_max,
                   gate_on_bounds=slo.confidence is not None)
     if latency:
-        kwargs.update(ttft_p95_slo_ms=slo.ttft_p95_ms, latency_p95_slo_ms=slo.latency_p95_ms)
+        kwargs.update(ttft_p95_slo_ms=slo.ttft_p95_ms, latency_p95_slo_ms=slo.latency_p95_ms,
+                      tpot_p95_slo_ms=slo.tpot_p95_ms)
     return kwargs
 
 
@@ -117,12 +118,15 @@ async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress:
         if is_mix:
             class_slos = {n: spec.slo_for(n) for n in shares}
             blend_slo = spec.slo
-            metric_slo = dict(slo_by_workload={n: (c.ttft_p95_ms, c.latency_p95_ms) for n, c in class_slos.items()})
+            metric_slo = dict(slo_by_workload={
+                n: (c.ttft_p95_ms, c.latency_p95_ms, c.tpot_p95_ms) for n, c in class_slos.items()
+            })
             gate_kwargs = _slo_kwargs(blend_slo, latency=False)
             class_gate = {n: _slo_kwargs(c) for n, c in class_slos.items()}
         else:
             blend_slo = spec.slo_for(subject.name)
-            metric_slo = dict(ttft_slo_ms=blend_slo.ttft_p95_ms, latency_slo_ms=blend_slo.latency_p95_ms)
+            metric_slo = dict(ttft_slo_ms=blend_slo.ttft_p95_ms, latency_slo_ms=blend_slo.latency_p95_ms,
+                              tpot_slo_ms=blend_slo.tpot_p95_ms)
             gate_kwargs = _slo_kwargs(blend_slo)
             class_gate = None
         confidence = blend_slo.confidence or DEFAULT_CONFIDENCE
@@ -180,7 +184,7 @@ async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress:
                     c = class_slos[class_name]
                     class_metrics[class_name] = compute_run_metrics(
                         own, windows=windows, offered_rps=None if offered_rps is None else offered_rps * share,
-                        ttft_slo_ms=c.ttft_p95_ms, latency_slo_ms=c.latency_p95_ms,
+                        ttft_slo_ms=c.ttft_p95_ms, latency_slo_ms=c.latency_p95_ms, tpot_slo_ms=c.tpot_p95_ms,
                         confidence=c.confidence or DEFAULT_CONFIDENCE,
                     )
             point = SweepPoint(

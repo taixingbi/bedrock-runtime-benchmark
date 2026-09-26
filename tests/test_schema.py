@@ -11,7 +11,7 @@ NO_QUOTA = ModelConfig(name="mystery", model_id="x.y-v1:0")
 
 MINIMAL = (
     "name: minimal\n"
-    "workloads: [{name: w, input_tokens: 100, output_tokens: 16, slo_profile: tier1_interactive}]\n"
+    "workloads: [short_chat]\n"
     "sweep: {type: concurrency, values: [1]}\n"
 )
 
@@ -44,12 +44,13 @@ class ShippedExperimentTests(unittest.TestCase):
                 self.assertFalse(any(w in spec.name for w in model_words), spec.name)
                 self.assertFalse(any(w in path.stem for w in model_words), path.stem)
 
-    def test_token_sweep_has_four_workload_shapes(self):
-        self.assertEqual(len(load_experiment("experiments/token-sweep.yaml", MICRO).workloads), 4)
+    def test_token_sweep_covers_every_catalog_workload(self):
+        names = [w.name for w in load_experiment("experiments/token-sweep.yaml", MICRO).workloads]
+        self.assertEqual(names, ["short_chat", "rag_answer", "long_generation"])
 
     def test_mixed_capacity_defines_a_valid_mix(self):
         spec = load_experiment("experiments/mixed-capacity.yaml", MICRO)
-        self.assertEqual(spec.mix.weights, {"short": 0.7, "long_long": 0.3})
+        self.assertEqual(spec.mix.weights, {"short_chat": 0.6, "rag_answer": 0.3, "long_generation": 0.1})
 
 
 class ModelBindingTests(unittest.TestCase):
@@ -63,8 +64,8 @@ class ModelBindingTests(unittest.TestCase):
         pro = load_experiment("experiments/rate-capacity.yaml", PRO)
         self.assertEqual(micro.sweep.quota_fractions, pro.sweep.quota_fractions)
         i = micro.sweep.quota_fractions.index(1.0)
-        self.assertAlmostEqual(micro.sweep_values("short")[i], 400 / 60, places=3)  # 1.0x ceiling (RPM-bound)
-        self.assertAlmostEqual(pro.sweep_values("short")[i], 50 / 60, places=3)
+        self.assertAlmostEqual(micro.sweep_values("short_chat")[i], 400 / 60, places=3)  # 1.0x ceiling (RPM-bound)
+        self.assertAlmostEqual(pro.sweep_values("short_chat")[i], 50 / 60, places=3)
 
     def test_quota_relative_sweep_without_a_quota_fails_clearly(self):
         with self.assertRaisesRegex(ValueError, "quota.rpm"):
@@ -80,12 +81,11 @@ class ModelBindingTests(unittest.TestCase):
 
 
 class SloProfileTests(unittest.TestCase):
-    def test_workloads_resolve_their_own_slo_profile(self):
+    def test_workloads_resolve_the_slo_profile_the_catalog_binds(self):
         spec = load_experiment("experiments/token-sweep.yaml", MICRO)
-        self.assertEqual(spec.slo_for("short_short").latency_p95_ms, 3000)                # tier 1
-        self.assertEqual(spec.slo_for("long_input_short_output").latency_p95_ms, 6000)    # tier 2
-        self.assertEqual(spec.slo_for("short_output_heavy").latency_p95_ms, 15000)        # tier 3
-        self.assertEqual(spec.slo_for("long_long").latency_p95_ms, 15000)                 # tier 3
+        self.assertEqual(spec.slo_for("short_chat").tpot_p95_ms, 50)        # interactive_short
+        self.assertEqual(spec.slo_for("rag_answer").tpot_p95_ms, 60)        # interactive_medium
+        self.assertEqual(spec.slo_for("long_generation").tpot_p95_ms, 70)   # long_generation
 
 
 class ValidationTests(unittest.TestCase):
@@ -100,13 +100,15 @@ class ValidationTests(unittest.TestCase):
             MINIMAL + "repetitions: 0\n",
             MINIMAL + "slo: {confidence: 1.5}\n",
             MINIMAL + "mix: {name: x, weights: {nope: 1}}\n",
-            MINIMAL + "mix: {name: x, weights: {w: 0}}\n",
+            MINIMAL + "mix: {name: x, weights: {short_chat: 0}}\n",
             MINIMAL.replace("values: [1]", "values: [1], quota_fractions: [1.0]"),
             MINIMAL.replace("values: [1]", "quota_fractions: [1.0]"),  # concurrency can't be quota-relative
             MINIMAL.replace("{type: concurrency, values: [1]}", "{type: rate}"),
             MINIMAL.replace("values: [1]", "values: [1, 128]"),  # > transport.max_connections (64)
-            MINIMAL.replace("slo_profile: tier1_interactive", "slo_profile: nope"),
-            MINIMAL.replace(", slo_profile: tier1_interactive", ""),  # no explicit profile
+            MINIMAL.replace("[short_chat]", "[nope]"),                          # not in the catalog
+            MINIMAL.replace("[short_chat]", "[short_chat, short_chat]"),        # listed twice
+            MINIMAL.replace("[short_chat]", "[{name: w, input_tokens: 1, output_tokens: 1}]"),  # inline shape
+            MINIMAL + "mix: {name: x, weights: {rag_answer: 1}}\n",            # mixes an unlisted workload
             MINIMAL + "transport: {max_connections: 64, executor_workers: 8}\n",
         ]
         for text in bad:

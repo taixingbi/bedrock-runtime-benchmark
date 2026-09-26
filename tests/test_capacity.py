@@ -46,6 +46,11 @@ class MeetsSloTests(unittest.TestCase):
         violation."""
         self.assertTrue(meets_slo(_metrics(ttft_p95_ms=None)))
 
+    def test_tpot_over_slo_fails_and_missing_tpot_fails_closed(self):
+        self.assertFalse(meets_slo(_metrics(tpot_p95_ms=80.0), tpot_p95_slo_ms=50.0))
+        self.assertTrue(meets_slo(_metrics(tpot_p95_ms=40.0), tpot_p95_slo_ms=50.0))
+        self.assertFalse(meets_slo(_metrics(tpot_p95_ms=None), tpot_p95_slo_ms=50.0))
+
     def test_latency_over_slo_fails(self):
         self.assertFalse(meets_slo(_metrics(latency_p95_ms=5000.0), latency_p95_slo_ms=3000.0))
 

@@ -47,6 +47,7 @@ def meets_slo(
     metrics: RunMetrics, *,
     success_rate_min: float = 0.99, throttle_rate_max: float = 0.001,
     ttft_p95_slo_ms: Optional[float] = None, latency_p95_slo_ms: Optional[float] = None,
+    tpot_p95_slo_ms: Optional[float] = None,
     gate_on_bounds: bool = False,
 ) -> bool:
     """gate_on_bounds=True gates the two rate SLOs on their confidence
@@ -74,6 +75,8 @@ def meets_slo(
     # as metrics.py's per-request meets_slo, and for the same reason:
     # the old form silently skipped the check when ttft_p95_ms was None.
     if ttft_p95_slo_ms is not None and (metrics.ttft_p95_ms is None or metrics.ttft_p95_ms > ttft_p95_slo_ms):
+        return False
+    if tpot_p95_slo_ms is not None and (metrics.tpot_p95_ms is None or metrics.tpot_p95_ms > tpot_p95_slo_ms):
         return False
     if latency_p95_slo_ms is not None and metrics.latency_p95_ms > latency_p95_slo_ms:
         return False
