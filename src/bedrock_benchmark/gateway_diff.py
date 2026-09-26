@@ -143,7 +143,10 @@ def diff(profiles: List[dict], gateway: dict) -> GatewayDiff:
 
         if rates:
             basis, safe_rps = min(rates, key=lambda x: x[1])
-            safe_rpm = math.floor(safe_rps * 60)
+            # Round before flooring: rps values are stored to 4 decimals, so
+            # 1.0x of a 400 RPM quota comes back as 6.6666 rps -> 399.996
+            # rpm, and a bare floor would propose a spurious 400 -> 399 cut.
+            safe_rpm = math.floor(round(safe_rps * 60, 1))
             current = (gw_models.get(model_id) or {}).get("rpm_limit")
             if current is None:
                 out.findings.append(Finding(

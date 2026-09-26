@@ -97,6 +97,13 @@ class GatewayDiffTests(unittest.TestCase):
         self.assertIn("workload_shape_invalid", _kinds(result, "warn"))
         self.assertIn("throttle_slo_unresolved", _kinds(result, "info"))
 
+    def test_four_decimal_rps_rounding_does_not_propose_a_one_rpm_cut(self):
+        """8.3333 rps x 0.8 headroom = 6.66664 rps = 399.998 rpm -- that's
+        the 400 RPM quota, not a reason to propose 399."""
+        profile = _profile(workload_classes={"short": {"rate": {"production_offered_rps": 6.66664}}})
+        result = diff([profile], {"models": {MODEL: {"rpm_limit": 400}}})
+        self.assertNotIn("model_rpm_above_envelope", _kinds(result))
+
     def test_rejects_pre_v3_profiles(self):
         with self.assertRaises(ValueError):
             diff([_profile(schema_version=2)], {})
