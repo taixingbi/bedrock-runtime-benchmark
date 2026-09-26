@@ -21,6 +21,14 @@ def _metrics(**overrides) -> RunMetrics:
     return RunMetrics(**defaults)
 
 
+def _rec(**kwargs) -> Recommendation:
+    """A recommendation whose observed point is also statistically
+    confirmed (PASS) -- the common case in these envelope tests."""
+    rec = Recommendation(**kwargs)
+    rec.confirmed_point = rec.confirmed_point or rec.point
+    return rec
+
+
 def _result(**overrides) -> RequestResult:
     defaults = dict(
         request_id="r", scheduled_at=0.0, started_at=0.0, completed_at=0.1,
@@ -43,15 +51,15 @@ class BuildCapacityProfileTests(unittest.TestCase):
         defaults.update(overrides)
         return ExperimentSpec(**defaults)
 
-    def test_schema_version_is_6(self):
+    def test_schema_version_is_7(self):
         spec = self._spec()
         report = ExperimentReport(spec=spec, profiles=[ProfileReport(workload_name="short", recommendation=None)])
         profile = build_capacity_profile(report)
-        self.assertEqual(profile["schema_version"], 6)
+        self.assertEqual(profile["schema_version"], 7)
 
     def test_concurrency_sweep_writes_a_concurrency_block_not_rate(self):
         spec = self._spec(sweep_type="concurrency")
-        rec = Recommendation(
+        rec = _rec(
             point=SweepPoint(concurrency=6, rps=None, metrics=_metrics(slo_goodput_rps=5.1)),
             saturation_point=SweepPoint(concurrency=8, rps=None, metrics=_metrics(throttle_rate=0.07)),
         )
@@ -64,7 +72,8 @@ class BuildCapacityProfileTests(unittest.TestCase):
 
         self.assertIn("concurrency", entry)
         self.assertNotIn("rate", entry)
-        self.assertEqual(entry["concurrency"]["measured_best"], 6)
+        self.assertEqual(entry["concurrency"]["observed_nonfailing"], 6)
+        self.assertEqual(entry["concurrency"]["statistically_confirmed"], 6)
         self.assertEqual(entry["concurrency"]["saturation"], 8)
         # 6 * (1 - 0.20) = 4.8 -> floored to 4
         self.assertEqual(entry["concurrency"]["production_max"], 4)
@@ -74,7 +83,7 @@ class BuildCapacityProfileTests(unittest.TestCase):
         to be written into `saturation_concurrency`, mislabeling 7 RPS
         as if it were a concurrency value."""
         spec = self._spec(sweep_type="rate", sweep_values=[1, 2, 3, 4, 5, 6, 7, 8])
-        rec = Recommendation(
+        rec = _rec(
             point=SweepPoint(concurrency=None, rps=6.0, metrics=_metrics(slo_goodput_rps=5.8)),
             saturation_point=SweepPoint(concurrency=None, rps=7.0, metrics=_metrics(throttle_rate=0.05)),
         )
@@ -96,7 +105,7 @@ class BuildCapacityProfileTests(unittest.TestCase):
         that delivered 5.8 rps within SLO must produce a production
         limit of 6.0 * 0.8 = 4.8 offered rps, not 5.8 * 0.8 = 4.64."""
         spec = self._spec(sweep_type="rate", sweep_values=[5, 6, 7])
-        rec = Recommendation(
+        rec = _rec(
             point=SweepPoint(concurrency=None, rps=6.0, metrics=_metrics(slo_goodput_rps=5.8)),
             saturation_point=SweepPoint(concurrency=None, rps=7.0, metrics=_metrics(throttle_rate=0.05)),
         )
@@ -104,13 +113,52 @@ class BuildCapacityProfileTests(unittest.TestCase):
 
         rate = build_capacity_profile(report)["workload_classes"]["short"]["rate"]
 
-        self.assertEqual(rate["measured_safe_offered_rps"], 6.0)
-        self.assertEqual(rate["slo_goodput_rps"], 5.8)
+        self.assertEqual(rate["observed_nonfailing_offered_rps"], 6.0)
+        self.assertEqual(rate["statistically_confirmed_offered_rps"], 6.0)
+        self.assertEqual(rate["confirmed_slo_goodput_rps"], 5.8)
         # Not floored to an int (unlike concurrency) -- fractional RPS is meaningful.
         self.assertAlmostEqual(rate["production_sustained_rps"], 4.8, places=4)
         self.assertEqual(rate["production_binding"], "measurement")  # no provider ceiling known here
         self.assertNotIn("measured_sustainable_rps", rate)
         self.assertNotIn("production_rps", rate)
+
+    def test_production_is_derived_only_from_the_statistically_confirmed_point(self):
+        """Observed non-failing at 5.0 rps is INCONCLUSIVE (too few
+        requests to prove a 0.1% throttle SLO); 3.33 rps is PASS. The
+        production value must come from 3.33, not 5.0."""
+        from bedrock_benchmark.analysis.capacity import Check, Verdict
+        spec = self._spec(sweep_type="rate", sweep_values=[1.67, 3.33, 5.0, 6.67])
+        observed = SweepPoint(concurrency=None, rps=5.0, metrics=_metrics(slo_goodput_rps=4.9))
+        confirmed = SweepPoint(concurrency=None, rps=3.33, metrics=_metrics(slo_goodput_rps=3.3))
+        rec = Recommendation(
+            point=observed, saturation_point=None, confirmed_point=confirmed,
+            verdict=Verdict("INCONCLUSIVE", [Check("throttle_rate", "INCONCLUSIVE", n=450, required_n=2703,
+                                                   reason="insufficient_samples")]),
+        )
+        report = ExperimentReport(spec=spec, profiles=[ProfileReport(workload_name="short", recommendation=rec)])
+
+        entry = build_capacity_profile(report)["workload_classes"]["short"]
+        rate = entry["rate"]
+
+        self.assertEqual((rate["observed_nonfailing_offered_rps"], rate["observed_verdict"]), (5.0, "INCONCLUSIVE"))
+        self.assertEqual(rate["observed_inconclusive_checks"][0]["required_n"], 2703)
+        self.assertEqual(rate["statistically_confirmed_offered_rps"], 3.33)
+        self.assertAlmostEqual(rate["production_sustained_rps"], 3.33 * 0.8, places=4)  # from 3.33, not 5.0
+        self.assertIn("confirmed_evidence", entry)
+
+    def test_nothing_confirmed_means_no_production_value(self):
+        from bedrock_benchmark.analysis.capacity import Verdict
+        spec = self._spec(sweep_type="rate", sweep_values=[1.67, 3.33])
+        rec = Recommendation(point=SweepPoint(concurrency=None, rps=3.33, metrics=_metrics()), saturation_point=None,
+                             verdict=Verdict("INCONCLUSIVE"))
+        report = ExperimentReport(spec=spec, profiles=[ProfileReport(workload_name="short", recommendation=rec)])
+
+        rate = build_capacity_profile(report)["workload_classes"]["short"]["rate"]
+
+        self.assertIsNone(rate["statistically_confirmed_offered_rps"])
+        self.assertIsNone(rate["production_sustained_rps"])
+        self.assertEqual(rate["production_binding"], "unconfirmed")
+        self.assertIn("no statistically confirmed point", rate["production_note"])
 
     def test_production_rps_is_capped_by_the_provider_ceiling(self):
         """A short window passed at 1.8x quota (burst allowance): 20%
@@ -119,7 +167,7 @@ class BuildCapacityProfileTests(unittest.TestCase):
         from bedrock_benchmark.ceiling import ProviderCeiling
         spec = self._spec(sweep_type="rate", sweep_values=[6, 9, 12])
         spec.provider_ceilings = {"short": ProviderCeiling(tokens_per_request=576, rpm_rps=5.0, tpm_rps=None)}
-        rec = Recommendation(
+        rec = _rec(
             point=SweepPoint(concurrency=None, rps=9.0, metrics=_metrics(slo_goodput_rps=8.9)),
             saturation_point=SweepPoint(concurrency=None, rps=12.0, metrics=_metrics(throttle_rate=0.3)),
             burst_point=SweepPoint(concurrency=None, rps=9.0, metrics=_metrics()),
@@ -128,7 +176,7 @@ class BuildCapacityProfileTests(unittest.TestCase):
 
         rate = build_capacity_profile(report)["workload_classes"]["short"]["rate"]
 
-        self.assertEqual(rate["measured_safe_offered_rps"], 9.0)
+        self.assertEqual(rate["observed_nonfailing_offered_rps"], 9.0)
         self.assertEqual(rate["measured_burst_ceiling_rps"], 9.0)
         self.assertEqual(rate["provider_ceiling_rps"], 5.0)
         self.assertAlmostEqual(rate["production_sustained_rps"], 4.5)   # 5.0 x 0.9, not 9.0 x 0.8 = 7.2
@@ -136,7 +184,7 @@ class BuildCapacityProfileTests(unittest.TestCase):
 
     def test_evidence_and_measurement_blocks_are_recorded(self):
         spec = self._spec(warmup_s=10.0, repetitions=3, slo=SloConfig(ttft_p95_ms=1000, confidence=0.95))
-        rec = Recommendation(
+        rec = _rec(
             point=SweepPoint(
                 concurrency=6, rps=None,
                 metrics=_metrics(n=3000, n_throttled=0, throttle_rate_upper=0.0009, success_rate_lower=0.999),
@@ -169,8 +217,8 @@ class BuildCapacityProfileTests(unittest.TestCase):
             WorkloadProfile(name="short", input_tokens=512, output_tokens=64),
             WorkloadProfile(name="long", input_tokens=4096, output_tokens=512),
         ])
-        short_rec = Recommendation(point=SweepPoint(concurrency=6, rps=None, metrics=_metrics()), saturation_point=None)
-        long_rec = Recommendation(point=SweepPoint(concurrency=2, rps=None, metrics=_metrics()), saturation_point=None)
+        short_rec = _rec(point=SweepPoint(concurrency=6, rps=None, metrics=_metrics()), saturation_point=None)
+        long_rec = _rec(point=SweepPoint(concurrency=2, rps=None, metrics=_metrics()), saturation_point=None)
         report = ExperimentReport(spec=spec, profiles=[
             ProfileReport(workload_name="short", recommendation=short_rec),
             ProfileReport(workload_name="long", recommendation=long_rec),
@@ -199,7 +247,7 @@ class BuildCapacityProfileTests(unittest.TestCase):
 
     def test_headroom_applied_concurrency_never_floors_to_zero(self):
         spec = self._spec(provider_headroom=0.5)
-        rec = Recommendation(point=SweepPoint(concurrency=1, rps=None, metrics=_metrics()), saturation_point=None)
+        rec = _rec(point=SweepPoint(concurrency=1, rps=None, metrics=_metrics()), saturation_point=None)
         report = ExperimentReport(spec=spec, profiles=[ProfileReport(workload_name="short", recommendation=rec)])
 
         profile = build_capacity_profile(report)
@@ -207,7 +255,7 @@ class BuildCapacityProfileTests(unittest.TestCase):
 
     def test_observed_tokens_come_from_real_measured_results_not_the_configured_target(self):
         spec = self._spec()
-        rec = Recommendation(point=SweepPoint(concurrency=6, rps=None, metrics=_metrics()), saturation_point=None)
+        rec = _rec(point=SweepPoint(concurrency=6, rps=None, metrics=_metrics()), saturation_point=None)
         report = ExperimentReport(
             spec=spec,
             profiles=[ProfileReport(workload_name="short", recommendation=rec)],

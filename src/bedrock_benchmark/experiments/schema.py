@@ -116,7 +116,7 @@ class ExperimentSpec:
     # Back-off from the provider CEILING (quota) for production: a sweep
     # that passed above quota may have ridden Bedrock's short-window
     # burst allowance, which isn't sustainable, so production rate is
-    # min(measured_safe x (1 - provider_headroom), ceiling x (1 - quota_headroom)).
+    # min(statistically_confirmed x (1 - provider_headroom), ceiling x (1 - quota_headroom)).
     quota_headroom: float = 0.10
     confirmation: Optional[ConfirmationConfig] = None
     seed: Optional[int] = None

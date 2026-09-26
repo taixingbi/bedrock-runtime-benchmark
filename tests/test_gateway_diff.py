@@ -104,6 +104,28 @@ class GatewayDiffTests(unittest.TestCase):
         result = diff([profile], {"models": {MODEL: {"rpm_limit": 400}}})
         self.assertNotIn("model_rpm_above_envelope", _kinds(result))
 
+    def test_v7_unconfirmed_class_proposes_nothing_and_warns(self):
+        profile = _profile(schema_version=7, workload_classes={"short_chat": {
+            "rate": {"observed_nonfailing_offered_rps": 5.0, "observed_verdict": "INCONCLUSIVE",
+                     "observed_inconclusive_checks": [{"name": "throttle_rate", "n": 450, "required_n": 2703}],
+                     "statistically_confirmed_offered_rps": None, "production_sustained_rps": None},
+        }})
+        result = diff([profile], {"models": {MODEL: {"rpm_limit": 400}}})
+        kinds = {f.kind for f in result.findings}
+        self.assertIn("no_confirmed_envelope", kinds)
+        self.assertFalse(any(f.proposed is not None for f in result.findings))
+
+    def test_v7_confirmed_production_is_proposed(self):
+        profile = _profile(schema_version=7, workload_classes={"short_chat": {
+            "rate": {"observed_nonfailing_offered_rps": 5.0, "observed_verdict": "INCONCLUSIVE",
+                     "observed_inconclusive_checks": [{"name": "throttle_rate", "n": 450, "required_n": 2703}],
+                     "statistically_confirmed_offered_rps": 3.33, "production_sustained_rps": 2.664},
+        }})
+        result = diff([profile], {"models": {MODEL: {"rpm_limit": 400}}})
+        above = next(f for f in result.findings if f.kind == "model_rpm_above_envelope")
+        self.assertEqual(above.proposed, 159)  # 2.664 rps x 60, floored
+        self.assertIn("3.33", next(f for f in result.findings if f.kind == "envelope_unconfirmed").message)
+
     def test_v6_sustained_rps_and_unconfirmed_envelope(self):
         profile = _profile(schema_version=6, workload_classes={"short_chat": {
             "rate": {"production_sustained_rps": 4.5, "production_offered_rps": 99.0, "verdict": "INCONCLUSIVE",

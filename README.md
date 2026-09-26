@@ -14,7 +14,9 @@ regression -- that's `bedrock-platform-eval`'s job. It answers exactly one
 question:
 
 > For a given Bedrock inference profile and workload shape, at a given
-> SLO and quota, what concurrency/RPS envelope is demonstrably safe?
+> SLO and quota, what concurrency/RPS was observed without violations,
+> what has been statistically confirmed to meet the SLO, and what is
+> therefore safe to configure for production?
 
 ```
 workload -> SLO -> quota-aware sweep -> find the boundary -> confirm it
@@ -261,32 +263,35 @@ workload_classes:
     provider_constraints: {tokens_per_request: 576.0, ceiling_rps: 6.6667, binding_constraint: rpm, ...}
     sweep_values_rps: [1.6667, 3.3333, ...]
     rate:
-      measured_safe_offered_rps: 8.3333     # best non-failing offered rate before the first FAIL
-      verdict: INCONCLUSIVE                 # PASS = statistically demonstrated
-      inconclusive_checks: [{name: throttle_rate, n: 1740, required_n: 2703, ...}]
-      confirmed_safe: 5.0                   # best strictly-PASS point, if any
-      slo_goodput_rps: 8.1                  # what it actually delivered within SLO
+      observed_nonfailing_offered_rps: 8.3333      # no FAIL observed before the first failure...
+      observed_verdict: INCONCLUSIVE               # ...but not enough requests to PROVE the SLO
+      observed_inconclusive_checks: [{name: throttle_rate, n: 1740, required_n: 2703, ...}]
+      observed_slo_goodput_rps: 8.1
+      statistically_confirmed_offered_rps: 5.0     # strictly PASS at 95% -- null if none
+      confirmed_slo_goodput_rps: 4.9
       measured_burst_ceiling_rps: 10.0      # highest swept rate that didn't FAIL (may be burst)
       provider_ceiling_rps: 6.6667          # from the quota
       saturation_offered_rps: 13.3333
       saturation_status: resolved           # or not_reached / unresolved (+ unstable_region)
-      production_sustained_rps: 6.0         # min(measured x 0.8, ceiling x 0.9) -- what a gateway limit reads
-      production_binding: provider_quota    # or measurement
+      production_sustained_rps: 4.0         # min(CONFIRMED x 0.8, ceiling x 0.9) -- null if nothing confirmed
+      production_binding: measurement       # or provider_quota, or unconfirmed
     sweep_points: [{value: 1.6667, verdict: INCONCLUSIVE, phase: discovery, n: 150, inconclusive: [...]}, ...]
     evidence: {n: 1740, n_throttled: 0, throttle_rate_upper: 0.0017, verdict: {...}, peak_outstanding: 9, ...}
 provider: {headroom: 0.20, quota_headroom: 0.10}
 transport: {max_connections: 64, executor_workers: 64, total_max_attempts: 1, connect_timeout_s: 5, read_timeout_s: 60}
 ```
 
-A concurrency sweep writes `concurrency: {measured_best, saturation,
-saturation_status, production_max, slo_goodput_rps}` instead of `rate`.
+A concurrency sweep writes `concurrency: {observed_nonfailing,
+observed_verdict, statistically_confirmed, saturation, saturation_status,
+production_max, observed_slo_goodput_rps}` instead of `rate` --
+`production_max` likewise from the confirmed point only.
 
 This is the actual deliverable -- not an HTML report. A gateway's own
 config review reads this file, and decides its own global/tenant/AIMD
 config FROM these per-class envelopes -- this repo never pre-packages
 a gateway control policy itself (see "Not in scope here" below).
 
-## Correctness fixes (schema v2 -- v6)
+## Correctness fixes (schema v2 -- v7)
 
 A real review caught 5 measurement-correctness bugs before this
 artifact was ever used to actually inform a gateway config:
@@ -354,8 +359,9 @@ artifact was ever used to actually inform a gateway config:
    `production_rps` applied headroom to that goodput -- but a gateway
    admission limit is on offered load. Split into
    `max_safe_offered_rps` / `slo_goodput_rps` /
-   `production_offered_rps` (v6: `measured_safe_offered_rps` /
-   `production_sustained_rps`, now also quota-capped).
+   `production_offered_rps` (v7: `observed_nonfailing_offered_rps` /
+   `statistically_confirmed_offered_rps` / `production_sustained_rps`,
+   quota-capped and derived from the confirmed point only).
 9. **A 0.1% throttle SLO was gated on too few samples.** See
    "Verdicts" below.
 
@@ -413,6 +419,16 @@ artifact was ever used to actually inform a gateway config:
 21. **TTFT + TPOT alone missed user-visible E2E.** Each workload now
     carries its own E2E cap -- see "SLO profiles".
 
+### Schema v7 fixes
+
+22. **"Measured safe" could be INCONCLUSIVE.** v6's
+    `measured_safe_offered_rps` held the best non-failing point even
+    when it was INCONCLUSIVE, and production was derived from it --
+    treating "no violation observed" as "SLO proven". Now:
+    `observed_nonfailing_*` (may be INCONCLUSIVE) ->
+    `statistically_confirmed_*` (PASS only, or null) -> production
+    derived from the confirmed point only (null otherwise).
+
 ## Measurement policy
 
 Every sweep point runs **warmup -> measurement window -> drain**:
@@ -451,11 +467,32 @@ verdict (`capacity.py`'s `evaluate`):
     upper bound of ~0.5% -- resolving a 0.1% limit needs ~2,700)
 
 A point is FAIL if any check fails, else INCONCLUSIVE if any is
-inconclusive, else PASS. Saturation is the first FAIL; the recommended
-point is the best non-failing point before it and carries its verdict,
-alongside `confirmed_safe` -- the best strictly-PASS point, if any.
-`sweep_points` lists every point's verdict; `gateway_diff` reports an
-INCONCLUSIVE envelope as `envelope_unconfirmed`.
+inconclusive, else PASS. Saturation is the first FAIL.
+
+**Not observing a violation is not the same as proving the SLO**, so
+the artifact keeps three numbers apart and never lets one stand in for
+another:
+
+```
+observed_nonfailing          best point before the first FAIL -- may be INCONCLUSIVE
+      |
+statistically_confirmed      best strictly-PASS point before the first FAIL -- or null
+      |
+production_sustained_rps /   derived ONLY from the confirmed point (and quota-capped);
+production_max               null when nothing is confirmed -- never a guess
+```
+
+`sweep_points` lists every point's verdict. `gateway_diff` only ever
+proposes limits from confirmed production values: an INCONCLUSIVE
+observed point is `envelope_unconfirmed` (info), and a class with no
+confirmed point at all is `no_confirmed_envelope` (warn).
+
+Sample size decides what can be confirmed: at 95%, resolving a 0.1%
+throttle limit with zero throttles takes ~2,700 requests per point --
+at 5 rps that's ~540 s of pooled window, more than discovery + 3
+confirmation repetitions of 90 s (~1,800 requests). For gold, raise
+`confirmation.repetitions` (or `duration_s`) until the boundary points
+reach `required_n`; tier limits of 0.5% / 1% need only ~540 / ~270.
 
 ### Production rate: measured AND quota-capped
 
@@ -465,14 +502,16 @@ allowance -- that is observed serving, not a sustainable quota. So the
 rate block separates what was observed from what's safe to configure:
 
 ```
-measured_safe_offered_rps    best non-failing rate before the first FAIL
-measured_burst_ceiling_rps   highest swept rate that didn't FAIL anywhere
-provider_ceiling_rps         min(RPM/60, TPM/tokens/60) from the quota
-production_sustained_rps     min(measured_safe x (1 - provider_headroom),
-                                 provider_ceiling x (1 - quota_headroom))
+observed_nonfailing_offered_rps      best rate before the first FAIL (may be INCONCLUSIVE)
+statistically_confirmed_offered_rps  best strictly-PASS rate before the first FAIL, or null
+measured_burst_ceiling_rps           highest swept rate that didn't FAIL anywhere
+provider_ceiling_rps                 min(RPM/60, TPM/tokens/60) from the quota
+production_sustained_rps             min(confirmed x (1 - provider_headroom),
+                                         provider_ceiling x (1 - quota_headroom)), or null
 ```
 
-`production_binding` says which term won. Defaults: 20% off the
+`production_binding` says which term won (`measurement`,
+`provider_quota`, or `unconfirmed` when nothing was confirmed). Defaults: 20% off the
 measurement, 10% off the quota.
 
 ### Two-phase sweep: discovery -> confirmation
@@ -647,7 +686,7 @@ while the long class alone blows its latency SLO. The artifact gains:
 mixed_workloads:
   short70_long30:
     shares: {short_chat: 0.6, rag_answer: 0.3, long_generation: 0.1}
-    rate: {measured_safe_offered_rps: ..., verdict: ..., slo_goodput_rps: ..., production_sustained_rps: ...}
+    rate: {observed_nonfailing_offered_rps: ..., observed_verdict: ..., statistically_confirmed_offered_rps: ..., production_sustained_rps: ...}
     evidence: {...}
     classes_at_recommended_point: {short_chat: {...}, rag_answer: {...}, long_generation: {...}}
 ```

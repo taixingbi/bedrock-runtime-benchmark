@@ -87,8 +87,9 @@ def recommendation_summary(report: ExperimentReport) -> List[str]:
         confirmed_value = None if confirmed is None else (
             confirmed.concurrency if confirmed.concurrency is not None else confirmed.rps)
         lines.append(
-            f"{profile_report.workload_name}: recommended={value} [{rec.verdict.verdict}] "
-            f"confirmed={confirmed_value} slo_goodput_rps={rec.point.metrics.slo_goodput_rps} saturation={sat}"
+            f"{profile_report.workload_name}: observed_nonfailing={value} [{rec.verdict.verdict}] "
+            f"statistically_confirmed={confirmed_value} saturation={sat}"
+            + ("" if confirmed_value is not None else "  (no production value: nothing statistically confirmed)")
         )
     return lines
 

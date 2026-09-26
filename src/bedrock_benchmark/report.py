@@ -106,51 +106,73 @@ def _value(point) -> float:
     return point.concurrency if point.concurrency is not None else point.rps
 
 
-def _verdict_fields(rec: Recommendation) -> dict:
-    """PASS = the rate SLOs are statistically demonstrated at the chosen
-    point; INCONCLUSIVE = nothing violated, but too few requests to prove
-    it (inconclusive_checks says which, with n vs required_n)."""
-    out: dict = {"verdict": rec.verdict.verdict}
+_UNCONFIRMED_NOTE = ("no statistically confirmed point -- nothing violated the SLO, but no point had enough "
+                     "requests to prove it (see observed_inconclusive_checks for n vs required_n); raise "
+                     "duration_s / repetitions / confirmation.repetitions")
+
+
+def _observed_fields(rec: Recommendation) -> dict:
+    """What was OBSERVED: the best point with no FAIL before the first
+    failure. Its verdict may be INCONCLUSIVE -- no violation seen, not
+    enough requests to prove the SLO -- which is exactly why it is never
+    used to derive a production value."""
+    out: dict = {"observed_verdict": rec.verdict.verdict}
     if rec.verdict.inconclusive_checks:
-        out["inconclusive_checks"] = [c.to_dict() for c in rec.verdict.inconclusive_checks]
-    out["confirmed_safe"] = _value(rec.confirmed_point) if rec.confirmed_point is not None else None
+        out["observed_inconclusive_checks"] = [c.to_dict() for c in rec.verdict.inconclusive_checks]
     return out
 
 
 def _concurrency_block(rec: Recommendation, *, headroom: float) -> dict:
+    """observed_nonfailing -> statistically_confirmed -> production_max.
+    production_max is derived ONLY from the confirmed point (null if
+    none): not observing a violation isn't the same as proving the SLO."""
     saturation = rec.saturation_point.concurrency if rec.saturation_point is not None else None
-    production_max = max(1, int(apply_headroom(rec.point.concurrency, headroom=headroom)))
-    return {
-        "measured_best": rec.point.concurrency,
-        **_verdict_fields(rec),
+    confirmed = rec.confirmed_point.concurrency if rec.confirmed_point is not None else None
+    out = {
+        "observed_nonfailing": rec.point.concurrency,
+        **_observed_fields(rec),
+        "statistically_confirmed": confirmed,
         "saturation": saturation,
         **_saturation_fields(rec),
-        "production_max": production_max,
-        "slo_goodput_rps": rec.point.metrics.slo_goodput_rps,
+        "production_max": max(1, int(apply_headroom(confirmed, headroom=headroom))) if confirmed else None,
+        "observed_slo_goodput_rps": rec.point.metrics.slo_goodput_rps,
     }
+    if confirmed is None:
+        out["production_note"] = _UNCONFIRMED_NOTE
+    return out
 
 
 def _rate_block(rec: Recommendation, *, headroom: float, quota_headroom: float, ceiling_rps: Optional[float]) -> dict:
-    """Separates what was OBSERVED from what's safe to run in production.
+    """Three distinct numbers, never conflated:
+
+        observed_nonfailing_offered_rps      no FAIL observed (may be INCONCLUSIVE)
+        statistically_confirmed_offered_rps  strictly PASS at the configured confidence
+        production_sustained_rps             derived from CONFIRMED only, and capped by
+                                             the provider ceiling:
+            min(confirmed x (1 - headroom), provider_ceiling x (1 - quota_headroom))
+
     A rate sweep deliberately goes above quota (to see throttling and
     burst behavior), and a short window can pass there on Bedrock's
-    burst allowance -- that's not a sustainable rate. So production is
-    capped by BOTH the measurement and the provider ceiling:
-
-        production_sustained_rps = min(measured_safe x (1 - headroom),
-                                       provider_ceiling x (1 - quota_headroom))
+    burst allowance -- measured_burst_ceiling_rps records that, but it
+    is observed serving, not a sustainable rate. With nothing
+    statistically confirmed, production is null, not a guess.
     """
     saturation_rps = rec.saturation_point.rps if rec.saturation_point is not None else None
-    from_measurement = apply_headroom(rec.point.rps, headroom=headroom)
-    from_quota = apply_headroom(ceiling_rps, headroom=quota_headroom) if ceiling_rps else None
-    if from_quota is not None and from_quota < from_measurement:
-        production, binding = from_quota, "provider_quota"
-    else:
-        production, binding = from_measurement, "measurement"
-    return {
-        "measured_safe_offered_rps": rec.point.rps,
-        **_verdict_fields(rec),
-        "slo_goodput_rps": rec.point.metrics.slo_goodput_rps,
+    confirmed = rec.confirmed_point.rps if rec.confirmed_point is not None else None
+    production, binding = None, "unconfirmed"
+    if confirmed is not None:
+        from_measurement = apply_headroom(confirmed, headroom=headroom)
+        from_quota = apply_headroom(ceiling_rps, headroom=quota_headroom) if ceiling_rps else None
+        if from_quota is not None and from_quota < from_measurement:
+            production, binding = from_quota, "provider_quota"
+        else:
+            production, binding = from_measurement, "measurement"
+    out = {
+        "observed_nonfailing_offered_rps": rec.point.rps,
+        **_observed_fields(rec),
+        "observed_slo_goodput_rps": rec.point.metrics.slo_goodput_rps,
+        "statistically_confirmed_offered_rps": confirmed,
+        "confirmed_slo_goodput_rps": rec.confirmed_point.metrics.slo_goodput_rps if rec.confirmed_point else None,
         # Highest swept rate that didn't FAIL anywhere in the sweep --
         # observed short-window serving, possibly above quota on burst.
         "measured_burst_ceiling_rps": rec.burst_point.rps if rec.burst_point is not None else None,
@@ -158,8 +180,11 @@ def _rate_block(rec: Recommendation, *, headroom: float, quota_headroom: float, 
         "saturation_offered_rps": saturation_rps,
         **_saturation_fields(rec),
         "production_sustained_rps": production,
-        "production_binding": binding,  # measurement | provider_quota
+        "production_binding": binding,  # measurement | provider_quota | unconfirmed
     }
+    if confirmed is None:
+        out["production_note"] = _UNCONFIRMED_NOTE
+    return out
 
 
 def _sweep_points(profile_report) -> List[dict]:
@@ -268,8 +293,12 @@ def _envelope(entry: dict, profile_report, spec) -> None:
         ceiling = spec.provider_ceilings.get(subject)
         entry["rate"] = _rate_block(rec, headroom=spec.provider_headroom, quota_headroom=spec.quota_headroom,
                                     ceiling_rps=ceiling.rps if ceiling else None)
+    # evidence = the observed point; confirmed_evidence = the point the
+    # production value is derived from, when it's a different point.
     entry["evidence"] = _evidence(rec.point)
     entry["evidence"]["verdict"] = rec.verdict.to_dict()
+    if rec.confirmed_point is not None and rec.confirmed_point is not rec.point:
+        entry["confirmed_evidence"] = _evidence(rec.confirmed_point)
 
 
 def build_capacity_profile(report: ExperimentReport) -> dict:
@@ -314,7 +343,7 @@ def build_capacity_profile(report: ExperimentReport) -> dict:
 
     confidence = spec.slo.confidence or DEFAULT_CONFIDENCE
     return {
-        "schema_version": 6,
+        "schema_version": 7,
         "experiment": spec.name,
         "model": {
             "name": spec.model_name,

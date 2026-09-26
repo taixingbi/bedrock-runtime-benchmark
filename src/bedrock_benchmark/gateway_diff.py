@@ -32,7 +32,7 @@ import math
 from dataclasses import asdict, dataclass, field
 from typing import Dict, Iterable, List, Optional, Tuple
 
-SUPPORTED_SCHEMA_VERSIONS = {3, 4, 5, 6}
+SUPPORTED_SCHEMA_VERSIONS = {3, 4, 5, 6, 7}
 
 
 @dataclass
@@ -75,11 +75,12 @@ def _envelopes(profile: dict) -> Tuple[List[Tuple[str, float]], List[Tuple[str, 
     sources += [("mix", n, e) for n, e in (profile.get("mixed_workloads") or {}).items()]
     for kind, name, entry in sources:
         if "rate" in entry:
-            # v6: production_sustained_rps (capped by the provider ceiling);
-            # v3-v5: production_offered_rps.
+            # v6+: production_sustained_rps (v7: from the statistically
+            # confirmed point only, null if none); v3-v5: production_offered_rps.
             key = "production_sustained_rps" if "production_sustained_rps" in entry["rate"] else "production_offered_rps"
-            rates.append((f"{kind} {name}: rate.{key}", entry["rate"][key]))
-        if "concurrency" in entry:
+            if entry["rate"].get(key) is not None:
+                rates.append((f"{kind} {name}: rate.{key}", entry["rate"][key]))
+        if "concurrency" in entry and entry["concurrency"].get("production_max") is not None:
             concs.append((f"{kind} {name}: concurrency.production_max", entry["concurrency"]["production_max"]))
     return rates, concs
 
@@ -109,18 +110,30 @@ def _quality_findings(model_id: str, profile: dict) -> Iterable[Finding]:
             f"class {name} measured {detail} -- its envelope describes a different workload than it claims",
         )
 
-    # v6: each envelope carries its verdict; INCONCLUSIVE means nothing
-    # violated the SLO but there weren't enough requests to prove it.
+    # v6+: the observed point carries its verdict; INCONCLUSIVE means
+    # nothing violated the SLO but there weren't enough requests to prove
+    # it. v7 derives production only from a statistically confirmed point,
+    # so no confirmed point means no production value to compare at all.
     for kind, name, entry in _entries(profile):
         block = entry.get("rate") or entry.get("concurrency") or {}
-        if block.get("verdict") == "INCONCLUSIVE":
-            detail = "; ".join(
-                f"{c.get('name')}: n={c.get('n')} < {c.get('required_n')}" for c in block.get("inconclusive_checks", [])
+        verdict = block.get("observed_verdict", block.get("verdict"))                     # v7 | v6
+        checks = block.get("observed_inconclusive_checks", block.get("inconclusive_checks", []))
+        confirmed = next((block[k] for k in ("statistically_confirmed_offered_rps", "statistically_confirmed",
+                                              "confirmed_safe") if block.get(k) is not None), None)
+        has_production = block.get("production_sustained_rps", block.get("production_offered_rps",
+                                                                            block.get("production_max")))
+        detail = "; ".join(f"{c.get('name')}: n={c.get('n')} < {c.get('required_n')}" for c in checks)
+        if block and has_production is None:
+            yield Finding(
+                "warn", "no_confirmed_envelope", model_id,
+                f"{kind} {name}: no statistically confirmed point, so no production value to configure "
+                f"(observed non-failing is {verdict}{': ' + detail if detail else ''}) -- collect more samples",
             )
+        elif verdict == "INCONCLUSIVE":
             yield Finding(
                 "info", "envelope_unconfirmed", model_id,
-                f"{kind} {name}: safe point is INCONCLUSIVE (no violation, too few requests to prove the SLO: {detail})"
-                + ("" if block.get("confirmed_safe") is None else f"; statistically confirmed safe: {block['confirmed_safe']}"),
+                f"{kind} {name}: the best observed non-failing point is INCONCLUSIVE ({detail}); "
+                f"production is derived from the statistically confirmed point {confirmed}",
             )
 
     measurement = profile.get("measurement") or {}

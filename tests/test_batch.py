@@ -123,7 +123,10 @@ class BatchTests(unittest.TestCase):
 
         batch = self._run(paths, [FAST], target_factory=_fake_factory(), gateway_config={"models": {}})
 
-        self.assertIn("model_rpm_unset", {f.kind for f in batch.gateway_diff.findings})
+        # Non-streaming fakes can't statistically confirm a 0.1% throttle SLO
+        # in a 0.1s window, so there's no production value to propose from --
+        # the diff says so instead of comparing an unconfirmed number.
+        self.assertIn("no_confirmed_envelope", {f.kind for f in batch.gateway_diff.findings})
         self.assertEqual(batch.exit_code, 1)
         self.assertIn("gateway_diff", yaml.safe_load((self.dir / "out" / "summary.yaml").read_text()))
 

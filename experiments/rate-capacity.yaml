@@ -26,7 +26,7 @@ sweep:
   type: rate
   quota_fractions: [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 2.5]
 
-# Production = min(measured_safe x (1 - provider_headroom),
+# Production = min(statistically_confirmed x (1 - provider_headroom),
 #                  provider_ceiling x (1 - quota_headroom)): passing above
 # quota in a 90s window may be Bedrock burst allowance, not sustainable.
 provider_headroom: 0.20
