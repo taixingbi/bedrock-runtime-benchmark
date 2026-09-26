@@ -13,10 +13,13 @@
 # ~1.0x and ~1.9x quota, so the sweep extends to 2.5x to find the edge.
 name: rate-capacity
 description: |
-  Poisson rate sweep at 0.25x..2.5x of each model's provider ceiling,
-  short_chat workload, 10s warmup + 90s window per point (~13 min per model).
+  Poisson rate sweep at 0.25x..2.5x of each workload's provider ceiling,
+  one workload per SLO tier (short_chat gold, rag_answer silver,
+  long_generation bronze), each with adaptive confirmation. 10s warmup +
+  90s window per point; up to ~30 min per workload (confirmation usually
+  stops sooner: silver/bronze need ~2 / ~1 repetitions at the ceiling).
 
-workloads: [short_chat]
+workloads: [short_chat, rag_answer, long_generation]   # one per SLO tier: gold / silver / bronze
 
 warmup_s: 10
 duration_s: 90
@@ -53,7 +56,10 @@ confirmation:
   candidates: 1
 
 transport:
-  max_connections: 64
+  # 128, not 64: long_generation (1024 output tokens, ~4s each) has ~67
+  # requests in flight at 2.5x quota -- above 64 the thread pool would
+  # queue them and flag those points client_limited.
+  max_connections: 128
   total_max_attempts: 1
   connect_timeout_s: 5
   read_timeout_s: 60

@@ -122,7 +122,7 @@ class SloProfileFilterTests(unittest.TestCase):
 
     def test_nothing_matching_is_a_skip_not_an_error(self):
         with self.assertRaisesRegex(NoMatchingWorkloads, "bronze"):
-            load_experiment("experiments/rate-capacity.yaml", MICRO, only_slo_profiles={"bronze"})
+            load_experiment("experiments/concurrency-sweep.yaml", MICRO, only_slo_profiles={"bronze"})
 
     def test_partial_mix_is_skipped_whole_mix_runs(self):
         with self.assertRaisesRegex(NoMatchingWorkloads, "partial mix"):

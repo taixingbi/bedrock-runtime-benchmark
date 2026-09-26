@@ -174,7 +174,7 @@ absolute (and may not exceed `transport.max_connections`).
 | Experiment | Sweep | Per model |
 |---|---|---|
 | `concurrency-sweep.yaml` | concurrency 1/2/4/6/8, `short_chat` | ~11 min |
-| `rate-capacity.yaml` | 0.25x-2.5x ceiling, `short_chat` -- the canonical production-envelope run | ~13 min |
+| `rate-capacity.yaml` | 0.25x-2.5x ceiling, one workload per tier (`short_chat` gold, `rag_answer` silver, `long_generation` bronze), each with adaptive confirmation -- the canonical production-envelope run | ~60 min |
 | `mixed-capacity.yaml` | 0.25x-2.5x ceiling, 60% `short_chat` / 30% `rag_answer` / 10% `long_generation` | ~13 min |
 | `token-sweep.yaml` | 4 most distinct catalog shapes x concurrency 1/2/4/6 | ~27 min |
 

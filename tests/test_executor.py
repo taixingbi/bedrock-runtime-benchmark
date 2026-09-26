@@ -223,3 +223,25 @@ class RunExperimentTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CandidateSelectionTests(unittest.TestCase):
+    def test_the_rounded_1x_point_is_a_candidate_and_above_ceiling_points_are_not(self):
+        """Quota-relative values are rounded to 4 decimals, so 1.0x of a
+        400 RPM quota is 6.6667 rps -- a hair above the unrounded ceiling.
+        It must still be eligible; 1.25x must not."""
+        from bedrock_benchmark.analysis.capacity import SweepAnalysis, SweepPoint, Recommendation
+        from bedrock_benchmark.analysis.metrics import RunMetrics
+        from bedrock_benchmark.experiments.executor import _candidates
+        from bedrock_benchmark.experiments.schema import load_experiment
+        from bedrock_benchmark.models import load_models
+
+        spec = load_experiment("experiments/rate-capacity.yaml", load_models(names=["nova-micro"])[0])
+        values = spec.sweep_values("short_chat")
+        m = RunMetrics(n=1, success_rate=1, throttle_rate=0, timeout_rate=0, request_throughput_rps=1,
+                       token_throughput_tps=None, latency_p50_ms=1, latency_p95_ms=1, latency_p99_ms=1)
+        points = [SweepPoint(concurrency=None, rps=v, metrics=m) for v in values]
+        rec = Recommendation(point=points[-1], saturation_point=None,
+                             analysis=SweepAnalysis(status="not_reached", stable_pass_max=values[-1]))
+        spec.confirmation.candidates = 2
+        self.assertEqual([p.rps for p in _candidates(points, rec, spec, "short_chat", 2)], [5.0, 6.6667])

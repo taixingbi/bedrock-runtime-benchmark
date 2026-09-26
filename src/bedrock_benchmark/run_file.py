@@ -7,6 +7,7 @@ output and artifacts.
 from __future__ import annotations
 
 import asyncio
+import math
 import time
 import uuid
 from dataclasses import dataclass
@@ -42,21 +43,58 @@ class RunOutcome:
 
 
 def estimated_duration_s(spec: ExperimentSpec) -> float:
-    """Upper-bound wall time: every sweep point runs warmup + window per
+    """Wall-time estimate: every sweep point runs warmup + window per
     repetition, per sweep subject (each workload, or one mix), plus --
-    with confirmation -- at most min(max_duration_s, candidates x
-    max_repetitions x (warmup + window)) per subject. Adaptive
-    confirmation usually stops sooner (PASS at an early look, or an
-    observed FAIL). Drain time on top depends on real latency, so it
-    isn't counted."""
-    subjects = 1 if spec.mix is not None else len(spec.workloads)
+    with confirmation -- per subject:
+
+    - isolated rate sweeps: the repetitions needed to reach the FIRST
+      pre-planned look at the likely candidate (the highest sweep rate
+      at or below the provider ceiling), i.e. assuming it PASSes there;
+      0 if that look is unreachable within the caps (skipped unspent);
+    - otherwise (concurrency sweeps, mixes -- requests per repetition
+      aren't known up front): the cap, min(max_duration_s, candidates x
+      max_repetitions x (warmup + window)).
+
+    Real runs take longer when a look is spent on a stray bad event
+    (up to the caps) and shorter on an early FAIL. Drain time on top
+    depends on real latency, so it isn't counted."""
     per_run = spec.warmup_s + spec.duration_s
     discovery = spec.sweep.point_count * spec.repetitions * per_run
-    confirmation = 0.0
-    if spec.confirmation is not None:
-        c = spec.confirmation
-        confirmation = min(c.max_duration_s, c.candidates * c.max_repetitions * per_run)
-    return subjects * (discovery + confirmation)
+    total = 0.0
+    for subject in spec.subject_names:
+        total += discovery + _confirmation_estimate_s(spec, subject, per_run)
+    return total
+
+
+# Quota-relative sweep values are rounded to 4 decimals (schema.sweep_values),
+# so the 1.0x point (e.g. 6.6667 rps) sits a hair above the unrounded
+# ceiling (6.66666...). Without this tolerance the 1.0x point -- the most
+# useful candidate -- would never be confirmed.
+_ROUNDING_TOLERANCE = 1e-4
+
+
+def _confirmation_estimate_s(spec: ExperimentSpec, subject: str, per_run: float) -> float:
+    c = spec.confirmation
+    if c is None:
+        return 0.0
+    cap = min(c.max_duration_s, c.candidates * c.max_repetitions * per_run)
+    ceiling = spec.provider_ceilings.get(subject)
+    if spec.sweep.type != "rate" or spec.mix is not None or ceiling is None or not ceiling.rps:
+        return cap
+    from .analysis.confirmation import limits_for, plan_looks
+    slo = spec.slo_for(subject)
+    gate = dict(throttle_rate_max=slo.throttle_rate_max, success_rate_min=slo.success_rate_min)
+    plan = plan_looks(limits_for(gate, None, None), confidence=slo.confidence or DEFAULT_CONFIDENCE,
+                      max_looks=c.max_looks, max_repetitions=c.max_repetitions, max_requests=c.max_requests,
+                      max_duration_s=c.max_duration_s)
+    candidates = sorted(v for v in spec.sweep_values(subject) if v <= ceiling.rps + _ROUNDING_TOLERANCE)[-c.candidates:]
+    total = 0.0
+    for rps in candidates:
+        per_rep = rps * spec.duration_s
+        reps = math.ceil(plan.look_schedule[0] / per_rep) if per_rep > 0 else c.max_repetitions + 1
+        if reps <= c.max_repetitions and plan.look_schedule[0] <= c.max_requests:
+            total += reps * per_run
+    return min(total, cap)
 
 
 def describe_sweep(spec: ExperimentSpec) -> str:

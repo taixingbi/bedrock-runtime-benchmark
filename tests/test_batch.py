@@ -178,6 +178,15 @@ class PlanTests(unittest.TestCase):
         mixed = load_experiment("experiments/mixed-capacity.yaml", micro)  # a mix is ONE subject
         self.assertEqual(estimated_duration_s(mixed), 1 * 8 * 1 * (10 + 90))
 
+    def test_rate_capacity_confirmation_estimate_uses_each_tiers_first_look(self):
+        """Per workload: 8 discovery points x 100s, plus the repetitions to
+        reach the first look at the 6.67 rps candidate (~600 req/rep):
+        gold 3,688 -> 7, silver 736 -> 2, bronze 368 -> 1."""
+        micro = load_models(names=["nova-micro"])[0]
+        spec = load_experiment("experiments/rate-capacity.yaml", micro)
+        self.assertEqual([w.slo_profile for w in spec.workloads], ["gold", "silver", "bronze"])
+        self.assertEqual(estimated_duration_s(spec), 3 * 8 * 100 + (7 + 2 + 1) * 100)
+
     def test_plan_is_every_experiment_for_every_enabled_model_grouped_by_model(self):
         paths = sorted(str(p) for p in Path("experiments").glob("*.yaml"))
         models = load_models()

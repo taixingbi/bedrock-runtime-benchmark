@@ -78,6 +78,13 @@ def calibrate_workloads(spec: ExperimentSpec, target: BedrockConverseTarget) -> 
     return out
 
 
+# Quota-relative sweep values are rounded to 4 decimals (schema.sweep_values),
+# so the 1.0x point (e.g. 6.6667 rps) sits a hair above the unrounded
+# ceiling (6.66666...). Without this tolerance the 1.0x point -- the most
+# useful candidate -- would never be confirmed.
+_ROUNDING_TOLERANCE = 1e-4
+
+
 def _value(point: SweepPoint) -> float:
     return point.concurrency if point.concurrency is not None else point.rps
 
@@ -93,7 +100,7 @@ def _candidates(points: List[SweepPoint], rec: Recommendation, spec: ExperimentS
     eligible = [p for p in points if limit is not None and _value(p) <= limit]
     ceiling = spec.provider_ceilings.get(subject)
     if spec.sweep.type == "rate" and ceiling is not None and ceiling.rps:
-        eligible = [p for p in eligible if _value(p) <= ceiling.rps * (1 + 1e-9)]
+        eligible = [p for p in eligible if _value(p) <= ceiling.rps + _ROUNDING_TOLERANCE]
     eligible.sort(key=_value)
     return eligible[-how_many:]
 
