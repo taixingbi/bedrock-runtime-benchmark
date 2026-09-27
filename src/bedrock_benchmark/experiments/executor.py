@@ -273,14 +273,14 @@ async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress:
         # between the last non-failing point L and the first FAIL F, so
         # the candidate is the real edge rather than the coarse grid
         # point below it. Still discovery-class data: selects, never confirms.
-        if spec.sweep.refine_max_points:
+        if spec.sweep.refinement is not None:
             lo = hi = None
             for p in sorted(points, key=_value):
                 if point_verdict(p, class_gate, **gate_kwargs).verdict == FAIL:
                     hi = _value(p)
                     break
                 lo = _value(p)
-            for _ in range(spec.sweep.refine_max_points):
+            for _ in range(spec.sweep.refinement.max_points):
                 if lo is None or hi is None or hi - lo <= 1:
                     break
                 mid = (int(lo) + int(hi)) // 2

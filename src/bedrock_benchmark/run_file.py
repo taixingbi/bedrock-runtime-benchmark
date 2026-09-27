@@ -62,7 +62,8 @@ def estimated_duration_s(spec: ExperimentSpec) -> float:
     (up to the caps) and shorter on an early FAIL. Drain time on top
     depends on real latency, so it isn't counted."""
     per_run = spec.warmup_s + spec.duration_s
-    discovery = (spec.sweep.point_count + (spec.sweep.refine_max_points or 0)) * spec.repetitions * per_run
+    refine = spec.sweep.refinement.max_points if spec.sweep.refinement is not None else 0
+    discovery = (spec.sweep.point_count + refine) * spec.repetitions * per_run
     total = 0.0
     for subject in spec.subject_names:
         confirm = _confirmation_estimate_s(spec, subject, per_run)

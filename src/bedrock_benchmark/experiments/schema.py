@@ -55,6 +55,26 @@ class QuotaSnapshot:
     tpm: Optional[float] = None
 
 
+REFINEMENT_STRATEGIES = ("integer_bisection",)
+
+
+@dataclass
+class RefinementConfig:
+    """Boundary refinement between coarse discovery and confirmation.
+    The coarse sweep brackets saturation: lower = the highest point of
+    the leading non-FAIL run (PASS or INCONCLUSIVE -- discovery only
+    needs non-failing), upper = the first FAIL. integer_bisection then
+    tests floor((lower + upper) / 2), moving lower up on a non-FAIL and
+    upper down on a FAIL: 8 / 12 -> 10 -> 11 or 9. Refinement is still
+    DISCOVERY-class data: it moves the candidates, never confirms one."""
+    strategy: str = "integer_bisection"
+    # Stop as soon as upper - lower == 1 (the edge is resolved).
+    stop_when_adjacent: bool = True
+    # Extra points per sweep subject. 4 resolves a 16-wide gap
+    # (32 -> 48: 40, 44, 46, 47), the widest in the shipped grids.
+    max_points: int = 4
+
+
 @dataclass
 class SweepConfig:
     type: str  # "concurrency" | "rate"
@@ -69,13 +89,12 @@ class SweepConfig:
     # non-monotonic check -- without spending windows on a throttle storm
     # far past it. Values not reached are reported as skipped.
     stop_after_fails: Optional[int] = None
-    # Concurrency sweeps only: after the coarse sweep brackets saturation
-    # (last non-failing L, first FAIL F), bisect between them with up to
-    # this many extra points (None = no refinement). 8 PASS / 12 FAIL
-    # tests 10, then 11 or 9 -- so the candidate is the real edge, not
-    # the coarse grid point below it. Refinement is still DISCOVERY data:
-    # it only selects candidates, never confirms.
-    refine_max_points: Optional[int] = None
+    # Concurrency sweeps only -- see RefinementConfig. None = no refinement.
+    refinement: Optional["RefinementConfig"] = None
+
+    def __post_init__(self):
+        if isinstance(self.refinement, dict):
+            self.refinement = RefinementConfig(**self.refinement)
 
     @property
     def point_count(self) -> int:
@@ -406,11 +425,16 @@ def _validate(spec: ExperimentSpec) -> None:
     if spec.throttle_pause_s > 0 and spec.sweep.type != "concurrency":
         raise ValueError("throttle_pause_s applies to concurrency sweeps only -- a rate sweep's arrivals are "
                          "open-loop and never wait on a response")
-    if spec.sweep.refine_max_points is not None:
+    r = spec.sweep.refinement
+    if r is not None:
         if spec.sweep.type != "concurrency":
-            raise ValueError("sweep.refine_max_points applies to concurrency sweeps only")
-        if spec.sweep.refine_max_points < 1:
-            raise ValueError(f"sweep.refine_max_points must be >= 1, got {spec.sweep.refine_max_points}")
+            raise ValueError("sweep.refinement applies to concurrency sweeps only")
+        if r.strategy not in REFINEMENT_STRATEGIES:
+            raise ValueError(f"sweep.refinement.strategy must be one of {list(REFINEMENT_STRATEGIES)}, got {r.strategy!r}")
+        if not r.stop_when_adjacent:
+            raise ValueError("sweep.refinement.stop_when_adjacent must be true -- adjacent integers are already resolved")
+        if r.max_points < 1:
+            raise ValueError(f"sweep.refinement.max_points must be >= 1, got {r.max_points}")
     if spec.sweep.stop_after_fails is not None and spec.sweep.stop_after_fails < 1:
         raise ValueError(f"sweep.stop_after_fails must be >= 1, got {spec.sweep.stop_after_fails}")
     if spec.repetitions < 1:

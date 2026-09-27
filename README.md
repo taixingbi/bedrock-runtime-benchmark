@@ -42,7 +42,7 @@ constraints/slo.yaml         SLO: what quality we require (policy)      ─┤
 constraints/quota.yaml       quota: what the provider allows            ─┤
 constraints/recommendation-policy.yaml   headroom (policy)              ─┤
                                                                           v
-             discovery sweep ──> adaptive confirmation ──> verdicts (PASS / FAIL / INCONCLUSIVE)
+   coarse sweep ──> bracket + refinement ──> adaptive confirmation ──> verdicts (PASS / FAIL / INCONCLUSIVE)
                                                                           |
                                                                           v
                 capacity-profile.yaml:  measurement  +  recommendation.admission_envelope
@@ -91,7 +91,9 @@ isolated rate envelope:
 
 Per-class `max_inflight` (and `sustained_rps`) values are **isolated** limits -- each holds for that class running alone (`scope: isolated_workload_class`). They are not additive across classes and are not a global limit; only `mixed-capacity` (`scope: workload_mix`) measures classes together.
 A mixed/global total in-flight limit would need its own experiment
-(not built -- add one only if a consumer needs it).
+(not built -- add one only if a consumer needs it). `max_inflight` alone
+is only the concurrency dimension: a class's safe operating envelope is
+its `max_inflight` together with its `sustained_rps`.
 
 Every experiment is discovery followed by adaptive confirmation at the
 candidate -- the only way a point becomes statistically confirmed.

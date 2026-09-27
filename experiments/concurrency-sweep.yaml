@@ -42,11 +42,15 @@ sweep:
   type: concurrency
   values: [1, 2, 4, 6, 8, 12, 16, 24, 32, 48]
   stop_after_fails: 2
-  # Coarse grid -> bracket saturation -> bisect -> confirm. 8 PASS / 12
-  # FAIL tests 10, then 11 or 9: the candidate becomes the real edge (say
-  # 11 -> max_inflight 8) instead of the grid point below it (8 -> 6).
-  # Discovery-class data: it only picks candidates.
-  refine_max_points: 3
+  # Coarse grid -> non-FAIL / FAIL bracket -> integer bisection ->
+  # fresh confirmation. 8 non-FAIL / 12 FAIL tests 10, then 11 or 9: the
+  # candidate becomes the real edge (say 11 -> max_inflight 8) instead of
+  # the grid point below it (8 -> 6). Discovery-class data: it only picks
+  # candidates. max_points 4 resolves the widest gap (32 -> 48).
+  refinement:
+    strategy: integer_bisection
+    stop_when_adjacent: true
+    max_points: 4
 
 
 # Discovery (above) picks the candidate; confirmation collects FRESH

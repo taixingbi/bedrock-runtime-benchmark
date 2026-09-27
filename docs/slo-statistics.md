@@ -115,14 +115,30 @@ One 90s window per point is a capacity snapshot. The sweep runs in
 phases whose data is never mixed (`analysis/confirmation.py`):
 
 ```
-coarse discovery  ->  bracket saturation  ->  local refinement  ->  independent confirmation
-1 2 4 6 8 12(FAIL)     L=8, F=12              10, then 11 or 9       fresh reps at the candidates
+coarse sweep              1 2 4 6 8 12(FAIL)
+      |
+non-FAIL / FAIL bracket   lower = highest leading non-FAIL (PASS or INCONCLUSIVE) = 8
+      |                   upper = first FAIL = 12
+integer refinement        10, then 11 or 9 -- until adjacent
+      |
+candidate selection       the top non-FAIL points (e.g. 10, 11)
+      |
+fresh confirmation        independent reps, pre-planned looks
+      |
+statistically confirmed   the capacity
+      |
+headroom                  max_inflight = floor(confirmed x (1 - headroom))
 ```
+
+The bracket's lower bound only needs to be non-FAIL: discovery picks
+candidates, it never proves anything, so an INCONCLUSIVE point is a
+valid lower bound. Only a FAIL (an observed violation) is an upper
+bound.
 
 | Phase | Data | Used for | Never used for |
 |---|---|---|---|
 | **discovery** | every sweep value, `repetitions` each | observed verdicts, saturation, transition region, **choosing candidates** | confirming anything |
-| **refinement** (concurrency, `sweep.refine_max_points`) | bisection between the last non-failing point L and the first FAIL F | moving the bracket to the real edge, so candidates aren't stuck at the coarse grid point below it | confirming anything |
+| **refinement** (concurrency, `sweep.refinement`) | bisection between the last non-failing point L and the first FAIL F | moving the bracket to the real edge, so candidates aren't stuck at the coarse grid point below it | confirming anything |
 | **confirmation** | fresh repetitions at the candidates only | **the only source of `statistically_confirmed`** (and so of production values) | -- |
 
 Refinement matters for the recommendation: with 8 PASS / 12 FAIL and a

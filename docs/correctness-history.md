@@ -297,8 +297,12 @@ artifact was ever used to actually inform a gateway config:
     A reference experiment without `confirmation:` would have produced
     a discovery-only confirmed point. The loader now rejects it.
 49. **Capacity was quantized to the coarse grid.** Concurrency sweeps
-    can bisect the bracket around saturation (`sweep.refine_max_points`,
-    `phase: refinement`) before confirmation.
+    bisect the non-FAIL / FAIL bracket around saturation before
+    confirmation (`sweep.refinement: {strategy: integer_bisection,
+    stop_when_adjacent: true, max_points: 4}`, `phase: refinement`); 4
+    points resolve the widest shipped gap, 32 -> 48. Also: the
+    1,800 s-budget result "confirmed C=2" was budget-limited
+    (`unreachable_within_caps` for C=4), not evidence that C=4 is unsafe.
 50. **Arrival-scheduler lag was unchecked.** Each class/mix reports
     `load_generator` scheduling lag with a `valid` flag (worst point's
     p99 <= 50 ms). Additive to v13 -- no consumer field changed.

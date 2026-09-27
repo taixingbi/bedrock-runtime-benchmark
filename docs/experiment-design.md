@@ -138,10 +138,23 @@ class's discovery after two consecutive FAILs (saturation seen twice,
 enough for the non-monotonic check) instead of sweeping a throttle storm
 far past it; the profile lists `sweep_stopped_early.skipped_values`. The
 dry-run marks those estimates `<=`: they assume every value runs.
-`sweep.refine_max_points: 3` then bisects the bracket around saturation
-(e.g. 8 PASS / 12 FAIL -> 10 -> 11 or 9), so the confirmed candidate is
-the real edge rather than the coarse grid point below it; refinement
-points appear in `sweep_points` with `phase: refinement`.
+Then `sweep.refinement` bisects the bracket around saturation:
+
+```yaml
+refinement:
+  strategy: integer_bisection   # the only strategy
+  stop_when_adjacent: true      # upper - lower == 1 -> resolved
+  max_points: 4                 # resolves a 16-wide gap (32 -> 48: 40, 44, 46, 47)
+```
+
+e.g. 8 non-FAIL / 12 FAIL -> 10 -> 11 or 9, so the confirmed candidate
+is the real edge rather than the coarse grid point below it (confirmed
+11 -> max_inflight 8, vs 8 -> 6). Refinement points appear in
+`sweep_points` with `phase: refinement`; they are discovery-class data.
+
+`max_inflight` bounds only the concurrency dimension. The safe operating
+envelope of a class is `max_inflight` (`concurrency-sweep`) **together
+with** `sustained_rps` (`rate-capacity`); a consumer enforces both.
 
 ## Running experiments
 

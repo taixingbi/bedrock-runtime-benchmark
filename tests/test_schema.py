@@ -182,6 +182,10 @@ class ValidationTests(unittest.TestCase):
             MINIMAL + "provider_headroom: 0.2\n",                              # policy lives in constraints/
             MINIMAL.replace("purpose: reference\n", ""),                       # purpose is explicit
             MINIMAL.replace("confirmation: {max_looks: 2}\n", ""),             # reference needs confirmation
+            MINIMAL.replace("values: [1]}", "values: [1], refinement: {strategy: golden_section}}"),
+            MINIMAL.replace("values: [1]}", "values: [1], refinement: {max_points: 0}}"),
+            MINIMAL.replace("values: [1]}", "values: [1], refinement: {stop_when_adjacent: false}}"),
+            MINIMAL.replace("{type: concurrency, values: [1]}", "{type: rate, values: [1], refinement: {}}"),
             MINIMAL.replace("[short_chat]", "[short_chat, tiny_request]"),      # reference lists a characterization workload
             MINIMAL + "throttle_pause_s: -1\n",
             MINIMAL.replace("{type: concurrency, values: [1]}", "{type: rate, values: [1]}") + "throttle_pause_s: 1\n",  # open-loop

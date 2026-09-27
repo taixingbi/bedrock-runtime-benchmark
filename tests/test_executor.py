@@ -196,8 +196,9 @@ class RunExperimentTests(unittest.IsolatedAsyncioTestCase):
         FAILs; refinement tests 6 (FAIL) then 5 (non-failing) -> the
         observed edge is 5, not the coarse 4, and saturation is 6."""
         from .fakes import ConcurrencyLimitedClient
-        target = BedrockConverseTarget(model_id="m", client=ConcurrencyLimitedClient(limit=5))
-        spec = _spec(sweep=SweepConfig(type="concurrency", values=[1, 2, 4, 8], refine_max_points=3),
+        target = BedrockConverseTarget(model_id="m", client=ConcurrencyLimitedClient(limit=5, call_s=0.05))
+        from bedrock_benchmark.experiments.schema import RefinementConfig
+        spec = _spec(sweep=SweepConfig(type="concurrency", values=[1, 2, 4, 8], refinement=RefinementConfig()),
                      repetitions=1, slo=self.LOOSE)
 
         report = await run_experiment(spec, target=target)
@@ -210,6 +211,24 @@ class RunExperimentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((rec.point.concurrency, rec.saturation_point.concurrency), (5, 6))
         refined = [r for r in report.all_results if r.tags["phase"] == "refinement"]
         self.assertTrue(refined and {r.tags["sweep_value"] for r in refined} == {5, 6})
+
+    async def test_four_refinement_points_resolve_the_widest_gap(self):
+        """32 non-FAIL / 48 FAIL, true edge 45: 40, 44, 46, 45 -> adjacent
+        45 / 46 within max_points 4."""
+        from bedrock_benchmark.experiments.schema import RefinementConfig
+        from .fakes import ConcurrencyLimitedClient
+        # 50 ms calls: long enough that all workers really overlap, so the
+        # fake's edge is sharp regardless of thread scheduling.
+        target = BedrockConverseTarget(model_id="m", client=ConcurrencyLimitedClient(limit=45, call_s=0.05))
+        spec = _spec(sweep=SweepConfig(type="concurrency", values=[1, 32, 48], refinement=RefinementConfig(max_points=4)),
+                     repetitions=1, slo=self.LOOSE)
+
+        report = await run_experiment(spec, target=target)
+
+        refined = [p.concurrency for p in report.profiles[0].points if p.phase == "refinement"]
+        self.assertEqual(sorted(refined), [40, 44, 45, 46])
+        rec = report.profiles[0].recommendation
+        self.assertEqual((rec.point.concurrency, rec.saturation_point.concurrency), (45, 46))
 
     async def test_without_confirmation_discovery_is_a_fixed_sequence_test(self):
         target = BedrockConverseTarget(model_id="m", client=FakeBedrockRuntimeClient())
