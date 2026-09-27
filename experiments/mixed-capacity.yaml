@@ -4,12 +4,21 @@
 # of short and long traffic can exceed safe capacity before any class's
 # isolated measurement would predict.
 #
-# This experiment measures the SLO-qualified total offered rate for ONE
-# explicit workload mix -- R_safe(mix) -- as backend evidence for a
-# gateway's global / mixed-rate admission guardrail (R_admission). It
-# does NOT validate gateway policy: requests go straight to Bedrock, no
-# gateway in the path. Validating the deployed gateway under mixed
-# production-like traffic belongs to bedrock-platform-eval.
+# This experiment measures the statistically confirmed SLO-qualified
+# total offered rate for ONE explicit workload mix -- R_safe(mix).
+# Recommendation policy then applies headroom to produce the mix-scoped
+# R_admission(mix) for a gateway's mix-scoped total-rate admission
+# guardrail:
+#
+#   statistically confirmed R_safe(mix)      (measurement: rate block)
+#           |
+#   recommendation headroom                  (constraints/recommendation-policy.yaml)
+#           |
+#   R_admission(mix)                         (recommendation.admission_envelope.sustained_rps)
+#
+# R_safe itself is not gateway config. And this experiment does NOT
+# validate that gateway policy: requests go directly to Bedrock.
+# End-to-end validation belongs to bedrock-platform-eval.
 #
 # One sweep of the total offered rate; every arrival independently draws
 # its class by weight, and a point PASSes only if EACH class meets its

@@ -155,7 +155,7 @@ Responsibilities, without overlap:
 | `concurrency-sweep` | per-class isolated `max_inflight` for the three reference workloads | reference workload `C_admission` |
 | `rate-capacity` | per-class isolated `sustained_rps` for the same three | reference workload `R_admission` |
 | `token-sweep` | confirmed `calibration_point` per non-reference workload shape (no envelope, no headroom) | extra workload-shape admission calibration points |
-| `mixed-capacity` | `sustained_rps` for ONE explicit mix (`scope: workload_mix`) | global / mixed `R_admission` calibration for that mix |
+| `mixed-capacity` | `sustained_rps` for ONE explicit mix (`scope: workload_mix`) | mix-scoped total-rate `R_admission(mix)` |
 
 None of these validates gateway policy: every call goes straight to
 Bedrock. The benchmark produces backend admission evidence; the gateway
@@ -163,11 +163,14 @@ derives its config from it; `bedrock-platform-eval` validates the
 deployed gateway under production-like mixed traffic.
 
 **One mix is one number.** `mixed-capacity`'s 60/30/10 gives
-R_safe(60/30/10), not a global R_safe -- a chat-heavy, balanced or
-generation-heavy mix can need a very different R_admission. For a
-shifting production mix, measure the representative mixes and take
-R_global = min over them, or configure per known traffic profile.
-(Only one mix is shipped; multiple mixes per experiment aren't built.)
+R_safe(60/30/10), not a global R_safe -- and after headroom,
+R_admission(60/30/10). A chat-heavy, balanced or generation-heavy mix
+can need a very different R_admission. For a shifting production mix,
+measure the representative mixes and take the minimum across them as a
+conservative limit, or configure per known traffic profile. Each mix is
+its own experiment file (e.g. `mixed-capacity-chat-heavy.yaml`) -- one
+`mix:` per file keeps confirmation, sample sizes and the report simple;
+only 60/30/10 is shipped.
 
 Per-class `max_inflight` (and `sustained_rps`) values are **isolated** limits -- each holds for that class running alone (`scope: isolated_workload_class`). They are not additive across classes and are not a global limit; only `mixed-capacity` (`scope: workload_mix`) measures classes together.
 

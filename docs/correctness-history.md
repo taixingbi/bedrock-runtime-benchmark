@@ -364,3 +364,8 @@ artifact was ever used to actually inform a gateway config:
     `bedrock-platform-eval`. Docs, `token-sweep.yaml` and
     `calibration_point.use` corrected; the YAML and docs state that one
     mix gives R_safe(that mix), not a global R_safe. No field changed.
+59. **"global" mixed-rate wording.** mixed-capacity's output is a
+    mix-scoped total-rate limit: statistically confirmed R_safe(mix) ->
+    recommendation headroom -> R_admission(mix). Docs now say so; R_safe
+    alone is never gateway config, and other mixes are separate
+    experiment files. No field changed.
