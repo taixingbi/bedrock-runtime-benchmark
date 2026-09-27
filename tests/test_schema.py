@@ -38,6 +38,15 @@ class ShippedExperimentTests(unittest.TestCase):
                     self.assertEqual(spec.model_name, model.name)
                     self.assertEqual(spec.transport.total_max_attempts, 1)
 
+    def test_no_shipped_experiment_stops_on_a_repetition_count(self):
+        """Confirmation stops on requests / time / a look -- repetitions
+        are only how data is collected."""
+        for path in sorted(Path("experiments").glob("*.yaml")):
+            spec = load_experiment(str(path), MICRO)
+            with self.subTest(path=path.name):
+                self.assertIsNotNone(spec.confirmation)
+                self.assertIsNone(spec.confirmation.max_repetitions)
+
     def test_experiment_files_never_name_a_model(self):
         model_words = {m.name for m in load_models(include_disabled=True)} | {"nova", "llama", "qwen"}
         for path in sorted(Path("experiments").glob("*.yaml")):

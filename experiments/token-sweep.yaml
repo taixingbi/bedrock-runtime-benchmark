@@ -45,12 +45,12 @@ sweep:
 
 
 # Confirmation at each workload's candidate (fresh data, never pooled
-# with discovery -- see docs/slo-statistics.md). First look per profile:
-# gold 3,688 requests, silver 736, bronze 368 -- a few 90s repetitions
-# each at the concurrencies this sweep reaches.
+# with discovery -- see docs/slo-statistics.md). Looks at fixed sample
+# sizes: gold N = 3,688 / 5,570, silver 736 / 1,113, bronze 368 / 555
+# requests; stopped by max_requests / max_duration_s, never by a count
+# of windows.
 confirmation:
   max_looks: 2
-  max_repetitions: 10
   max_requests: 8000
   max_duration_s: 1800
   candidates: 1

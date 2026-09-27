@@ -40,14 +40,13 @@ sweep:
 
 # Confirmation at the mix's candidate (fresh data -- see
 # docs/slo-statistics.md). Every class is gated on its own profile but
-# sees only its share of the requests: short_chat (gold, 60%) needs its
-# 3,688 at the first look, so the mix needs 6,147 -- 11 repetitions at
-# the ~6.67 rps ceiling (600 requests each), and 9,284 (16) for the
-# second look. Hence caps above rate-capacity's: more SAMPLES, never a
-# looser SLO.
+# sees only its share of the requests: a look is taken when each class
+# has its OWN count (short_chat 3,688, rag_answer 736, long_generation
+# 368 for look 1). At 60% short_chat that's ~6,150 mix requests (~9,300
+# for look 2, ~1,400 s of windows at the ~6.67 rps ceiling) -- hence
+# max_requests above rate-capacity's: more SAMPLES, never a looser SLO.
 confirmation:
   max_looks: 2
-  max_repetitions: 16
   max_requests: 10000
   max_duration_s: 1800
   candidates: 1

@@ -212,28 +212,42 @@ exactly at gold's limit (`tests/test_confirmation.py`):
 | Procedure | False-PASS rate |
 |---|---|
 | planned looks, exact bound, `max_looks: 2` | 2.75% (<= 5%) |
-| naive peeking after every repetition | 7.0% |
+| naive peeking after every collection window | 7.0% |
 
-For gold (`max_looks: 2`, per-look 97.5%) the looks are at 3,688 and
-5,570 requests: 7 and 10 repetitions at the 6.67 rps ceiling (~600
-requests each) -- inside the default caps. In a mix each class's checks
+For gold (`max_looks: 2`, per-look 97.5%) the looks are at N = 3,688
+and 5,570 requests (at the 6.67 rps ceiling, ~560 s and ~840 s of
+windows -- a time estimate, not part of the rule). In a mix each class's checks
 see only that class's requests, so a look is taken when EVERY class has
 its own required count -- actual per-class n, not total x expected
 share: 6,147 random mix arrivals can hold only 3,600 `short_chat` ones.
-The plan records these as `look_requirements` (e.g. look 1: total
-3,688, short_chat 3,688, rag_answer 736, long_generation 368). Class
+The plan records these as `look_requirements` (e.g. look 1:
+short_chat 3,688, rag_answer 736, long_generation 368 -- per class
+only, since the blend isn't gated). Class
 counts depend only on the random class draws, never on outcomes, so the
 look times stay outcome-independent and the Bonferroni bound holds.
 `look_schedule_requests` (6,147 / 9,284 here) is only the expected total,
-used for caps and time estimates -- `mixed-capacity`'s caps are raised
-to fit it. More samples, never a looser SLO.
+used for caps and time estimates -- `mixed-capacity`'s `max_requests` is
+raised to fit it. More samples, never a looser SLO.
 
-**Caps -> INCONCLUSIVE, never a looser SLO.** Confirmation is
-sample-count driven: the looks are fixed N, and repetitions are only how
-requests are collected. The caps are `max_requests` (8,000) per
-candidate and `max_duration_s` for the phase; `max_repetitions` is an
-optional extra cap (none by default -- `concurrency-sweep` sets none;
-`rate-capacity`, `token-sweep` and `mixed-capacity` still set one). A
+**Stopping rule.** Three concepts, kept apart:
+
+| | Is |
+|---|---|
+| **request** | the statistical unit |
+| **look** | when a statistical decision is allowed (pre-planned N) |
+| **repetition** | how data is collected -- a window of load, nothing more |
+
+A candidate stops only on:
+
+1. a pre-planned sample-count look PASSes -> **PASS**
+2. an observed violation (any time) -> **FAIL**
+3. `max_requests` reached -> **INCONCLUSIVE**
+4. `max_duration_s` reached -> **INCONCLUSIVE**
+
+Never on a number of repetitions: no shipped experiment sets
+`max_repetitions` (it stays in the schema, default none, as an optional
+cost guardrail for special experiments). "N repetitions" appears in
+these docs only as a time estimate. A
 candidate whose next look can't be reached within the caps -- estimated
 from discovery's requests per repetition -- stops as
 `unreachable_within_caps` without spending the calls (a gold candidate
