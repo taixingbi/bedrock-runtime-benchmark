@@ -35,15 +35,17 @@
 # gateway needs C_safe under the SLO it will actually enforce, not a
 # shape-only comparison under one fixed SLO.
 #
-# The quota ceiling is reached at very different concurrency per shape
-# (~2 for tiny_request, long_generation needed C=32 in concurrency-sweep),
-# so the list spans 1..48 like concurrency-sweep; stop_after_fails ends
-# each shape two points past its saturation and refinement bisects the
-# bracket. Slow: run it for a capacity re-baseline, not on every change.
+# The RPM ceiling is reached at different concurrency levels because
+# request service time varies by workload shape. The sweep therefore
+# spans 1..48; stop_after_fails and refinement locate the local boundary
+# without unnecessarily continuing deep into overload. Slow: run it for a
+# capacity re-baseline, not on every change.
 #
 # Research limit: on nova-micro (400 RPM) every shape hits the RPM quota
 # long before any token or compute limit, so C_safe here is ~ 6.67 rps x
-# request service time -- the shape enters only through latency.
+# request service time -- the workload shape primarily affects the
+# observed concurrency boundary through request service time while RPM
+# remains the binding provider constraint.
 # Isolating how input / output tokens themselves limit capacity needs an
 # account or model whose RPM quota doesn't bind first.
 purpose: admission_calibration
@@ -72,9 +74,12 @@ sweep:
 
 
 # Confirmation at each shape's candidates (fresh data, never pooled with
-# discovery -- see docs/slo-statistics.md). Looks at fixed sample sizes:
-# gold N = 3,688 / 5,570, silver 736 / 1,113, bronze 368 / 555 requests;
+# discovery -- see docs/slo-statistics.md). Looks at fixed sample sizes;
+# with 2 candidates, alpha is split across candidates x looks:
+#   gold N = 4,380 / 6,379, silver N = 875 / 1,274, bronze N = 437 / 636
 # stopped by max_requests / max_duration_s, never by a count of windows.
+# (With a single eligible candidate the looks are the unsplit
+# 3,688 / 5,570, 736 / 1,113, 368 / 555.)
 #
 # The first run (2026-09-27) confirmed nothing: every candidate had
 # achieved 8.3-9.1 rps in discovery -- above the 6.67 rps ceiling, i.e.
