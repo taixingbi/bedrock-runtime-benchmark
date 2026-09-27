@@ -86,9 +86,11 @@ sweep:
 #   - cooldown_s: 120 lets discovery's overload clear first;
 #   - warmup_s: 60 conditions each candidate (data discarded) so the
 #     fixed-N looks read steady state, not a rested bucket's burst credit;
-#   - candidates: 2 -- if the higher one FAILs, the lower one can still
-#     confirm (fixed sequence, lowest first); max_duration_s 3000 fits two
-#     gold candidates (C=1 at ~2.2 rps needs ~1,700 s for 3,688).
+#   - candidates: 2 -- tested highest first, stop at the first PASS; if
+#     the higher one FAILs, the lower one can still confirm. alpha is split
+#     over both (gold looks 4,380 / 6,379); max_duration_s 3000 fits the
+#     higher FAILing and a slow lower one confirming (C=1 at ~2.2 rps
+#     needs ~2,300 s for 4,380).
 confirmation:
   max_looks: 2
   max_requests: 8000

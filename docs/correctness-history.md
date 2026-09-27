@@ -408,3 +408,14 @@ artifact was ever used to actually inform a gateway config:
     `saturation_offered_rps` + `saturation_status`); calibration points
     say `observed_saturation_edge`. Only `statistically_confirmed_*` is
     capacity.
+
+## Schema v19 fixes
+
+65. **Lowest-first confirmation spent samples on the way up.** With two
+    candidates the fixed sequence confirmed the lower point before
+    testing the higher one. Candidates are now tested highest-first,
+    stopping at the first PASS, with alpha split over candidates and
+    looks (`1 - alpha / (max_looks x K)`, K = candidates discovery chose)
+    so the procedure stays provably <= alpha. `confirmation.plan` states
+    `candidates` and `order: highest_first`; gold's looks with K = 2 are
+    4,380 / 6,379.

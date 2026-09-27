@@ -2,20 +2,20 @@
 
 > Docs: [methodology](methodology.md) · [SLO statistics](slo-statistics.md) · [quota model](quota-model.md) · [capacity-profile schema](capacity-profile-schema.md) · [experiment design](experiment-design.md) · [correctness history](correctness-history.md) · [README](../README.md)
 
-The benchmark's one deliverable and its contract with consumers. Schema version 18.
+The benchmark's one deliverable and its contract with consumers. Schema version 19.
 
 ## The profile
 
 Each run writes raw per-request JSONL and a `capacity-profile.yaml`
 artifact under `results/` (gitignored -- these are real measurement outputs, not
-checked-in fixtures). The `capacity-profile.yaml` schema (v18 -- see
+checked-in fixtures). The `capacity-profile.yaml` schema (v19 -- see
 [correctness history](correctness-history.md) for why `rate` and `concurrency` are always
 kept in separate blocks, why the rate block separates offered load
 from goodput, and why there's no `global_max_concurrency`). A
 rate-capacity result:
 
 ```yaml
-schema_version: 18
+schema_version: 19
 experiment: rate-capacity
 purpose: reference                                 # admission_calibration | characterization -- then recommendation is always null
 environment:                                       # provenance -- see methodology.md, "Provenance and temporal validation"

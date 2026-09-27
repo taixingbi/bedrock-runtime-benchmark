@@ -18,7 +18,7 @@ from ..analysis.capacity import (
     FAIL, INCONCLUSIVE, PASS, Recommendation, SweepAnalysis, SweepPoint, Verdict, analyze_sweep, point_verdict, recommend,
 )
 from ..analysis.confirmation import (
-    ConfirmationPlan, ConfirmationResult, fixed_sequence_confirmed, limits_for, look_sample, plan_looks, reachable,
+    ConfirmationPlan, ConfirmationResult, highest_confirmed, limits_for, look_sample, plan_looks, reachable,
     step,
 )
 from ..analysis.metrics import DEFAULT_CONFIDENCE, compute_run_metrics
@@ -99,8 +99,8 @@ def _candidates(points: List[SweepPoint], rec: Recommendation, spec: ExperimentS
     rps, for a concurrency sweep the request rate it ACHIEVED. A point
     above the ceiling passed discovery on burst allowance -- a concurrency
     that needs 9 rps can't hold under a 6.67 rps quota -- so confirming it
-    only measures the bucket draining. Returned ascending (the
-    fixed-sequence test order)."""
+    only measures the bucket draining. Returned ascending; the executor
+    tests them highest-first."""
     limit = rec.analysis.stable_pass_max
     eligible = [p for p in points if limit is not None and _value(p) <= limit]
     ceiling = spec.provider_ceilings.get(subject)
@@ -360,22 +360,25 @@ async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress:
         confirmations: List[ConfirmationResult] = []
         if spec.confirmation is not None and recommendation is not None:
             cfg = spec.confirmation
+            # Candidates come from discovery ALONE, before any confirmation
+            # data -- so alpha can be split over exactly these K.
+            candidates = _candidates(points, recommendation, spec, subject.name, cfg.candidates)
             plan = plan_looks(
                 limits_for(gate_kwargs, class_gate, shares), confidence=gate_kwargs["confidence"],
                 max_looks=cfg.max_looks, max_repetitions=cfg.max_repetitions,
                 max_requests=cfg.max_requests, max_duration_s=cfg.max_duration_s,
+                candidates=len(candidates),
             )
             gate_look = {**gate_kwargs, "confidence": plan.per_look_confidence}
             class_look = None if class_gate is None else {
                 n: {**kw, "confidence": plan.per_look_confidence} for n, kw in class_gate.items()
             }
-            candidates = _candidates(points, recommendation, spec, subject.name, cfg.candidates)
             if candidates and cfg.cooldown_s > 0:
                 await asyncio.sleep(cfg.cooldown_s)  # let discovery's overload (e.g. saturation) clear
             per_rep_s = spec.warmup_s + spec.duration_s
             started = time.perf_counter()
             stopped = False
-            for disc in candidates:  # ascending: fixed-sequence order
+            for disc in reversed(candidates):  # highest first; stop at the first PASS
                 value = _value(disc)
                 if stopped:
                     confirmations.append(ConfirmationResult(value, INCONCLUSIVE, "not_tested"))
@@ -441,8 +444,8 @@ async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress:
                             decision_metrics=last_look[0].metrics if last_look else None,
                         )
                 confirmations.append(result)
-                stopped = result.verdict != PASS
-            confirmed = fixed_sequence_confirmed(confirmations)
+                stopped = result.verdict == PASS
+            confirmed = highest_confirmed(confirmations)
             recommendation.confirmed_point = confirmed.point if confirmed is not None else None
             recommendation.confirmation_source = "confirmation"
 

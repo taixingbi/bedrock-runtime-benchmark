@@ -368,17 +368,20 @@ def _unconfirmed_reason(profile_report, spec) -> str:
     if profile_report.recommendation is None:
         return prefix + "the first swept value already FAILs the SLO, so there is nothing to confirm; sweep lower values"
     if profile_report.confirmation_plan is not None:
-        tried = sorted(profile_report.confirmations, key=lambda c: c.value)
-        failed = next((c for c in tried if c.verdict != PASS), None)
-        if failed is None:
-            where = " at or below the provider ceiling" if spec.sweep.type == "rate" else ""
-            return prefix + f"no non-failing discovery point{where} to confirm"
-        text = f"confirmation at {failed.value:g}: {failed.verdict} ({failed.stop_reason}, n={failed.n}"
-        if failed.next_look_n is not None:
-            text += f", next look at n={failed.next_look_n}"
-        text += ")"
-        hint = _STOP_HINTS.get(failed.stop_reason)
-        return prefix + text + (f"; {hint}" if hint else "") + " -- see `confirmation.candidates`"
+        # Tested highest-first; every tested candidate is non-PASS here.
+        tried = sorted((c for c in profile_report.confirmations if c.stop_reason != "not_tested"),
+                       key=lambda c: -c.value)
+        if not tried:
+            return prefix + "no non-failing discovery point at or below the provider ceiling to confirm"
+        parts = []
+        for c in tried:
+            part = f"{c.value:g}: {c.verdict} ({c.stop_reason}, n={c.n}"
+            if c.next_look_n is not None:
+                part += f", next look at n={c.next_look_n}"
+            parts.append(part + ")")
+        hint = _STOP_HINTS.get(tried[-1].stop_reason)
+        return (prefix + "confirmation (highest first) at " + "; ".join(parts) + (f"; {hint}" if hint else "")
+                + " -- see `confirmation.candidates`")
     ordered = sorted(zip(profile_report.points, profile_report.verdicts), key=lambda pv: _value(pv[0]))
     stop = next(((p, v) for p, v in ordered if v.verdict != PASS), None)
     text = prefix + ("discovery only (no `confirmation:` phase), a fixed-sequence test that stops at the first "
@@ -638,7 +641,7 @@ def build_capacity_profile(report: ExperimentReport) -> dict:
 
     confidence = spec.slo.confidence or DEFAULT_CONFIDENCE
     return {
-        "schema_version": 18,
+        "schema_version": 19,
         "experiment": spec.name,
         # reference: carries production admission envelopes;
         # admission_calibration: confirmed calibration_point per workload

@@ -4,7 +4,7 @@ import unittest
 
 from bedrock_benchmark.analysis.capacity import FAIL, INCONCLUSIVE, PASS, SweepPoint, Verdict
 from bedrock_benchmark.analysis.confirmation import (
-    ConfirmationResult, RateLimit, fixed_sequence_confirmed, limits_for, plan_looks, reachable, required_samples,
+    ConfirmationResult, RateLimit, highest_confirmed, limits_for, plan_looks, reachable, required_samples,
     step,
 )
 from bedrock_benchmark.analysis.metrics import min_samples_to_resolve_rate, rate_lower, rate_upper, wilson_upper
@@ -115,11 +115,56 @@ class MixedLookTests(unittest.TestCase):
                          (PASS, "confirmed"))
 
 
-class FixedSequenceTests(unittest.TestCase):
-    def test_highest_of_the_leading_pass_run(self):
-        r = lambda v, verdict: ConfirmationResult(v, verdict, "x")
-        self.assertEqual(fixed_sequence_confirmed([r(1, PASS), r(2, PASS), r(3, INCONCLUSIVE)]).value, 2)
-        self.assertIsNone(fixed_sequence_confirmed([r(1, INCONCLUSIVE), r(2, PASS)]))
+class HighestFirstTests(unittest.TestCase):
+    def test_the_confirmed_point_is_the_highest_pass(self):
+        r = lambda v, verdict, why="x": ConfirmationResult(v, verdict, why)  # noqa: E731
+        # Tested 3 (FAIL) then 2 (PASS); 1 never tested.
+        self.assertEqual(highest_confirmed([r(3, FAIL), r(2, PASS), r(1, INCONCLUSIVE, "not_tested")]).value, 2)
+        self.assertIsNone(highest_confirmed([r(3, FAIL), r(2, INCONCLUSIVE)]))
+
+    def test_alpha_is_split_over_candidates_and_looks(self):
+        one, two = _plan(max_looks=2), plan_looks(GOLD, confidence=0.95, max_looks=2, max_repetitions=10,
+                                                  max_requests=8000, max_duration_s=1800, candidates=2)
+        self.assertAlmostEqual(one.per_look_confidence, 1 - 0.05 / 2)
+        self.assertAlmostEqual(two.per_look_confidence, 1 - 0.05 / 4)
+        self.assertEqual((one.look_schedule[0], two.look_schedule[0]), (3688, 4380))
+        self.assertEqual(two.to_dict()["order"], "highest_first")
+
+    def test_highest_first_keeps_false_pass_at_or_below_alpha(self):
+        """Worst case: BOTH candidates sit exactly at gold's limit (both
+        unsafe), so any PASS is false -- and the second candidate is a
+        second chance for one. With alpha split over the 2 candidates the
+        procedure is PROVEN <= 5% (Bonferroni) and simulates at ~2.8%. At
+        full alpha per candidate the proven bound is only 10%; it
+        simulates at ~4.8% here because the exact test is conservative,
+        but nothing guarantees that -- hence the split."""
+        rng_seed, trials, per_rep, limit = 7, 3000, 600, 0.001
+
+        def candidate(rng, plan):
+            k = n = looks = 0
+            for _ in range(12):
+                n += per_rep
+                k += _poisson(rng, per_rep * limit)
+                conf = plan.per_look_confidence
+                v = FAIL if k / n > limit else (PASS if rate_upper(k, n, confidence=conf) <= limit else INCONCLUSIVE)
+                d = step(Verdict(v), n, looks, plan)
+                if d:
+                    return d[0]
+            return INCONCLUSIVE
+
+        def false_pass_rate(k_split):
+            plan = plan_looks([RateLimit("t", limit)], confidence=0.95, max_looks=2, max_repetitions=12,
+                              max_requests=10**6, max_duration_s=1e9, candidates=k_split)
+            rng = random.Random(rng_seed)
+            hits = 0
+            for _ in range(trials):
+                # high first; if it isn't a PASS, the low one gets its turn
+                hits += candidate(rng, plan) == PASS or candidate(rng, plan) == PASS
+            return hits / trials
+
+        split, unsplit = false_pass_rate(2), false_pass_rate(1)
+        self.assertLessEqual(split, 0.05)
+        self.assertLess(split, unsplit)  # two chances at full alpha compound
 
 
 def _poisson(rng, lam):

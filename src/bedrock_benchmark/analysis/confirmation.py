@@ -53,10 +53,18 @@ can't be reached within the caps (estimated from discovery's
 requests-per-repetition) is reported `unreachable_within_caps` without
 spending the calls.
 
-Several candidates are tested lowest-first and stop at the first one not
-confirmed (a fixed-sequence procedure): a false claim requires the first
-unsafe point in the sequence to falsely PASS, so the family-wise error
-stays <= alpha without splitting it further.
+Several candidates are tested HIGHEST-first and stop at the first PASS:
+the goal is the maximum confirmed point, and the highest candidate
+usually confirms, so testing it first saves confirming a lower one too.
+Each candidate is its own chance of a false PASS ("high falsely passes",
+or "high fails, then low falsely passes"), so alpha is split across
+candidates as well as looks: every look runs at 1 - alpha / (L x K) for
+K candidates (Bonferroni) -- P(any false PASS) <= L x K x alpha / (L x K)
+= alpha. K is the number of candidates discovery actually chose -- fixed
+before any confirmation data exists -- so one candidate keeps the full
+1 - alpha / L. (Lowest-first as a fixed sequence would keep alpha per
+test unsplit, but confirms every lower point on the way up; with K = 2,
+gold's first look is 4,380 requests instead of 2 x 3,688.)
 """
 from __future__ import annotations
 
@@ -90,6 +98,8 @@ class ConfirmationPlan:
     # checks) and, in a mix, each class name. A look is taken only when
     # every group has reached its count.
     look_requirements: List[Dict[str, int]] = field(default_factory=list)
+    # K: the candidates alpha is split over (tested highest-first).
+    candidates: int = 1
 
     def look_sizes(self, j: int) -> Dict[str, int]:
         """The exact sample for look j: {"total": N} or, in a mix, {class: N_c}."""
@@ -104,6 +114,8 @@ class ConfirmationPlan:
     def to_dict(self) -> dict:
         out = {
             "confidence": self.confidence, "max_looks": self.max_looks,
+            "candidates": self.candidates, "order": "highest_first",
+            # 1 - (1 - confidence) / (max_looks x candidates), Bonferroni
             "per_look_confidence": round(self.per_look_confidence, 6),
             "look_schedule_requests": self.look_schedule,
             "caps": {"max_repetitions": self.max_repetitions, "max_requests": self.max_requests,
@@ -118,14 +130,14 @@ TOTAL = "total"  # the look-requirement group of blend (non-class) checks
 
 
 def plan_looks(limits: List[RateLimit], *, confidence: float, max_looks: int, max_repetitions: Optional[int],
-               max_requests: int, max_duration_s: float) -> ConfirmationPlan:
+               max_requests: int, max_duration_s: float, candidates: int = 1) -> ConfirmationPlan:
     """Look j (1-based) is where every rate check could still PASS with
     j - 1 bad events of its own -- fixed before any confirmation data
     exists. Requirements are per group (the blend's total, and each
     class's own n); look_schedule is the total request count at which
     they're EXPECTED to be met (class requirement / share), used for
     caps and time estimates only."""
-    per_look = 1.0 - (1.0 - confidence) / max_looks
+    per_look = 1.0 - (1.0 - confidence) / (max_looks * max(1, candidates))
     groups: Dict[str, List[RateLimit]] = {}
     for lim in limits:
         group = lim.name.split(".", 1)[0] if "." in lim.name else TOTAL
@@ -143,7 +155,7 @@ def plan_looks(limits: List[RateLimit], *, confidence: float, max_looks: int, ma
     return ConfirmationPlan(
         confidence=confidence, max_looks=max_looks, per_look_confidence=per_look, look_schedule=schedule,
         max_repetitions=max_repetitions, max_requests=max_requests, max_duration_s=max_duration_s,
-        look_requirements=requirements,
+        look_requirements=requirements, candidates=max(1, candidates),
     )
 
 
@@ -233,16 +245,11 @@ def reachable(plan: ConfirmationPlan, *, est_requests_per_rep: float, remaining_
     return max_n >= plan.look_schedule[looks_used]
 
 
-def fixed_sequence_confirmed(results: List[ConfirmationResult]) -> Optional[ConfirmationResult]:
-    """Candidates are tested in ascending order and stop at the first
-    non-PASS; the confirmed point is the highest one in that leading
-    run of PASSes."""
-    confirmed = None
-    for r in sorted(results, key=lambda r: r.value):
-        if r.verdict != PASS:
-            break
-        confirmed = r
-    return confirmed
+def highest_confirmed(results: List[ConfirmationResult]) -> Optional[ConfirmationResult]:
+    """Candidates are tested highest-first and stop at the first PASS, so
+    the confirmed point is the highest PASS (there is at most one)."""
+    passed = [r for r in results if r.verdict == PASS]
+    return max(passed, key=lambda r: r.value) if passed else None
 
 
 def limits_for(gate_kwargs: dict, class_gate: Optional[Dict[str, dict]], shares: Optional[Dict[str, float]]) -> List[RateLimit]:

@@ -118,8 +118,9 @@ class ConfirmationConfig:
     max_requests: int = 8000
     # Wall-time cap for the whole confirmation phase of one sweep subject.
     max_duration_s: float = 1800.0
-    # How many of the highest non-failing discovery points to confirm,
-    # tested lowest-first (fixed sequence).
+    # How many of the highest non-failing discovery points to confirm:
+    # tested highest-first, stopping at the first PASS, with alpha split
+    # over them (analysis/confirmation.py).
     candidates: int = 1
     # Idle seconds between discovery and confirmation, so a discovery
     # point that overran quota (e.g. the saturation point) doesn't leave

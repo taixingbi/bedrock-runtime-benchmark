@@ -108,7 +108,8 @@ class RunExperimentTests(unittest.IsolatedAsyncioTestCase):
         rate = build_capacity_profile(report)["workload_classes"]["short"]["rate"]
         recommendation = build_capacity_profile(report)["workload_classes"]["short"]["recommendation"]
         self.assertIsNone(recommendation["admission_envelope"])
-        self.assertIn("confirmation at 200: INCONCLUSIVE (unreachable_within_caps", recommendation["reason"])
+        self.assertIn("confirmation (highest first) at 200: INCONCLUSIVE (unreachable_within_caps",
+                      recommendation["reason"])
         self.assertIn("raise them", recommendation["reason"])
         self.assertEqual(rate["confirmation_source"], "confirmation")
 
@@ -140,7 +141,7 @@ class RunExperimentTests(unittest.IsolatedAsyncioTestCase):
         # few to PASS even the loose limit): only confirmation data failed it.
         self.assertNotEqual(report.profiles[0].verdicts[0].verdict, "FAIL")
 
-    async def test_several_candidates_are_tested_lowest_first_and_stop_at_the_first_non_pass(self):
+    async def test_several_candidates_are_tested_highest_first_and_stop_at_the_first_pass(self):
         from bedrock_benchmark.experiments.schema import ConfirmationConfig
         target = BedrockConverseTarget(model_id="m", client=FakeBedrockRuntimeClient())
         spec = _spec(sweep=SweepConfig(type="rate", values=[100.0, 200.0, 400.0]), repetitions=1, slo=self.LOOSE,
@@ -148,10 +149,34 @@ class RunExperimentTests(unittest.IsolatedAsyncioTestCase):
 
         report = await run_experiment(spec, target=target)
 
+        profile = report.profiles[0]
+        results = profile.confirmations
+        self.assertEqual([(r.value, r.verdict, r.stop_reason) for r in results],
+                         [(400.0, "PASS", "confirmed"), (200.0, "INCONCLUSIVE", "not_tested")])  # 400 first
+        self.assertEqual(profile.recommendation.confirmed_point.rps, 400.0)
+        self.assertEqual(profile.confirmation_plan.candidates, 2)
+        self.assertAlmostEqual(profile.confirmation_plan.per_look_confidence, 1 - 0.05 / 4)  # alpha over 2 x 2
+
+    async def test_a_failing_highest_candidate_falls_back_to_the_next_lower(self):
+        """Discovery sees no limit, so C=4 and C=8 are the candidates; then
+        the backend tightens to 5 in flight. Highest first: C=8 FAILs in
+        confirmation (observed violation), so C=4 is tested -- and PASSes."""
+        from .fakes import ConcurrencyLimitedClient
+        from bedrock_benchmark.experiments.schema import ConfirmationConfig
+        client = ConcurrencyLimitedClient(limit=100, call_s=0.05)
+        target = BedrockConverseTarget(model_id="m", client=client)
+        spec = _spec(sweep=SweepConfig(type="concurrency", values=[2, 4, 8]), repetitions=1, slo=self.LOOSE,
+                     confirmation=ConfirmationConfig(candidates=2, max_requests=10**6))
+
+        def tighten_after_discovery(_subject, value, point):
+            if point.phase == "discovery" and value == 8:
+                client._limit = 5
+
+        report = await run_experiment(spec, target=target, on_progress=tighten_after_discovery)
+
         results = report.profiles[0].confirmations
-        self.assertEqual([r.value for r in results], [200.0, 400.0])  # the two highest, ascending
-        self.assertTrue(all(r.verdict == "PASS" for r in results))
-        self.assertEqual(report.profiles[0].recommendation.confirmed_point.rps, 400.0)
+        self.assertEqual([(r.value, r.verdict) for r in results], [(8, "FAIL"), (4, "PASS")])
+        self.assertEqual(report.profiles[0].recommendation.confirmed_point.concurrency, 4)
 
     async def test_concurrency_sweep_confirms_its_candidate_with_fresh_data(self):
         from bedrock_benchmark.experiments.schema import ConfirmationConfig

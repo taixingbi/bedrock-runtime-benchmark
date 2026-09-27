@@ -68,8 +68,8 @@ def estimated_duration_s(spec: ExperimentSpec) -> float:
     total = 0.0
     for subject in spec.subject_names:
         confirm = _confirmation_estimate_s(spec, subject, per_run)
-        if confirm > 0:  # cooldown once, conditioning once per candidate
-            confirm += spec.confirmation.cooldown_s + spec.confirmation.candidates * spec.confirmation.warmup_s
+        if confirm > 0:  # cooldown once; conditioning for the (highest) candidate assumed to PASS
+            confirm += spec.confirmation.cooldown_s + spec.confirmation.warmup_s
         total += discovery + confirm
     return total
 
@@ -99,20 +99,23 @@ def _confirmation_estimate_s(spec: ExperimentSpec, subject: str, per_run: float)
     else:
         shares, class_gate = None, None
         gate = _slo_kwargs(spec.slo_for(subject))
+    if spec.sweep.type == "rate":
+        eligible = sorted(v for v in spec.sweep_values(subject) if v <= ceiling.rps + _ROUNDING_TOLERANCE)
+        k = min(c.candidates, len(eligible))
+        top_rps = eligible[-1] if eligible else 0.0
+    else:
+        k = min(c.candidates, len(spec.sweep.values))
+        top_rps = ceiling.rps
+    # alpha is split over the K candidates; they're tested highest-first,
+    # and the estimate assumes the highest PASSes at its first look.
     plan = plan_looks(limits_for(gate, class_gate, shares), confidence=gate["confidence"],
                       max_looks=c.max_looks, max_repetitions=c.max_repetitions, max_requests=c.max_requests,
-                      max_duration_s=c.max_duration_s)
-    if spec.sweep.type == "rate":
-        rates = sorted(v for v in spec.sweep_values(subject) if v <= ceiling.rps + _ROUNDING_TOLERANCE)[-c.candidates:]
-    else:
-        rates = [ceiling.rps] * min(c.candidates, len(spec.sweep.values))
-    total = 0.0
-    for rps in rates:
-        per_rep = rps * spec.duration_s
-        reps = math.ceil(plan.look_schedule[0] / per_rep) if per_rep > 0 else math.inf
-        if reps <= rep_cap and plan.look_schedule[0] <= c.max_requests:
-            total += reps * per_run
-    return min(total, cap)
+                      max_duration_s=c.max_duration_s, candidates=max(1, k))
+    per_rep = top_rps * spec.duration_s
+    reps = math.ceil(plan.look_schedule[0] / per_rep) if per_rep > 0 else math.inf
+    if reps > rep_cap or plan.look_schedule[0] > c.max_requests:
+        return 0.0
+    return min(reps * per_run, cap)
 
 
 def describe_sweep(spec: ExperimentSpec) -> str:

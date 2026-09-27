@@ -61,7 +61,7 @@ sweep:
 #           |
 #   integer bisection refinement      refinement -- still discovery-class data
 #           |
-#   top 2 non-failing candidates      candidates, tested lowest-first (fixed sequence)
+#   top 2 non-failing candidates      candidates, tested HIGHEST first, alpha split over both
 #           |
 #   fresh fixed-count confirmation    new data only; looks at pre-planned N
 #           |
@@ -72,15 +72,16 @@ sweep:
 #   recommended max_inflight          floor(confirmed x (1 - headroom))
 #
 # Confirmation is SAMPLE-COUNT driven. The code plans the looks before
-# any confirmation data exists -- gold: N1 = 3,688, N2 = 5,570 requests
-# (silver 736 / 1,113, bronze 368 / 555) -- and look j is decided on
-# EXACTLY the first N_j requests, even if the window that crossed N_j
-# ran on to 3,980. Repetitions are only how requests are collected, so
-# there is no repetition cap; the caps are:
+# any confirmation data exists -- with 2 candidates (alpha split over
+# both, tested highest first, stop at the first PASS) gold: N1 = 4,380,
+# N2 = 6,379 requests (silver 875 / 1,274, bronze 437 / 636) -- and look
+# j is decided on EXACTLY the first N_j requests, even if the window that
+# crossed N_j ran on further. Repetitions are only how requests are
+# collected, so there is no repetition cap; the caps are:
 #   max_requests    per candidate
-#   max_duration_s  the whole phase for one class -- sized so BOTH gold
-#                   candidates fit (C=2 at ~3.2 rps needs ~1,150 s of
-#                   windows to reach 3,688, C=4 ~560-850 s)
+#   max_duration_s  the whole phase for one class -- fits the higher gold
+#                   candidate FAILing and the lower one confirming (e.g.
+#                   C=2 at ~3.5 rps: ~1,430 s to reach 4,380)
 # Reaching a cap without a PASS is INCONCLUSIVE, never a looser SLO.
 # cooldown_s lets the saturation point's overload clear first.
 confirmation:

@@ -56,7 +56,7 @@ every experiment x every model -> capacity-profile.yaml (judged against the cons
 | Experiment | Purpose | Sweep | Per model |
 |---|---|---|---|
 | `rate-capacity.yaml` | reference | 0.25x-2.5x ceiling, one reference workload per tier (`short_chat` gold, `rag_answer` silver, `long_generation` bronze) -- the canonical production-envelope run | ~57 min |
-| `concurrency-sweep.yaml` | reference | each of `short_chat` / `rag_answer` / `long_generation` alone, concurrency 1..48 until 2 consecutive FAILs; confirms the top 2 non-failing concurrencies (e.g. C=2 then C=4) | ~1.5 h |
+| `concurrency-sweep.yaml` | reference | each of `short_chat` / `rag_answer` / `long_generation` alone, concurrency 1..48 until 2 consecutive FAILs; confirms the top 2 non-failing concurrencies (highest first, e.g. C=4 then C=2) | ~1.5 h |
 | `mixed-capacity.yaml` | reference | mixed-rate calibration: 0.25x-2.5x ceiling for ONE mix, 60% `short_chat` / 30% `rag_answer` / 10% `long_generation` | ~32 min |
 | `workload-shape-calibration.yaml` | admission_calibration | the 4 non-reference shapes x concurrency 1..48 until 2 consecutive FAILs, each under its own SLO | ~1-2 h |
 

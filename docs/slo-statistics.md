@@ -182,15 +182,33 @@ discovery (its overload drains the provider's burst / rolling quota), and
 `confirmation.warmup_s` then runs load at each candidate with the data
 DISCARDED (`phase: conditioning`, never measured) -- a rested bucket
 hands out burst credit at first, which fixed-N looks must not read.
-Neither counts against `max_duration_s`. With `candidates: N > 1` they're tested
-lowest-first and stop at the first one not confirmed (a fixed-sequence
-test, which keeps the family-wise error at alpha without splitting it).
-`concurrency-sweep` uses 2: with C=6 failing, C=2 is confirmed first and
-C=4 only if C=2 passes -- a FAIL at C=4 still leaves C=2 confirmed. Keep
-that order even though the lower candidate is the slow one (C=2 at
-~3.5 rps needs ~1,150 s to collect gold's 3,688 requests, C=4 ~560 s):
-the budget must fit both, so `concurrency-sweep` has
-`max_duration_s: 3000` -- at 1,800 s C=4 always ran out of time.
+Neither counts against `max_duration_s`.
+
+**Several candidates: highest first, alpha split.** With `candidates: K
+> 1` they're tested HIGHEST first and stop at the first PASS; a FAIL (or
+cap) moves on to the next lower one. The goal is the maximum confirmed
+point, and the highest usually confirms -- so this avoids confirming a
+lower point on the way up. But every candidate is another chance of a
+false PASS ("the high one falsely passes", or "it fails, then the low
+one falsely passes"), so alpha is split over candidates AND looks: each
+look runs at `1 - alpha / (max_looks x K)` (Bonferroni), which proves
+the procedure's false-PASS rate <= alpha. K is the number of candidates
+discovery actually chose -- known before any confirmation data -- so a
+single candidate keeps `1 - alpha / max_looks`.
+
+| Tier | Looks, K = 1 | Looks, K = 2 |
+|---|---|---|
+| gold | 3,688 / 5,570 | 4,380 / 6,379 |
+| silver | 736 / 1,113 | 875 / 1,274 |
+| bronze | 368 / 555 | 437 / 636 |
+
+Versus lowest-first (a fixed sequence that keeps alpha unsplit but
+confirms every lower point first): if the high candidate PASSes it costs
+4,380 requests instead of 2 x 3,688; if it FAILs -- usually within one
+repetition -- the lower one costs 4,380 instead of 3,688. Simulated with
+both candidates exactly at gold's limit (`tests/test_confirmation.py`):
+2.8% false PASS with the split; ~4.8% at full alpha per candidate, whose
+proven bound is only 10%.
 `cooldown_s` idles between the phases so discovery's overload (the
 saturation point is the last one swept) doesn't bleed into the first
 confirmation repetition; it isn't counted against `max_duration_s`.

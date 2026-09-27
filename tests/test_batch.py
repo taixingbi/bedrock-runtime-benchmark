@@ -173,14 +173,15 @@ class PlanTests(unittest.TestCase):
 
     def test_concurrency_sweep_confirmation_estimate_assumes_the_ceiling_rate(self):
         """A concurrency candidate's request rate is unknown up front, so
-        it's assumed to run at the 6.67 rps ceiling (~600 req per 90s rep):
-        gold 3,688 -> 7 reps, silver 736 -> 2 (x2 workloads), bronze 368 -> 1
-        -- per candidate, 2 candidates each -- plus, per shape, the 120 s
-        cooldown and 2 x 60 s of discarded conditioning."""
+        it's assumed to run at the 6.67 rps ceiling (~600 req per 90s rep).
+        2 candidates, tested highest-first with alpha split over both:
+        first looks gold 4,380 -> 8 reps, silver 875 -> 2 (x2 workloads),
+        bronze 437 -> 1, for the highest candidate only (assumed to PASS)
+        -- plus, per shape, the 120 s cooldown and 60 s of conditioning."""
         micro = load_models(names=["nova-micro"])[0]
         spec = load_experiment("experiments/workload-shape-calibration.yaml", micro)
         self.assertEqual(estimated_duration_s(spec),
-                         4 * (10 + 4) * 100 + 2 * (7 + 2 + 2 + 1) * 100 + 4 * (120 + 2 * 60))
+                         4 * (10 + 4) * 100 + (8 + 2 + 2 + 1) * 100 + 4 * (120 + 60))
 
     def test_mix_confirmation_estimate_scales_each_class_by_its_share(self):
         """short_chat (gold) is 60% of the mix, so the first look is at
