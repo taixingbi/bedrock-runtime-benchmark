@@ -117,17 +117,26 @@ four), and every experiment declares a `purpose`:
 
 **admission_calibration** answers the gateway question "what safe
 concurrency does this workload SHAPE have under the SLO it will be held
-to?" -- C_safe = f(input/output tokens, SLO, quota). Each shape keeps its
+to?" -- C_safe = f(input/output tokens, SLO, quota, provider
+conditions): a confirmed point for this shape under its SLO, the quota
+and the measured provider environment. Each shape keeps its
 own business SLO (`tiny_request` gold, `medium_context` and
 `long_context_short_answer` silver, `very_large_context` bronze), not a
 fixed research SLO. Its `calibration_point` (workload shape, SLO,
-`statistically_confirmed_concurrency`, confirmed request rate and
-goodput, saturation, bottleneck) is an input to gateway policy
+`statistically_confirmed_concurrency`, `achieved_rps` and goodput,
+saturation, bottleneck) is an input to gateway policy
 derivation -- admission classes or weights -- never a config value:
 
 ```
-token-sweep -> confirmed calibration points -> gateway policy derivation -> admission config
+concurrency-sweep  ->  3 reference production points      ┐
+token-sweep        ->  additional shape calibration points ┘
+                   ->  derive workload-aware admission policy (gateway)
+mixed-capacity     ->  validate that policy under a realistic traffic mix
 ```
+
+`achieved_rps` is an observation -- in a closed-loop sweep the rate is
+what concurrency and latency produce -- not a tested rate envelope; that
+is `rate-capacity`'s `sustained_rps`. Calibration points are isolated-workload measurements. Any admission classes or weights derived from them must be validated under representative mixed traffic (e.g. mixed-capacity) before production use -- per-shape C_safe values don't combine mathematically into a global policy.
 
 Because it feeds configuration, it needs independent confirmation like
 a reference experiment. Both `role` and `purpose` are recorded in the

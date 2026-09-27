@@ -2,20 +2,20 @@
 
 > Docs: [methodology](methodology.md) · [SLO statistics](slo-statistics.md) · [quota model](quota-model.md) · [capacity-profile schema](capacity-profile-schema.md) · [experiment design](experiment-design.md) · [correctness history](correctness-history.md) · [README](../README.md)
 
-The benchmark's one deliverable and its contract with consumers. Schema version 15.
+The benchmark's one deliverable and its contract with consumers. Schema version 16.
 
 ## The profile
 
 Each run writes raw per-request JSONL and a `capacity-profile.yaml`
 artifact under `results/` (gitignored -- these are real measurement outputs, not
-checked-in fixtures). The `capacity-profile.yaml` schema (v15 -- see
+checked-in fixtures). The `capacity-profile.yaml` schema (v16 -- see
 [correctness history](correctness-history.md) for why `rate` and `concurrency` are always
 kept in separate blocks, why the rate block separates offered load
 from goodput, and why there's no `global_max_concurrency`). A
 rate-capacity result:
 
 ```yaml
-schema_version: 15
+schema_version: 16
 experiment: rate-capacity
 purpose: reference                                 # admission_calibration | characterization -- then recommendation is always null
 environment:                                       # provenance -- see methodology.md, "Provenance and temporal validation"
@@ -193,8 +193,10 @@ Contract rules a consumer can rely on:
 - A `purpose: admission_calibration` profile carries, per workload, a
   `calibration_point`: `{workload_shape: {input_tokens, output_tokens},
   slo_profile, tokens_per_request, statistically_confirmed_concurrency,
-  confirmed_request_rate_rps, confirmed_slo_goodput_rps, saturation,
-  bottleneck, use}` -- statistically confirmed, no headroom. It is an
+  achieved_rps, confirmed_slo_goodput_rps, saturation, bottleneck,
+  scope, use}` -- statistically confirmed, no headroom. `achieved_rps` is
+  observed (closed-loop C + latency produced it), never a tested rate
+  like `sustained_rps`. Calibration points are isolated-workload measurements. Any admission classes or weights derived from them must be validated under representative mixed traffic (e.g. mixed-capacity) before production use -- per-shape C_safe values don't combine mathematically into a global policy. It is an
   input for deriving admission classes or weights, not a limit to
   compare a config against (the gateway's review skips these profiles).
 - `max_inflight` is set for concurrency sweeps, `sustained_rps` for rate

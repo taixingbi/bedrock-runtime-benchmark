@@ -52,11 +52,11 @@ class BuildCapacityProfileTests(unittest.TestCase):
         defaults.update(overrides)
         return ExperimentSpec(**defaults)
 
-    def test_schema_version_is_15(self):
+    def test_schema_version_is_16(self):
         spec = self._spec()
         report = ExperimentReport(spec=spec, profiles=[ProfileReport(workload_name="short", recommendation=None)])
         profile = build_capacity_profile(report)
-        self.assertEqual(profile["schema_version"], 15)
+        self.assertEqual(profile["schema_version"], 16)
 
     def test_concurrency_sweep_writes_a_concurrency_block_not_rate(self):
         spec = self._spec(sweep_type="concurrency")
@@ -340,7 +340,8 @@ class BuildCapacityProfileTests(unittest.TestCase):
 
 
     def test_admission_calibration_emits_a_confirmed_calibration_point_not_an_envelope(self):
-        """token-sweep: C_safe per workload shape under its own SLO, for
+        """token-sweep: C_safe per workload shape under its own SLO (and the
+        measured provider environment), for
         a gateway to derive admission classes from -- no envelope, no
         headroom."""
         from bedrock_benchmark.models import load_models
@@ -359,8 +360,11 @@ class BuildCapacityProfileTests(unittest.TestCase):
         self.assertEqual(point["workload_shape"], {"input_tokens": 256, "output_tokens": 32})
         self.assertEqual(point["slo_profile"], "gold")                       # its own business SLO
         self.assertEqual((point["statistically_confirmed_concurrency"], point["saturation"]), (4, 6))
-        self.assertEqual(point["confirmed_request_rate_rps"], 6.2)
+        self.assertEqual(point["achieved_rps"], 6.2)                         # observed, not a tested rate
+        self.assertNotIn("sustained_rps", point)
+        self.assertEqual(point["scope"], "isolated_workload_class")
         self.assertIn("no headroom", point["use"])
+        self.assertIn("mixed traffic", point["use"])
 
     def test_characterization_experiment_never_recommends(self):
         from bedrock_benchmark.models import load_models

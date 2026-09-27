@@ -1,6 +1,7 @@
 # Admission calibration: the statistically confirmed safe concurrency of
-# each workload SHAPE under its real business SLO and the quota --
-#   C_safe = f(input/output tokens, SLO, quota)
+# each workload SHAPE under its real business SLO, the quota and the
+# measured provider environment --
+#   C_safe = f(input/output tokens, SLO, quota, provider conditions)
 # -- for the four catalog shapes that aren't reference workloads, each
 # concurrency-swept on its own:
 #   tiny_request               256 / 32     gold    low-token latency floor
@@ -11,11 +12,22 @@
 # not repeated: their production envelopes come from concurrency-sweep
 # and rate-capacity.
 #
-# Output per shape: a `calibration_point` (confirmed concurrency, rate,
-# goodput, saturation, bottleneck). A gateway derives its admission
-# classes / weights from these points:
-#   token-sweep -> confirmed calibration points -> gateway policy derivation -> admission config
+# Output per shape: a `calibration_point` (confirmed concurrency,
+# achieved_rps, goodput, saturation, bottleneck). achieved_rps is what
+# C and latency produced in this closed-loop run -- an observation, not a
+# tested rate envelope (that's rate-capacity's sustained_rps). A gateway
+# derives its admission classes / weights from these points:
+#
+#   concurrency-sweep -> 3 reference production points  ┐
+#   token-sweep       -> additional shape calibration   ┘
+#          -> derive workload-aware admission policy
+#          -> mixed-capacity: validate it under a realistic traffic mix
+#
 # It is NOT a production config: no admission envelope, no headroom.
+# Calibration points are isolated-workload measurements. Any admission
+# classes or weights derived from them must be validated under
+# representative mixed traffic before production use -- per-shape C_safe
+# values don't combine mathematically into a global policy.
 #
 # Each shape keeps its own business SLO (catalog/workloads.yaml) -- the
 # gateway needs C_safe under the SLO it will actually enforce, not a

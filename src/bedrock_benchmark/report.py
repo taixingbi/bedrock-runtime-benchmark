@@ -314,9 +314,13 @@ def _no_recommendation(purpose: str) -> dict:
 
 def _calibration_point(spec, subject: str, rec: Optional[Recommendation], ceiling, diagnosis: Optional[dict]) -> dict:
     """admission_calibration: the CONFIRMED capacity of one workload
-    shape under its SLO and the quota -- C_safe = f(shape, SLO, quota) --
-    as an input for gateway policy derivation, not a config value (no
-    headroom). Null values when nothing was confirmed."""
+    shape under its SLO, the quota and the measured provider environment
+    -- C_safe = f(shape, SLO, quota, provider conditions) -- as an input
+    for gateway policy derivation, not a config value (no headroom).
+    achieved_rps is what C and latency PRODUCED in this closed-loop run
+    -- an observation, not a tested rate envelope (that is
+    rate-capacity's sustained_rps). Null values when nothing was
+    confirmed."""
     workload = next((w for w in spec.workloads if w.name == subject), None)
     confirmed = rec.confirmed_point if rec is not None else None
     point = {
@@ -325,11 +329,14 @@ def _calibration_point(spec, subject: str, rec: Optional[Recommendation], ceilin
         "slo_profile": workload.slo_profile if workload is not None else None,
         "tokens_per_request": ceiling.tokens_per_request if ceiling is not None else None,
         f"statistically_confirmed_{spec.sweep.type}": _value(confirmed) if confirmed is not None else None,
-        "confirmed_request_rate_rps": confirmed.metrics.request_throughput_rps if confirmed is not None else None,
+        # Observed, not controlled: closed-loop C + latency produced it.
+        "achieved_rps": confirmed.metrics.request_throughput_rps if confirmed is not None else None,
         "confirmed_slo_goodput_rps": confirmed.metrics.slo_goodput_rps if confirmed is not None else None,
         "saturation": _value(rec.saturation_point) if rec is not None and rec.saturation_point is not None else None,
         "bottleneck": (diagnosis or {}).get("bottleneck"),
-        "use": "input to gateway admission-class / weight derivation; not a config value, no headroom applied",
+        "scope": "isolated_workload_class",
+        "use": "input to gateway admission-class / weight derivation; not a config value, no headroom applied; "
+               "derived classes / weights must be validated under representative mixed traffic before production",
     }
     if confirmed is None:
         point["reason"] = "nothing statistically confirmed for this shape -- see confirmation.candidates"
@@ -607,7 +614,7 @@ def build_capacity_profile(report: ExperimentReport) -> dict:
 
     confidence = spec.slo.confidence or DEFAULT_CONFIDENCE
     return {
-        "schema_version": 15,
+        "schema_version": 16,
         "experiment": spec.name,
         # reference: carries production admission envelopes;
         # admission_calibration: confirmed calibration_point per workload

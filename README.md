@@ -77,7 +77,7 @@ Only **reference** experiments, on the three **reference** workloads (one
 per SLO tier), produce an admission-envelope recommendation.
 `token-sweep` is **admission calibration**: for the other four catalog
 shapes it produces statistically confirmed `calibration_point`s --
-C_safe = f(input/output tokens, SLO, quota) -- from which a gateway
+C_safe = f(input/output tokens, SLO, quota, provider conditions) -- from which a gateway
 derives its admission classes or weights:
 
 ```
@@ -85,7 +85,9 @@ token-sweep -> confirmed calibration points -> gateway policy derivation -> admi
 ```
 
 A calibration point is an input to that derivation, not a config value:
-no admission envelope, no headroom.
+no admission envelope, no headroom; its `achieved_rps` is what
+concurrency and latency produced (an observation), not a tested rate
+like `rate-capacity`'s `sustained_rps`. Calibration points are isolated-workload measurements. Any admission classes or weights derived from them must be validated under representative mixed traffic (e.g. mixed-capacity) before production use -- per-shape C_safe values don't combine mathematically into a global policy.
 
 Each reference workload ends up with both an isolated concurrency and an
 isolated rate envelope:

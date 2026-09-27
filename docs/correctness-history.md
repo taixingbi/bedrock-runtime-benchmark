@@ -341,7 +341,19 @@ artifact was ever used to actually inform a gateway config:
     never a recommendation. It is now `purpose: admission_calibration`:
     each shape, under its own business SLO, gets a statistically
     confirmed `calibration_point` (shape, SLO, confirmed concurrency,
-    rate, goodput, saturation, bottleneck) -- an input for deriving
+    `achieved_rps` -- observed, not a tested rate -- goodput,
+    saturation, bottleneck, `scope: isolated_workload_class`) -- an input for deriving
     gateway admission classes / weights, still no envelope and no
     headroom. It requires `confirmation:` like reference. The sweep now
     spans 1..48 (the long shapes can saturate above 24).
+
+## Schema v16 fixes
+
+57. **calibration_point's rate read like a tested rate.** In a
+    closed-loop sweep the rate is produced by concurrency and latency,
+    so `confirmed_request_rate_rps` is now `achieved_rps` (an
+    observation), distinct from `rate-capacity`'s `sustained_rps`. Points
+    add `scope: isolated_workload_class`, C_safe is stated as a function
+    of the measured provider environment too, and derived admission
+    classes / weights must be validated under mixed traffic
+    (`mixed-capacity`) before production use.
