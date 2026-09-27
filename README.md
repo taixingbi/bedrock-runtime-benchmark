@@ -71,13 +71,21 @@ there is no gateway config schema in this repo.
 | `rate-capacity` | reference | 0.25x-2.5x of the provider ceiling, one reference workload per tier (`short_chat` gold, `rag_answer` silver, `long_generation` bronze) -- the canonical envelope run | ~57 min |
 | `concurrency-sweep` | reference | each reference workload alone, concurrency 1..48 until 2 consecutive FAILs; confirms the top 2 non-failing concurrencies | ~1.5 h |
 | `mixed-capacity` | reference | 0.25x-2.5x ceiling, 60% `short_chat` / 30% `rag_answer` / 10% `long_generation` | ~32 min |
-| `token-sweep` | characterization | the 4 characterization shapes x concurrency 1..24 until 2 consecutive FAILs | ~1 h |
+| `token-sweep` | admission_calibration | the 4 non-reference shapes x concurrency 1..48 until 2 consecutive FAILs, each under its own SLO | ~1-2 h |
 
 Only **reference** experiments, on the three **reference** workloads (one
-per SLO tier), produce an admission-envelope recommendation. The other
-catalog workloads and `token-sweep` are **characterization**: they
-measure how token shape and context move the envelope, and their
-profiles carry no recommendation.
+per SLO tier), produce an admission-envelope recommendation.
+`token-sweep` is **admission calibration**: for the other four catalog
+shapes it produces statistically confirmed `calibration_point`s --
+C_safe = f(input/output tokens, SLO, quota) -- from which a gateway
+derives its admission classes or weights:
+
+```
+token-sweep -> confirmed calibration points -> gateway policy derivation -> admission config
+```
+
+A calibration point is an input to that derivation, not a config value:
+no admission envelope, no headroom.
 
 Each reference workload ends up with both an isolated concurrency and an
 isolated rate envelope:

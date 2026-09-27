@@ -167,9 +167,10 @@ class ExperimentSpec:
     quota_headroom: float = 0.10
     confirmation: Optional[ConfirmationConfig] = None
     # reference: produces the production admission envelope, and may only
-    # list reference workloads. characterization: studies how token shape
-    # / context move the envelope -- measured and confirmed, but its
-    # profile carries no admission-envelope recommendation.
+    # list reference workloads. admission_calibration: statistically
+    # confirmed capacity points per workload shape (input / output tokens,
+    # SLO), from which a gateway DERIVES admission classes or weights --
+    # no envelope, no headroom. characterization: measurement only.
     purpose: str = "reference"
     # Concurrency sweeps only: a closed-loop worker that gets a 429 waits
     # this long before its next request instead of re-firing at once (a
@@ -333,19 +334,23 @@ def _filter_by_slo_profile(workloads, raw, only, defined, slo_file: str) -> List
     return kept
 
 
-EXPERIMENT_PURPOSES = ("reference", "characterization")
+EXPERIMENT_PURPOSES = ("reference", "admission_calibration", "characterization")
+# Purposes whose output feeds gateway configuration -- so it must come
+# from independent confirmation, never from discovery alone.
+CONFIRMED_PURPOSES = ("reference", "admission_calibration")
 
 
 def _purpose(raw: dict, workloads: List[WorkloadProfile], path: str, workloads_file: str) -> str:
     purpose = raw.get("purpose")
     if purpose not in EXPERIMENT_PURPOSES:
         raise ValueError(f"{path}: needs `purpose:` one of {list(EXPERIMENT_PURPOSES)} -- reference experiments "
-                         f"produce the production admission envelope; characterization ones only measure")
+                         f"produce the production admission envelope, admission_calibration ones confirmed "
+                         f"points for deriving gateway admission classes, characterization ones only measure")
+    if purpose in CONFIRMED_PURPOSES and not raw.get("confirmation"):
+        raise ValueError(f"{path}: {purpose} experiments require independent confirmation -- add a "
+                         f"`confirmation:` block (discovery only picks candidates; confirmation is the "
+                         f"only source of a capacity that feeds gateway configuration)")
     if purpose == "reference":
-        if not raw.get("confirmation"):
-            raise ValueError(f"{path}: reference experiments require independent confirmation -- add a "
-                             f"`confirmation:` block (discovery only picks candidates; confirmation is the "
-                             f"only source of a capacity that feeds a recommendation)")
         other = [w.name for w in workloads if w.role != "reference"]
         if other:
             raise ValueError(f"{path}: a reference experiment may only list reference workloads; {other} are "

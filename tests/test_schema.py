@@ -195,6 +195,8 @@ class ValidationTests(unittest.TestCase):
             MINIMAL + "provider_headroom: 0.2\n",                              # policy lives in constraints/
             MINIMAL.replace("purpose: reference\n", ""),                       # purpose is explicit
             MINIMAL.replace("confirmation: {max_looks: 2}\n", ""),             # reference needs confirmation
+            MINIMAL.replace("purpose: reference", "purpose: admission_calibration")
+                   .replace("confirmation: {max_looks: 2}\n", ""),             # so does admission_calibration
             MINIMAL.replace("values: [1]}", "values: [1], refinement: {strategy: golden_section}}"),
             MINIMAL.replace("values: [1]}", "values: [1], refinement: {max_points: 0}}"),
             MINIMAL.replace("values: [1]}", "values: [1], refinement: {stop_when_adjacent: false}}"),

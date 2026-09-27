@@ -1,32 +1,39 @@
-# Does capacity depend on workload SHAPE, not just load? The four
-# CHARACTERIZATION workloads of the catalog (catalog/workloads.yaml),
-# each concurrency-swept on its own:
-#   tiny_request               256 / 32     low-token latency floor
-#   medium_context             2048 / 128   common app traffic
-#   long_context_short_answer  8192 / 64    input-side (prefill) pressure
-#   very_large_context         16384 / 256  large prefill
+# Admission calibration: the statistically confirmed safe concurrency of
+# each workload SHAPE under its real business SLO and the quota --
+#   C_safe = f(input/output tokens, SLO, quota)
+# -- for the four catalog shapes that aren't reference workloads, each
+# concurrency-swept on its own:
+#   tiny_request               256 / 32     gold    low-token latency floor
+#   medium_context             2048 / 128   silver  common app traffic
+#   long_context_short_answer  8192 / 64    silver  input-side (prefill) pressure
+#   very_large_context         16384 / 256  bronze  large prefill
 # The reference workloads (short_chat, rag_answer, long_generation) are
-# NOT repeated here: their production concurrency comes from
-# concurrency-sweep. This experiment only characterizes how token /
-# context shape moves the envelope.
+# not repeated: their production envelopes come from concurrency-sweep
+# and rate-capacity.
 #
-# Each workload is judged against the SLO profile the catalog binds it
-# to. The quota ceiling is reached at very different concurrency per
-# shape (~2 for tiny_request up to ~17 for very_large_context on
-# nova-micro), so one list spans 1..24 and stop_after_fails ends each
-# workload two points past its saturation.
+# Output per shape: a `calibration_point` (confirmed concurrency, rate,
+# goodput, saturation, bottleneck). A gateway derives its admission
+# classes / weights from these points:
+#   token-sweep -> confirmed calibration points -> gateway policy derivation -> admission config
+# It is NOT a production config: no admission envelope, no headroom.
 #
-# Slow: run it for a capacity re-baseline, not on every change.
-# characterization: how token shape / context size move the envelope.
-# Measured and confirmed, but it never produces an admission-envelope
-# recommendation -- production envelopes come from reference experiments.
-purpose: characterization
+# Each shape keeps its own business SLO (catalog/workloads.yaml) -- the
+# gateway needs C_safe under the SLO it will actually enforce, not a
+# shape-only comparison under one fixed SLO.
+#
+# The quota ceiling is reached at very different concurrency per shape
+# (~2 for tiny_request, long_generation needed C=32 in concurrency-sweep),
+# so the list spans 1..48 like concurrency-sweep; stop_after_fails ends
+# each shape two points past its saturation and refinement bisects the
+# bracket. Slow: run it for a capacity re-baseline, not on every change.
+purpose: admission_calibration
 name: token-sweep
 description: |
-  Concurrency 1..24 (until two consecutive FAILs) across the four
-  characterization shapes (tiny request, medium context, long-context
-  short answer, very large context). One capacity-profile entry per
-  workload, never a recommendation.
+  Concurrency 1..48 (until two consecutive FAILs, then integer
+  refinement and fixed-count confirmation) across the four non-reference
+  catalog shapes, each under its own SLO. Produces statistically
+  confirmed workload-shape capacity points used to calibrate gateway
+  admission classes or weights -- not a production config.
 
 workloads: [tiny_request, medium_context, long_context_short_answer, very_large_context]
 
@@ -36,7 +43,7 @@ stream: true
 
 sweep:
   type: concurrency
-  values: [1, 2, 4, 6, 8, 12, 16, 24]
+  values: [1, 2, 4, 6, 8, 12, 16, 24, 32, 48]
   stop_after_fails: 2
   refinement:            # bisect the bracket around saturation (see concurrency-sweep.yaml)
     strategy: integer_bisection

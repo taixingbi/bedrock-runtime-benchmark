@@ -9,7 +9,7 @@ How a sweep turns requests into metrics: core abstractions, the capacity definit
 - **`WorkloadProfile`** (`workload.py`) -- a named input/output token
   shape (e.g. `short_chat` = 512 in / 64 out), defined once in the
   catalog `catalog/workloads.yaml`. Capacity depends heavily on
-  this; see `token-sweep.yaml` (characterization). Input padding is calibrated per model
+  this; see `token-sweep.yaml` (admission calibration). Input padding is calibrated per model
   from the provider's own token count (`calibration.py`).
 - **`WorkloadMix`** (`workload.py`) -- weighted classes for a mixed-
   workload sweep; each request draws its class independently.

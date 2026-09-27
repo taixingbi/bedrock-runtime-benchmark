@@ -333,3 +333,15 @@ artifact was ever used to actually inform a gateway config:
     `max_duration_s`) and no shipped experiment sets it: a candidate
     stops on a PASS look, an observed violation, `max_requests` or
     `max_duration_s` -- never on a count of repetitions.
+
+## Schema v15 fixes
+
+56. **token-sweep's output wasn't usable for gateway configuration.** As
+    `characterization` it measured shape effects but was explicitly
+    never a recommendation. It is now `purpose: admission_calibration`:
+    each shape, under its own business SLO, gets a statistically
+    confirmed `calibration_point` (shape, SLO, confirmed concurrency,
+    rate, goodput, saturation, bottleneck) -- an input for deriving
+    gateway admission classes / weights, still no envelope and no
+    headroom. It requires `confirmation:` like reference. The sweep now
+    spans 1..48 (the long shapes can saturate above 24).

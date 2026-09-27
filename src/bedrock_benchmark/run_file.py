@@ -144,7 +144,10 @@ def recommendation_summary(report: ExperimentReport) -> List[str]:
         confirmed_value = None if confirmed is None else (
             confirmed.concurrency if confirmed.concurrency is not None else confirmed.rps)
         spec = report.spec
-        if spec.purpose != "reference":
+        if spec.purpose == "admission_calibration":
+            policy = ("calibration point (confirmed, no headroom) -- for gateway admission-class derivation"
+                      if confirmed_value is not None else "no calibration point (nothing statistically confirmed)")
+        elif spec.purpose != "reference":
             policy = "no recommendation (characterization experiment)"
         elif confirmed_value is None:
             policy = "no recommendation (nothing statistically confirmed)"

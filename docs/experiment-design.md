@@ -27,7 +27,7 @@ every experiment x every model -> capacity-profile.yaml (judged against the cons
   llama3-3-70b, qwen3-32b). `enabled: false` skips one by default.
 - **Experiments** -- `experiments/*.yaml`: model-agnostic workload +
   sweep definitions, each with an explicit `purpose` (see
-  [Reference vs characterization](#reference-vs-characterization)).
+  [Experiment purposes](#experiment-purposes)).
   Every experiment runs unchanged against every model. They define only
   what is measured: headroom (`provider_headroom` / `quota_headroom`)
   in an experiment is rejected.
@@ -58,7 +58,7 @@ every experiment x every model -> capacity-profile.yaml (judged against the cons
 | `rate-capacity.yaml` | reference | 0.25x-2.5x ceiling, one reference workload per tier (`short_chat` gold, `rag_answer` silver, `long_generation` bronze) -- the canonical production-envelope run | ~57 min |
 | `concurrency-sweep.yaml` | reference | each of `short_chat` / `rag_answer` / `long_generation` alone, concurrency 1..48 until 2 consecutive FAILs; confirms the top 2 non-failing concurrencies (e.g. C=2 then C=4) | ~1.5 h |
 | `mixed-capacity.yaml` | reference | 0.25x-2.5x ceiling, 60% `short_chat` / 30% `rag_answer` / 10% `long_generation` | ~32 min |
-| `token-sweep.yaml` | characterization | the 4 characterization shapes x concurrency 1..24 until 2 consecutive FAILs | ~1 h |
+| `token-sweep.yaml` | admission_calibration | the 4 non-reference shapes x concurrency 1..48 until 2 consecutive FAILs, each under its own SLO | ~1-2 h |
 
 Every experiment runs adaptive confirmation at its candidate after
 discovery (see [SLO statistics](slo-statistics.md)) -- without it one
@@ -91,7 +91,7 @@ workloads:
   long_context_short_answer: {input_tokens: 8192,  output_tokens: 64,   slo_profile: silver, latency_p95_ms: 8000,  role: characterization}
   very_large_context:        {input_tokens: 16384, output_tokens: 256,  slo_profile: bronze, latency_p95_ms: 20000, role: characterization}
 
-# experiments/token-sweep.yaml -- the four characterization shapes
+# experiments/token-sweep.yaml -- the four non-reference shapes
 workloads: [tiny_request, medium_context, long_context_short_answer, very_large_context]
 ```
 
@@ -102,22 +102,36 @@ workload sends no traffic, only experiments that list it do.
 TPM-bound on low-TPM models (llama3-3-70b: ~1.21 rps by TPM vs 1.33 by
 RPM).
 
-## Reference vs characterization
+## Experiment purposes
 
-Not every catalog workload gets a capacity recommendation.
+Not every catalog workload gets a capacity recommendation. Workloads
+carry a `role` (`reference` for `short_chat` / `rag_answer` /
+`long_generation`, one per SLO tier; `characterization` for the other
+four), and every experiment declares a `purpose`:
 
-| | Workloads (`role`) | Experiments (`purpose`) | Profile carries |
-|---|---|---|---|
-| **reference** | `short_chat` (gold), `rag_answer` (silver), `long_generation` (bronze) -- one per tier | `rate-capacity`, `concurrency-sweep`, `mixed-capacity` | measurement **and** `recommendation.admission_envelope` |
-| **characterization** | `tiny_request`, `medium_context`, `long_context_short_answer`, `very_large_context` | `token-sweep` | measurement only -- `admission_envelope: null` |
+| `purpose` | Experiments | Workloads | Profile carries | Needs `confirmation:` |
+|---|---|---|---|---|
+| **reference** | `rate-capacity`, `concurrency-sweep`, `mixed-capacity` | reference only (enforced) | measurement **and** `recommendation.admission_envelope` | yes |
+| **admission_calibration** | `token-sweep` | any | measurement **and** a confirmed `calibration_point` per shape; `admission_envelope: null` | yes |
+| **characterization** | (none shipped) | any | measurement only | no |
 
-A production envelope comes only from a reference experiment, and a
-reference experiment may only list reference workloads (the loader
-rejects anything else). A characterization experiment may use any
-workload, reference ones included, to study how token shape and
-context size move the envelope; it measures and confirms, but its
-`recommendation` is always null. Both are declared: `role` in the
-catalog, `purpose` in each experiment, and the profile records both.
+**admission_calibration** answers the gateway question "what safe
+concurrency does this workload SHAPE have under the SLO it will be held
+to?" -- C_safe = f(input/output tokens, SLO, quota). Each shape keeps its
+own business SLO (`tiny_request` gold, `medium_context` and
+`long_context_short_answer` silver, `very_large_context` bronze), not a
+fixed research SLO. Its `calibration_point` (workload shape, SLO,
+`statistically_confirmed_concurrency`, confirmed request rate and
+goodput, saturation, bottleneck) is an input to gateway policy
+derivation -- admission classes or weights -- never a config value:
+
+```
+token-sweep -> confirmed calibration points -> gateway policy derivation -> admission config
+```
+
+Because it feeds configuration, it needs independent confirmation like
+a reference experiment. Both `role` and `purpose` are recorded in the
+profile.
 
 Responsibilities, without overlap:
 
@@ -126,7 +140,7 @@ Responsibilities, without overlap:
 | `concurrency-sweep` | per-class isolated `max_inflight` for the three reference workloads |
 | `rate-capacity` | per-class isolated `sustained_rps` for the same three |
 | `mixed-capacity` | `sustained_rps` for one given mix of them |
-| `token-sweep` | token / context-shape characterization only (no reference workloads) |
+| `token-sweep` | confirmed `calibration_point` per non-reference workload shape (no envelope, no headroom) |
 
 Per-class `max_inflight` (and `sustained_rps`) values are **isolated** limits -- each holds for that class running alone (`scope: isolated_workload_class`). They are not additive across classes and are not a global limit; only `mixed-capacity` (`scope: workload_mix`) measures classes together.
 

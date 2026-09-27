@@ -301,10 +301,39 @@ def _load_generator(results: List[RequestResult]) -> Optional[dict]:
     }
 
 
-def _characterization() -> dict:
+def _no_recommendation(purpose: str) -> dict:
+    if purpose == "admission_calibration":
+        return {"admission_envelope": None,
+                "reason": "admission-calibration experiment -- see calibration_point: a statistically confirmed "
+                          "capacity point for this workload shape, from which a gateway derives admission "
+                          "classes or weights; no envelope or headroom is produced here"}
     return {"admission_envelope": None,
             "reason": "characterization experiment -- measures how token shape / context move the envelope; "
                       "production admission envelopes come only from reference experiments"}
+
+
+def _calibration_point(spec, subject: str, rec: Optional[Recommendation], ceiling, diagnosis: Optional[dict]) -> dict:
+    """admission_calibration: the CONFIRMED capacity of one workload
+    shape under its SLO and the quota -- C_safe = f(shape, SLO, quota) --
+    as an input for gateway policy derivation, not a config value (no
+    headroom). Null values when nothing was confirmed."""
+    workload = next((w for w in spec.workloads if w.name == subject), None)
+    confirmed = rec.confirmed_point if rec is not None else None
+    point = {
+        "workload_shape": {"input_tokens": workload.input_tokens, "output_tokens": workload.output_tokens}
+        if workload is not None else None,
+        "slo_profile": workload.slo_profile if workload is not None else None,
+        "tokens_per_request": ceiling.tokens_per_request if ceiling is not None else None,
+        f"statistically_confirmed_{spec.sweep.type}": _value(confirmed) if confirmed is not None else None,
+        "confirmed_request_rate_rps": confirmed.metrics.request_throughput_rps if confirmed is not None else None,
+        "confirmed_slo_goodput_rps": confirmed.metrics.slo_goodput_rps if confirmed is not None else None,
+        "saturation": _value(rec.saturation_point) if rec is not None and rec.saturation_point is not None else None,
+        "bottleneck": (diagnosis or {}).get("bottleneck"),
+        "use": "input to gateway admission-class / weight derivation; not a config value, no headroom applied",
+    }
+    if confirmed is None:
+        point["reason"] = "nothing statistically confirmed for this shape -- see confirmation.candidates"
+    return point
 
 
 def _unconfirmed_reason(profile_report, spec) -> str:
@@ -441,10 +470,12 @@ def _envelope(entry: dict, profile_report, spec, report_results: List[RequestRes
             entry["unstable_region"] = analysis.unstable_region
         else:
             entry["note"] = "no swept value met the configured SLO -- re-run with lower sweep values"
-        entry["recommendation"] = _characterization() if spec.purpose != "reference" else admission_envelope(
+        entry["recommendation"] = _no_recommendation(spec.purpose) if spec.purpose != "reference" else admission_envelope(
             spec.sweep.type, None, headroom=spec.provider_headroom,
             unconfirmed_reason=_unconfirmed_reason(profile_report, spec),
         )
+        if spec.purpose == "admission_calibration":
+            entry["calibration_point"] = _calibration_point(spec, subject, None, spec.provider_ceilings.get(subject), None)
         return
     ceiling = spec.provider_ceilings.get(subject)
     ceiling_rps = ceiling.rps if ceiling else None
@@ -465,7 +496,9 @@ def _envelope(entry: dict, profile_report, spec, report_results: List[RequestRes
     # POLICY, kept apart from the measurement above: the confirmed point
     # after this benchmark's safety headroom (recommendation.py) -- only
     # from a reference experiment.
-    entry["recommendation"] = _characterization() if spec.purpose != "reference" else admission_envelope(
+    if spec.purpose == "admission_calibration":
+        entry["calibration_point"] = _calibration_point(spec, subject, rec, ceiling, entry["diagnosis"])
+    entry["recommendation"] = _no_recommendation(spec.purpose) if spec.purpose != "reference" else admission_envelope(
         spec.sweep.type, confirmed, headroom=spec.provider_headroom, quota_headroom=spec.quota_headroom,
         provider_ceiling_rps=ceiling_rps, scope=scope,
         unconfirmed_reason=None if confirmed is not None else _unconfirmed_reason(profile_report, spec),
@@ -574,10 +607,11 @@ def build_capacity_profile(report: ExperimentReport) -> dict:
 
     confidence = spec.slo.confidence or DEFAULT_CONFIDENCE
     return {
-        "schema_version": 14,
+        "schema_version": 15,
         "experiment": spec.name,
         # reference: carries production admission envelopes;
-        # characterization: measurement only (recommendation always null).
+        # admission_calibration: confirmed calibration_point per workload
+        # shape (no envelope); characterization: measurement only.
         "purpose": spec.purpose,
         "environment": _environment(report),
         # One profile is ONE snapshot of provider conditions. Validity

@@ -2,22 +2,22 @@
 
 > Docs: [methodology](methodology.md) · [SLO statistics](slo-statistics.md) · [quota model](quota-model.md) · [capacity-profile schema](capacity-profile-schema.md) · [experiment design](experiment-design.md) · [correctness history](correctness-history.md) · [README](../README.md)
 
-The benchmark's one deliverable and its contract with consumers. Schema version 14.
+The benchmark's one deliverable and its contract with consumers. Schema version 15.
 
 ## The profile
 
 Each run writes raw per-request JSONL and a `capacity-profile.yaml`
 artifact under `results/` (gitignored -- these are real measurement outputs, not
-checked-in fixtures). The `capacity-profile.yaml` schema (v14 -- see
+checked-in fixtures). The `capacity-profile.yaml` schema (v15 -- see
 [correctness history](correctness-history.md) for why `rate` and `concurrency` are always
 kept in separate blocks, why the rate block separates offered load
 from goodput, and why there's no `global_max_concurrency`). A
 rate-capacity result:
 
 ```yaml
-schema_version: 14
+schema_version: 15
 experiment: rate-capacity
-purpose: reference                                 # or characterization -- then recommendation is always null
+purpose: reference                                 # admission_calibration | characterization -- then recommendation is always null
 environment:                                       # provenance -- see methodology.md, "Provenance and temporal validation"
   measured_at: {start: 2026-09-26T19:06:40+00:00, end: ...}
   account: "646821141010"
@@ -190,6 +190,13 @@ Contract rules a consumer can rely on:
   statistically confirmed point, and only in a `purpose: reference`
   profile; it is `null` (with `reason`) otherwise. A characterization
   profile never carries one -- skip it.
+- A `purpose: admission_calibration` profile carries, per workload, a
+  `calibration_point`: `{workload_shape: {input_tokens, output_tokens},
+  slo_profile, tokens_per_request, statistically_confirmed_concurrency,
+  confirmed_request_rate_rps, confirmed_slo_goodput_rps, saturation,
+  bottleneck, use}` -- statistically confirmed, no headroom. It is an
+  input for deriving admission classes or weights, not a limit to
+  compare a config against (the gateway's review skips these profiles).
 - `max_inflight` is set for concurrency sweeps, `sustained_rps` for rate
   sweeps; the other is `null`.
 - `scope: isolated_workload_class` values hold for that class alone:

@@ -52,11 +52,11 @@ class BuildCapacityProfileTests(unittest.TestCase):
         defaults.update(overrides)
         return ExperimentSpec(**defaults)
 
-    def test_schema_version_is_14(self):
+    def test_schema_version_is_15(self):
         spec = self._spec()
         report = ExperimentReport(spec=spec, profiles=[ProfileReport(workload_name="short", recommendation=None)])
         profile = build_capacity_profile(report)
-        self.assertEqual(profile["schema_version"], 14)
+        self.assertEqual(profile["schema_version"], 15)
 
     def test_concurrency_sweep_writes_a_concurrency_block_not_rate(self):
         spec = self._spec(sweep_type="concurrency")
@@ -339,23 +339,42 @@ class BuildCapacityProfileTests(unittest.TestCase):
                           "role": "reference"})
 
 
-    def test_characterization_experiment_never_recommends(self):
-        """token-sweep measures and confirms, but a production admission
-        envelope comes only from a reference experiment."""
+    def test_admission_calibration_emits_a_confirmed_calibration_point_not_an_envelope(self):
+        """token-sweep: C_safe per workload shape under its own SLO, for
+        a gateway to derive admission classes from -- no envelope, no
+        headroom."""
         from bedrock_benchmark.models import load_models
         spec = load_experiment("experiments/token-sweep.yaml", load_models(names=["nova-micro"])[0])
-        self.assertEqual(spec.purpose, "characterization")
-        rec = _rec(point=SweepPoint(concurrency=2, rps=None, metrics=_metrics()), saturation_point=None)
+        self.assertEqual(spec.purpose, "admission_calibration")
+        rec = _rec(point=SweepPoint(concurrency=4, rps=None, metrics=_metrics(request_throughput_rps=6.2)),
+                   saturation_point=SweepPoint(concurrency=6, rps=None, metrics=_metrics(throttle_rate=0.05)))
         report = ExperimentReport(spec=spec, profiles=[ProfileReport(workload_name="tiny_request", recommendation=rec)])
 
         profile = build_capacity_profile(report)
 
-        self.assertEqual(profile["purpose"], "characterization")
+        self.assertEqual(profile["purpose"], "admission_calibration")
         entry = profile["workload_classes"]["tiny_request"]
+        self.assertIsNone(entry["recommendation"]["admission_envelope"])
+        point = entry["calibration_point"]
+        self.assertEqual(point["workload_shape"], {"input_tokens": 256, "output_tokens": 32})
+        self.assertEqual(point["slo_profile"], "gold")                       # its own business SLO
+        self.assertEqual((point["statistically_confirmed_concurrency"], point["saturation"]), (4, 6))
+        self.assertEqual(point["confirmed_request_rate_rps"], 6.2)
+        self.assertIn("no headroom", point["use"])
+
+    def test_characterization_experiment_never_recommends(self):
+        from bedrock_benchmark.models import load_models
+        spec = load_experiment("experiments/token-sweep.yaml", load_models(names=["nova-micro"])[0])
+        spec.purpose = "characterization"
+        rec = _rec(point=SweepPoint(concurrency=2, rps=None, metrics=_metrics()), saturation_point=None)
+        report = ExperimentReport(spec=spec, profiles=[ProfileReport(workload_name="tiny_request", recommendation=rec)])
+
+        entry = build_capacity_profile(report)["workload_classes"]["tiny_request"]
+
         self.assertEqual(entry["concurrency"]["statistically_confirmed"], 2)  # the measurement is kept
         self.assertIsNone(entry["recommendation"]["admission_envelope"])
         self.assertIn("characterization experiment", entry["recommendation"]["reason"])
-
+        self.assertNotIn("calibration_point", entry)
 
     def test_summary_and_quota_bottleneck_diagnosis(self):
         """The review's case: C=2 confirmed, C=4 clean but INCONCLUSIVE,
