@@ -165,9 +165,10 @@ models legitimately stop a little early).
 `experiments/mixed-capacity.yaml` sweeps ONE offered rate where each
 arrival draws its class by weight (60% short_chat / 30% rag_answer /
 10% long_generation), so
-classes genuinely overlap in flight. A point passes only if the SLO
-holds for the blend **and every class** -- a blended p95 can look fine
-while the long class alone blows its latency SLO. The artifact gains:
+classes genuinely overlap in flight. A point passes only if **every
+class** meets its own SLO profile -- a blended p95 can look fine while
+the long class alone blows its latency SLO. The blend is reported, never
+gated. The artifact gains:
 
 ```yaml
 mixed_workloads:

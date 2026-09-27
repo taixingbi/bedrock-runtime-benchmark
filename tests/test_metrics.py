@@ -149,11 +149,23 @@ class MeasurementWindowTests(unittest.TestCase):
         """Excluding in-flight-at-close requests from the rate/latency
         population would drop exactly the slow tail an SLO catches."""
         fast = _result(scheduled_at=101, completed_at=101.1, latency_ms=100.0)
-        slow = _result(scheduled_at=109.9, completed_at=115.0, latency_ms=5100.0, success=False, throttled=True)
-        m = compute_run_metrics([fast, slow], windows=[self.W])
-        self.assertEqual(m.n, 2)
-        self.assertEqual(m.throttle_rate, 0.5)
+        slow = _result(scheduled_at=109.9, completed_at=115.0, latency_ms=5100.0)  # succeeds after close
+        late_429 = _result(scheduled_at=109.95, completed_at=110.2, latency_ms=50.0, success=False, throttled=True)
+        m = compute_run_metrics([fast, slow, late_429], windows=[self.W])
+        self.assertEqual(m.n, 3)
+        self.assertAlmostEqual(m.throttle_rate, 0.3333)
         self.assertGreater(m.latency_p99_ms, 5000)
+
+    def test_latency_percentiles_use_successful_requests_like_the_gate(self):
+        """Rates: every request. Latency / TTFT / TPOT: successes only --
+        the reported p95 and the statistical gate read one population."""
+        ok = [_result(scheduled_at=101 + i * 0.01, completed_at=101.5, latency_ms=900.0) for i in range(10)]
+        fast_429s = [_result(scheduled_at=102 + i * 0.01, completed_at=102.1, latency_ms=20.0, success=False,
+                             throttled=True) for i in range(30)]
+        m = compute_run_metrics(ok + fast_429s, windows=[self.W])
+        self.assertEqual((m.n, m.n_success, m.n_throttled), (40, 10, 30))
+        self.assertEqual(m.latency_p50_ms, 900.0)                       # not dragged down by 20 ms 429s
+        self.assertEqual(len(m.latency_samples["latency"]), 10)
 
     def test_warmup_requests_are_excluded(self):
         warmup = _result(scheduled_at=95, completed_at=95.5, success=False, throttled=True)

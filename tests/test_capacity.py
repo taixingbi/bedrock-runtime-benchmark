@@ -194,6 +194,38 @@ class NonMonotonicSweepTests(unittest.TestCase):
         self.assertTrue(point_meets_slo(point, {"long": dict(latency_p95_slo_ms=10000.0)}, **interactive))
 
 
+class MixedGateTests(unittest.TestCase):
+    def test_mix_passes_when_every_class_meets_its_own_slo(self):
+        """Gold 99.5% + silver/bronze 99.0% blend to ~99.3%: each class
+        meets its own SLO, so the point must not FAIL on a blend gate at
+        gold's 99.5%."""
+        resolved = dict(throttle_rate_upper=0.0, n_throttled=0)
+        gold = _metrics(n=60_000, n_success=59_700, success_rate=0.995, success_rate_lower=0.9951, **resolved)
+        silver = _metrics(n=30_000, n_success=29_700, success_rate=0.99, success_rate_lower=0.9901, **resolved)
+        bronze = _metrics(n=10_000, n_success=9_900, success_rate=0.99, success_rate_lower=0.9901, **resolved)
+        blend = _metrics(n=100_000, n_success=99_300, success_rate=0.993, success_rate_lower=0.9927, **resolved)
+        point = SweepPoint(concurrency=None, rps=5.0, metrics=blend,
+                           class_metrics={"chat": gold, "rag": silver, "gen": bronze})
+        class_slo = {"chat": dict(success_rate_min=0.995, throttle_rate_max=0.001),
+                     "rag": dict(success_rate_min=0.99, throttle_rate_max=0.005),
+                     "gen": dict(success_rate_min=0.99, throttle_rate_max=0.01)}
+        v = point_verdict(point, class_slo, success_rate_min=0.995, throttle_rate_max=0.001)
+        self.assertEqual(v.verdict, "PASS")
+        self.assertTrue(all("." in c.name for c in v.checks))  # only per-class checks gate
+
+
+class ExactCountDecisionTests(unittest.TestCase):
+    def test_rounding_never_decides_a_rate_verdict(self):
+        """10,001 throttles in 10,000,000 requests is 0.0010001 -- a
+        violation of 0.001 -- but the 4-decimal throttle_rate reads
+        0.001. The decision uses the exact count."""
+        m = _metrics(n=10_000_000, n_success=10_000_000 - 10_001, n_throttled=10_001,
+                     success_rate=0.999, throttle_rate=0.001, throttle_rate_upper=0.00102)
+        check = next(c for c in evaluate(m, throttle_rate_max=0.001, success_rate_min=0.99).checks
+                     if c.name == "throttle_rate")
+        self.assertEqual((check.verdict, check.observed), ("FAIL", 0.001))  # reported rounded, decided exact
+
+
 class RecommendTests(unittest.TestCase):
     def test_observed_point_is_the_highest_non_failing_one(self):
         points = [

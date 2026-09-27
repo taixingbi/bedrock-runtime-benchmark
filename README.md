@@ -91,9 +91,13 @@ isolated rate envelope:
 
 Per-class `max_inflight` (and `sustained_rps`) values are **isolated** limits -- each holds for that class running alone (`scope: isolated_workload_class`). They are not additive across classes and are not a global limit; only `mixed-capacity` (`scope: workload_mix`) measures classes together.
 A mixed/global total in-flight limit would need its own experiment
-(not built -- add one only if a consumer needs it). `max_inflight` alone
-is only the concurrency dimension: a class's safe operating envelope is
-its `max_inflight` together with its `sustained_rps`.
+(not built -- add one only if a consumer needs it). `max_inflight` and
+`sustained_rps` are two independently confirmed **guardrails**, one per
+dimension: the concurrency sweep controls C and lets the rate emerge;
+the rate sweep controls R and lets concurrency emerge. Enforcing both
+(C <= max_inflight and R <= sustained_rps) is conservative, but it is
+not a statistically confirmed 2-D (C, R) capacity surface -- no joint
+(C, R) point near the recommendation has been validated.
 
 Every experiment is discovery followed by adaptive confirmation at the
 candidate -- the only way a point becomes statistically confirmed.

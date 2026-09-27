@@ -34,11 +34,23 @@ add up to an unacceptable total. So each workload sets its own
 short_chat 3s, rag_answer 10s, long_generation 60s -- set them to what
 each product promises), applied on top of its profile.
 
-Isolated workloads are gated on their own
-profile. In a mix, every request counts toward goodput against its own
-class's profile, every class is gated on its own profile, and the blend
-on the STRICTEST success/throttle gate among its classes' profiles
-(latency always per class). Resolving a throttle limit statistically
+Isolated workloads are gated on their own profile. In a mix, every
+request counts toward goodput against its own class's profile and
+**a mixed point PASSes exactly when every class PASSes its own profile**
+(`short_chat` -> gold, `rag_answer` -> silver, `long_generation` ->
+bronze). The blend -- aggregate success, throttle, TTFT, throughput,
+goodput -- is reported but never gated: a blend gate at the strictest
+class's limit would add a constraint no class has (60% at 99.5% + 40% at
+99.0% blend to ~99.3%, which would FAIL a 99.5% blend gate while every
+class meets its SLO). A mix-level SLO would be a separate, explicit
+business policy -- none is defined.
+
+**One population per SLO kind**, the same for the reported value and the
+statistical gate: success and throttle over every request; latency,
+TTFT and TPOT (reported percentiles and exceedance tests alike) over
+successful requests only -- a fast 429 is not a latency measurement.
+Rate decisions use exact counts (`n_success / n`, `n_throttled / n`);
+the 4-decimal rates in the profile are for reading, never deciding. Resolving a throttle limit statistically
 needs 2,995 requests per point for gold's 0.1%, 598 for silver's
 0.5%, 299 for bronze's 1% (exact bound, 95% confidence, zero events).
 
@@ -177,6 +189,22 @@ a PASS can only be declared at `max_looks` sample sizes fixed before any
 confirmation data exists -- look j is where j-1 bad events would still
 clear the limit -- each at confidence `1 - 0.05 / max_looks`
 (Bonferroni). FAIL (an observed violation) stops it at any time.
+
+**Fixed-count looks.** Look j is decided on EXACTLY the first N_j
+confirmation requests by scheduled time (in a mix, the first N_c,j of
+each class) -- not on however many a 120 s repetition produced. In a
+closed-loop concurrency run the count per repetition depends on
+outcomes (a 429 returns in milliseconds and frees the worker for another
+request; slow responses mean fewer), so "evaluate all n >= N_j" would
+make the tested sample size outcome-dependent. Truncating to N_j keeps
+every look an exact binomial test at a pre-declared n. Each candidate
+reports `decision: {n, n_throttled, throttle_rate_upper,
+success_rate_lower}` -- the sample the look was decided on -- next to
+the requests collected. Simulated with outcome-dependent counts (each
+throttle adds 19 requests to its repetition), 4,000 trials at a true
+rate exactly at gold's limit: 3.8% false PASS with fixed-count looks
+(<= 5% guaranteed by construction); `tests/test_confirmation.py` checks
+<= 5%.
 Checking the bound after every repetition and stopping on the first
 clear would inflate false PASSes; simulated at a true throttle rate
 exactly at gold's limit (`tests/test_confirmation.py`):

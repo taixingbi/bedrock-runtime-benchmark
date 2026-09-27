@@ -574,7 +574,7 @@ def build_capacity_profile(report: ExperimentReport) -> dict:
 
     confidence = spec.slo.confidence or DEFAULT_CONFIDENCE
     return {
-        "schema_version": 13,
+        "schema_version": 14,
         "experiment": spec.name,
         # reference: carries production admission envelopes;
         # characterization: measurement only (recommendation always null).

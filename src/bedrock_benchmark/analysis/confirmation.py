@@ -34,8 +34,17 @@ Two rules keep the false-PASS rate at or below alpha = 1 - confidence:
    depend only on the class draws, never on outcomes, so the look times
    stay outcome-independent and the Bonferroni bound holds.
 
-   FAIL may be declared at any time (an observed violation): stopping
-   to fail can never create a false PASS.
+   Looks are FIXED-COUNT: look j is evaluated on exactly the first N_j
+   confirmation requests (by scheduled time; in a mix, the first N_c,j
+   of each class) -- never on however many a fixed-duration repetition
+   happened to produce. In a closed-loop concurrency run the request
+   count per 120 s depends on outcomes (fast 429s add requests, slow
+   responses remove them), so evaluating "all n >= N_j" would make the
+   sample size outcome-dependent; truncating to N_j keeps each look an
+   exact test at a pre-declared n.
+
+   FAIL may be declared at any time (an observed violation, on all data
+   so far): stopping to fail can never create a false PASS.
 
 Caps (repetitions / requests per candidate, wall time for the phase)
 bound the cost. Reaching a cap without a PASS is INCONCLUSIVE -- the
@@ -53,10 +62,10 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional
 
 from .capacity import FAIL, INCONCLUSIVE, LATENCY_EXCEEDANCE_MAX, PASS, SweepPoint, Verdict
-from .metrics import rate_upper, required_samples  # noqa: F401 -- re-exported
+from .metrics import RunMetrics, rate_upper, required_samples  # noqa: F401 -- re-exported
 
 
 @dataclass
@@ -81,6 +90,10 @@ class ConfirmationPlan:
     # checks) and, in a mix, each class name. A look is taken only when
     # every group has reached its count.
     look_requirements: List[Dict[str, int]] = field(default_factory=list)
+
+    def look_sizes(self, j: int) -> Dict[str, int]:
+        """The exact sample for look j: {"total": N} or, in a mix, {class: N_c}."""
+        return self.look_requirements[j] if self.look_requirements else {TOTAL: self.look_schedule[j]}
 
     def look_reached(self, j: int, n: int, class_n: Optional[Dict[str, int]] = None) -> bool:
         if not self.look_requirements:
@@ -145,13 +158,21 @@ class ConfirmationResult:
     looks_used: int = 0
     next_look_n: Optional[int] = None  # the look it was working toward when it stopped
     detail: Optional[Verdict] = None   # checks at the last evaluation (per-look confidence)
-    point: Optional[SweepPoint] = None # confirmation-only data -- never discovery
+    point: Optional[SweepPoint] = None # ALL confirmation data collected -- never discovery (descriptive)
+    # The exact fixed-count sample the last LOOK was decided on (first N_j).
+    decision_n: Optional[int] = None
+    decision_metrics: Optional["RunMetrics"] = None
 
     def to_dict(self) -> dict:
         out = {"value": self.value, "verdict": self.verdict, "stop_reason": self.stop_reason,
                "repetitions": self.repetitions, "n": self.n, "looks_used": self.looks_used}
         if self.next_look_n is not None and self.verdict != PASS:
             out["next_look_n"] = self.next_look_n
+        if self.decision_metrics is not None:
+            d = self.decision_metrics
+            # What the look was DECIDED on: exactly the first decision_n requests.
+            out["decision"] = {"n": self.decision_n, "n_throttled": d.n_throttled,
+                               "throttle_rate_upper": d.throttle_rate_upper, "success_rate_lower": d.success_rate_lower}
         if self.detail is not None:
             out["checks"] = [c.to_dict() for c in self.detail.checks if c.verdict != PASS] or "all PASS"
         if self.point is not None:
@@ -164,22 +185,41 @@ class ConfirmationResult:
 
 
 def step(verdict: Verdict, n: int, looks_used: int, plan: ConfirmationPlan,
-         class_n: Optional[Dict[str, int]] = None) -> Optional[tuple]:
-    """Decide after one confirmation repetition. `verdict` must come from
-    metrics whose bounds were computed at plan.per_look_confidence.
-    Returns (verdict, stop_reason, looks_used) to stop, or None to keep
-    measuring. Looks are taken only when every group's count (n, and in
-    a mix each class's `class_n`) crosses the next scheduled requirement;
-    FAIL is honored at any time."""
+         class_n: Optional[Dict[str, int]] = None,
+         look_verdict: Optional[Callable[[int], Verdict]] = None) -> Optional[tuple]:
+    """Decide after one confirmation repetition. `verdict` (all data so
+    far) must come from metrics whose bounds were computed at
+    plan.per_look_confidence; it decides FAIL, at any time. A look is
+    taken only when every group's count (n, and in a mix each class's
+    `class_n`) reaches the next scheduled requirement, and is decided by
+    `look_verdict(j)` -- the verdict on EXACTLY the first N_j requests
+    (fixed-count; `verdict` itself when not given, e.g. in simulations
+    whose n is exact already). Returns (verdict, stop_reason,
+    looks_used) to stop, or None to keep measuring."""
     if verdict.verdict == FAIL:
         return FAIL, "observed_violation", looks_used
     while looks_used < plan.max_looks and plan.look_reached(looks_used, n, class_n):
+        at_look = look_verdict(looks_used) if look_verdict is not None else verdict
         looks_used += 1  # this scheduled look is spent whether or not it passes
-        if verdict.verdict == PASS:
+        if at_look.verdict == PASS:
             return PASS, "confirmed", looks_used
     if looks_used >= plan.max_looks:
         return INCONCLUSIVE, "looks_exhausted", looks_used
     return None
+
+
+def look_sample(results: List, sizes: Dict[str, int]) -> List:
+    """Exactly the first N requests of the confirmation stream by
+    scheduled time -- or, in a mix, the first N_c of each class
+    (sizes = ConfirmationPlan.look_sizes(j)). `results` must be the
+    measured (in-window) confirmation requests."""
+    ordered = sorted(results, key=lambda r: r.scheduled_at)
+    if set(sizes) == {TOTAL}:
+        return ordered[:sizes[TOTAL]]
+    out = []
+    for cls, need in sizes.items():
+        out += [r for r in ordered if r.tags.get("workload") == cls][:need]
+    return out
 
 
 def reachable(plan: ConfirmationPlan, *, est_requests_per_rep: float, remaining_duration_s: float,
@@ -205,8 +245,9 @@ def fixed_sequence_confirmed(results: List[ConfirmationResult]) -> Optional[Conf
 
 
 def limits_for(gate_kwargs: dict, class_gate: Optional[Dict[str, dict]], shares: Optional[Dict[str, float]]) -> List[RateLimit]:
-    """The rate checks a candidate's verdict depends on: the blend's, and
-    each mixed class's (seeing only its share of the requests)."""
+    """The rate checks a candidate's verdict depends on: an isolated
+    subject's own, or -- for a mix -- each class's only (seeing just its
+    share of the requests); a mix's blend is reported, never gated."""
     def of(prefix: str, kw: dict, share: float) -> List[RateLimit]:
         out = []
         # Latency SLOs are exceedance proportions too: P(value > threshold)
@@ -222,7 +263,7 @@ def limits_for(gate_kwargs: dict, class_gate: Optional[Dict[str, dict]], shares:
             out.append(RateLimit(f"{prefix}success_rate", 1.0 - kw["success_rate_min"], share))
         return out
 
-    limits = of("", gate_kwargs, 1.0)
+    limits = [] if class_gate else of("", gate_kwargs, 1.0)
     for name, kw in (class_gate or {}).items():
         limits += of(f"{name}.", kw, (shares or {}).get(name, 1.0))
     return limits

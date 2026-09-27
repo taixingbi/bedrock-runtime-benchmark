@@ -257,6 +257,10 @@ class RunMetrics:
     # Raw counts + confidence bounds behind the two rate gates, so a
     # reader can tell "0% throttled out of 5,000" from "0% out of 50".
     n_throttled: int = 0
+    # Exact success count -- rate DECISIONS use n_success / n and
+    # n_throttled / n, never the rounded success_rate / throttle_rate
+    # (those are for reporting). None only for hand-built metrics.
+    n_success: Optional[int] = None
     throttle_rate_upper: Optional[float] = None
     success_rate_lower: Optional[float] = None
     bound_confidence: Optional[float] = None
@@ -319,9 +323,15 @@ def compute_run_metrics(
 
     n_success = sum(1 for r in population if r.success)
     n_throttled = sum(1 for r in population if r.throttled)
-    latencies = [r.latency_ms for r in population if r.latency_ms is not None]
-    ttfts = [r.ttft_ms for r in population if r.ttft_ms is not None]
-    tpots = [t for t in (tpot_ms(r) for r in population) if t is not None]
+    # One population per SLO kind, the same for the reported percentiles
+    # and the statistical gate (latency_samples below):
+    #   success / throttle           -> every request
+    #   latency / TTFT / TPOT        -> SUCCESSFUL requests only
+    # (a fast 429 or error is not a latency measurement).
+    successful = [r for r in population if r.success]
+    latencies = [r.latency_ms for r in successful if r.latency_ms is not None]
+    ttfts = [r.ttft_ms for r in successful if r.ttft_ms is not None]
+    tpots = [t for t in (tpot_ms(r) for r in successful) if t is not None]
     output_tokens = [r.output_tokens for r in completed if r.output_tokens is not None]
 
     slo_goodput_rps = None
@@ -378,13 +388,14 @@ def compute_run_metrics(
         slo_goodput_rps=slo_goodput_rps,
         slo_efficiency=slo_efficiency,
         n_throttled=n_throttled,
+        n_success=n_success,
         throttle_rate_upper=round(rate_upper(n_throttled, n, confidence=confidence), 6),
         success_rate_lower=round(rate_lower(n_success, n, confidence=confidence), 6),
         bound_confidence=confidence,
         measured_duration_s=round(duration_s, 3),
         latency_samples={
-            "ttft": [r.ttft_ms for r in population if r.success],
-            "tpot": [tpot_ms(r) for r in population if r.success],
-            "latency": [r.latency_ms for r in population if r.success],
+            "ttft": [r.ttft_ms for r in successful],
+            "tpot": [tpot_ms(r) for r in successful],
+            "latency": [r.latency_ms for r in successful],
         },
     )

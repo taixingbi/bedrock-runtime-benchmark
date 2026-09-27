@@ -193,9 +193,10 @@ class ExperimentSpec:
     quota_account: Optional[str] = None  # the AWS account the quota was taken for
     # Every profile from constraints/slo.yaml; each workload names one via
     # WorkloadProfile.slo_profile. For a loaded spec, `slo` above is the
-    # STRICTEST success/throttle gate among the profiles its workloads
-    # use (no latency) -- what a mixed blend and the sample-size check
-    # are held to.
+    # STRICTEST success/throttle limits among the profiles its workloads
+    # use (no latency) -- used for the reported sample-size figure
+    # (min_requests_to_resolve_throttle_slo), never as a mix's gate: a
+    # mix is gated per class only (capacity.point_verdict).
     slo_profiles: Dict[str, SloConfig] = field(default_factory=dict)
     # The models-file entry this spec is bound to (None only for specs
     # built directly in code, e.g. tests).

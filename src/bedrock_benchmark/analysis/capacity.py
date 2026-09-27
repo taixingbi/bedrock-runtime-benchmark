@@ -117,12 +117,15 @@ def _combine(checks: List[Check]) -> str:
 
 
 def _rate_check(name: str, observed: float, bound: Optional[float], limit: float, *, upper: bool,
-                n: int, confidence: float) -> Check:
+                n: int, confidence: float, exact: Optional[float] = None) -> Check:
     """upper=True: a max-rate limit (throttle); False: a min-rate limit
     (success). Observed violation -> FAIL; the confidence bound clears
     the limit -> PASS; otherwise INCONCLUSIVE with the sample size that
-    would resolve it (for a zero-event observation)."""
-    violated = observed > limit if upper else observed < limit
+    would resolve it (for a zero-event observation). The violation test
+    uses `exact` (count / n) when given -- `observed` is the rounded
+    value for the report, and rounding must never decide a verdict."""
+    rate = exact if exact is not None else observed
+    violated = rate > limit if upper else rate < limit
     if violated:
         return Check(name, FAIL, observed=observed, threshold=limit, reason="observed_violation", n=n)
     if bound is not None and (bound <= limit if upper else bound >= limit):
@@ -190,10 +193,12 @@ def evaluate(
         _latency_check("tpot_p95", "tpot", metrics, tpot_p95_slo_ms, confidence),
         _latency_check("latency_p95", "latency", metrics, latency_p95_slo_ms, confidence),
     ) if c is not None]
+    exact_success = metrics.n_success / metrics.n if metrics.n_success is not None else None
+    exact_throttle = metrics.n_throttled / metrics.n if metrics.n_success is not None else None
     checks.append(_rate_check("success_rate", metrics.success_rate, metrics.success_rate_lower, success_rate_min,
-                              upper=False, n=metrics.n, confidence=confidence))
+                              upper=False, n=metrics.n, confidence=confidence, exact=exact_success))
     checks.append(_rate_check("throttle_rate", metrics.throttle_rate, metrics.throttle_rate_upper, throttle_rate_max,
-                              upper=True, n=metrics.n, confidence=confidence))
+                              upper=True, n=metrics.n, confidence=confidence, exact=exact_throttle))
     return Verdict(_combine(checks), checks)
 
 
@@ -205,14 +210,19 @@ def meets_slo(metrics: RunMetrics, *, gate_on_bounds: bool = False, **slo_kwargs
 
 
 def point_verdict(point: SweepPoint, class_slo: Optional[Dict[str, dict]] = None, **slo_kwargs) -> Verdict:
-    """The blend (point.metrics) is judged with slo_kwargs; each class of
-    a mixed point with its own entry in class_slo (falling back to
-    slo_kwargs), so every class meets ITS SLO. Check names are prefixed
-    with the class for a mix."""
+    """An isolated point is judged on its metrics with slo_kwargs.
+
+    A MIXED point (class_slo given) is judged ONLY per class, each on its
+    own service-class SLO: PASS = every class PASSes. The blend is
+    reported, never gated -- gating it on the strictest class's success
+    / throttle limit would add a constraint no class has: 60% gold at
+    99.5% + 40% silver/bronze at 99.0% blend to ~99.3%, which would FAIL
+    a 99.5% blend gate while every class meets its own SLO. Check names
+    are prefixed with the class."""
     if point.client_limited:
         return Verdict(FAIL, [Check("client", FAIL, observed=point.peak_outstanding, reason="client_limited")])
-    blend = evaluate(point.metrics, **slo_kwargs)
-    checks = list(blend.checks)
+    mixed = class_slo is not None and bool(point.class_metrics)
+    checks = [] if mixed else list(evaluate(point.metrics, **slo_kwargs).checks)
     for name, m in point.class_metrics.items():
         for c in evaluate(m, **(class_slo or {}).get(name, slo_kwargs)).checks:
             c.name = f"{name}.{c.name}"

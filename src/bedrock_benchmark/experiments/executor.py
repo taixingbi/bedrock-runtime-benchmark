@@ -17,7 +17,8 @@ from ..analysis.capacity import (
     FAIL, INCONCLUSIVE, PASS, Recommendation, SweepAnalysis, SweepPoint, Verdict, analyze_sweep, point_verdict, recommend,
 )
 from ..analysis.confirmation import (
-    ConfirmationPlan, ConfirmationResult, fixed_sequence_confirmed, limits_for, plan_looks, reachable, step,
+    ConfirmationPlan, ConfirmationResult, fixed_sequence_confirmed, limits_for, look_sample, plan_looks, reachable,
+    step,
 )
 from ..analysis.metrics import DEFAULT_CONFIDENCE, compute_run_metrics
 from ..calibration import CalibrationResult, calibrate_profile, estimate_profile, resolve_counter
@@ -156,10 +157,10 @@ async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress:
     for subject in subjects:
         is_mix = isinstance(subject, WorkloadMix)
         shares = subject.shares if is_mix else None
-        # SLOs: an isolated workload uses its own (profile or default).
-        # A mix judges each class against ITS SLO -- per-request for
-        # goodput, per-class for the gate -- and the blend only on the
-        # rate gates (success/throttle) of the default SLO.
+        # SLOs: an isolated workload uses its own profile. A mix judges
+        # each class against ITS profile -- per request for goodput, per
+        # class for the gate; the blend is reported, never gated
+        # (gate_kwargs is only the fallback for classes without an SLO).
         if is_mix:
             class_slos = {n: spec.slo_for(n) for n in shares}
             blend_slo = spec.slo
@@ -225,10 +226,15 @@ async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress:
                 report.all_results.extend(results)
             return state
 
-        def build(value: float, phase: str, conf: Optional[float] = None) -> SweepPoint:
+        def build(value: float, phase: str, conf: Optional[float] = None,
+                  subset: Optional[List[RequestResult]] = None) -> SweepPoint:
             """Metrics from ONE phase's data; bounds at `conf` (default:
-            the SLO's confidence; confirmation uses the per-look one)."""
-            state = acc[phase][value]
+            the SLO's confidence; confirmation uses the per-look one).
+            `subset` replaces the phase's results -- a confirmation look's
+            exact first-N sample."""
+            state = dict(acc[phase][value])
+            if subset is not None:
+                state["results"] = subset
             point_conf = conf if conf is not None else confidence
             offered_rps = value if spec.sweep.type == "rate" else None
             class_metrics = {}
@@ -339,7 +345,19 @@ async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress:
                     verdict = point_verdict(point, class_look, **gate_look)
                     n, reps = point.metrics.n, len(state["windows"])
                     class_n = {name: m.n for name, m in point.class_metrics.items()} if is_mix else None
-                    decision = step(verdict, n, looks_used, plan, class_n)
+                    looked: Dict[int, tuple] = {}
+
+                    def look_verdict(j: int) -> Verdict:
+                        # Fixed-count look: EXACTLY the first N_j measured
+                        # requests, however many this repetition produced.
+                        measured = [r for r in state["results"] if r.tags.get("measured")]
+                        sample = look_sample(measured, plan.look_sizes(j))
+                        look_point = build(value, "confirmation", conf=plan.per_look_confidence, subset=sample)
+                        v_look = point_verdict(look_point, class_look, **gate_look)
+                        looked[j] = (look_point, v_look, len(sample))
+                        return v_look
+
+                    decision = step(verdict, n, looks_used, plan, class_n, look_verdict)
                     if decision is not None:
                         v, reason, looks_used = decision
                     else:
@@ -359,10 +377,15 @@ async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress:
                             if max_n < plan.look_schedule[looks_used]:
                                 reason = "unreachable_within_caps"
                     if reason is not None:
+                        last_look = looked.get(max(looked)) if looked else None
                         result = ConfirmationResult(
                             value, v, reason, repetitions=reps, n=n, looks_used=looks_used,
                             next_look_n=plan.look_schedule[looks_used] if looks_used < plan.max_looks else None,
-                            detail=verdict, point=point,
+                            # A look's verdict when a look decided; the all-data one for a FAIL / cap.
+                            detail=last_look[1] if last_look and reason in ("confirmed", "looks_exhausted") else verdict,
+                            point=point,
+                            decision_n=last_look[2] if last_look else None,
+                            decision_metrics=last_look[0].metrics if last_look else None,
                         )
                 confirmations.append(result)
                 stopped = result.verdict != PASS

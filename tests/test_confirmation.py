@@ -58,11 +58,13 @@ class PlanTests(unittest.TestCase):
                           max_duration_s=1e9)
         self.assertEqual(plan.look_schedule, [math.ceil(required_samples(0, 0.01, confidence=0.95) / 0.1)])
 
-    def test_limits_for_blend_and_classes(self):
+    def test_limits_for_isolated_and_mixed(self):
         gate = dict(throttle_rate_max=0.001, success_rate_min=0.995)
+        self.assertEqual([l.name for l in limits_for(gate, None, None)], ["throttle_rate", "success_rate"])
+        # A mix plans for its classes only -- the blend is reported, not gated.
         names = [l.name for l in limits_for(gate, {"chat": dict(throttle_rate_max=0.01, success_rate_min=0.99)},
                                              {"chat": 0.6})]
-        self.assertEqual(names, ["throttle_rate", "success_rate", "chat.throttle_rate", "chat.success_rate"])
+        self.assertEqual(names, ["chat.throttle_rate", "chat.success_rate"])
 
 
 class StepTests(unittest.TestCase):
@@ -102,7 +104,7 @@ class MixedLookTests(unittest.TestCase):
 
     def test_requirements_are_per_class_counts(self):
         plan = self._plan()
-        self.assertEqual(plan.look_requirements[0], {"total": 3688, "chat": 3688, "gen": 368})
+        self.assertEqual(plan.look_requirements[0], {"chat": 3688, "gen": 368})  # no blend group
         self.assertEqual(plan.look_schedule[0], math.ceil(3688 / 0.6))  # expected total, for caps only
 
     def test_total_at_the_expected_count_is_not_enough_if_a_class_is_short(self):
@@ -172,6 +174,43 @@ class ErrorControlSimulationTests(unittest.TestCase):
         planned_rate, naive_rate = self._false_pass_rate(planned), self._false_pass_rate(naive)
         self.assertLessEqual(planned_rate, 0.05)
         self.assertGreater(naive_rate, 0.05)  # why the look schedule exists
+
+    def test_fixed_count_looks_hold_when_the_request_count_depends_on_outcomes(self):
+        """Closed-loop reality: a 429 returns fast, so a repetition with
+        throttles produces MORE requests (here each throttle frees time
+        for 19 more). The per-rep count is then outcome-dependent -- the
+        case a fixed PER_REP simulation doesn't cover. With fixed-count
+        looks (the first N_j requests only) every look is still an exact
+        binomial test at a pre-declared n, so false PASS stays <= 5%."""
+        plan = plan_looks([RateLimit("t", self.LIMIT)], confidence=0.95, max_looks=2, max_repetitions=12,
+                          max_requests=10**6, max_duration_s=1e9)
+
+        def run(rng):
+            throttles, i = [], 0
+            while i < 20_000:  # the confirmation stream: throttle positions, geometric gaps
+                i += int(math.log(1.0 - rng.random()) / math.log(1.0 - self.LIMIT)) + 1
+                throttles.append(i - 1)
+            k_before = lambda n: sum(1 for t in throttles if t < n)  # noqa: E731
+            n = looks = 0
+            for _ in range(12):
+                end = n + self.PER_REP
+                while True:  # outcome-dependent count: each throttle in this rep adds 19 requests
+                    grown = n + self.PER_REP + 19 * (k_before(end) - k_before(n))
+                    if grown == end:
+                        break
+                    end = grown
+                n = end
+                d = step(self._verdict(k_before(n), n, plan.per_look_confidence), n, looks, plan,
+                         look_verdict=lambda j: self._verdict(k_before(plan.look_schedule[j]), plan.look_schedule[j],
+                                                              plan.per_look_confidence))
+                if d:
+                    return d[0]
+                looks = sum(1 for N in plan.look_schedule if N <= n)
+            return INCONCLUSIVE
+
+        rng = random.Random(1)
+        rate = sum(run(rng) == PASS for _ in range(1000)) / 1000
+        self.assertLessEqual(rate, 0.05)
 
 
 if __name__ == "__main__":

@@ -306,3 +306,24 @@ artifact was ever used to actually inform a gateway config:
 50. **Arrival-scheduler lag was unchecked.** Each class/mix reports
     `load_generator` scheduling lag with a `valid` flag (worst point's
     p99 <= 50 ms). Additive to v13 -- no consumer field changed.
+## Schema v14 fixes
+
+51. **A mix was gated on its blend too.** The blend was held to the
+    strictest class's success/throttle limit, which can FAIL a mix whose
+    every class meets its own SLO (gold 99.5% + silver/bronze 99.0% ->
+    ~99.3% blend). A mixed point is now PASS exactly when every class
+    PASSes its own profile; the blend is reported, never gated, and the
+    confirmation plan has no blend group.
+52. **Looks were evaluated on "all n >= N_j".** A fixed-duration
+    closed-loop repetition's request count depends on outcomes, so the
+    tested n was outcome-dependent. Looks now use exactly the first N_j
+    requests (first N_c,j per class in a mix); candidates report the
+    `decision` sample. A simulation with outcome-dependent counts is in
+    `tests/test_confirmation.py`.
+53. **Latency percentiles and latency gates read different
+    populations.** Reported p50/p95/p99 used every request with a
+    latency (429s included); the exceedance gate used successes. Both
+    now use successful requests only.
+54. **Rounded rates decided verdicts.** Observed-violation checks now use
+    exact counts (`n_success`, `n_throttled`); the rounded rates are for
+    reporting.

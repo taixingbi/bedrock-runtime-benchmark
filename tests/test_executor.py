@@ -79,6 +79,10 @@ class RunExperimentTests(unittest.IsolatedAsyncioTestCase):
         [result] = profile.confirmations
         self.assertEqual((result.value, result.verdict, result.stop_reason), (400.0, "PASS", "confirmed"))
         self.assertGreaterEqual(result.n, profile.confirmation_plan.look_schedule[0])
+        # Fixed-count look: decided on EXACTLY the planned N, however many
+        # the repetitions produced.
+        self.assertEqual(result.decision_n, profile.confirmation_plan.look_schedule[result.looks_used - 1])
+        self.assertEqual(result.decision_metrics.n, result.decision_n)
         # The confirmed point's metrics are confirmation data ONLY -- the
         # discovery requests at 400 rps are not pooled in.
         conf_measured = [r for r in report.all_results

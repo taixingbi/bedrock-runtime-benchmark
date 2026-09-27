@@ -152,9 +152,14 @@ is the real edge rather than the coarse grid point below it (confirmed
 11 -> max_inflight 8, vs 8 -> 6). Refinement points appear in
 `sweep_points` with `phase: refinement`; they are discovery-class data.
 
-`max_inflight` bounds only the concurrency dimension. The safe operating
-envelope of a class is `max_inflight` (`concurrency-sweep`) **together
-with** `sustained_rps` (`rate-capacity`); a consumer enforces both.
+`max_inflight` (`concurrency-sweep`) and `sustained_rps`
+(`rate-capacity`) are two independently confirmed guardrails -- each
+experiment controls one dimension and lets the other emerge. A consumer
+enforces both, which is conservative; it is not a jointly validated 2-D
+(C, R) surface. A future `joint-envelope-validation` experiment
+(open-loop arrivals at R with an admission cap C) could confirm a few
+points around the recommendation -- (C, 0.8R), (C, R), (0.8C, R) --
+plus slightly-over controls (1.2C, R), (C, 1.2R); not built.
 
 ## Running experiments
 
