@@ -20,14 +20,16 @@
 #
 #   concurrency-sweep -> 3 reference production points  ┐
 #   token-sweep       -> additional shape calibration   ┘
-#          -> derive workload-aware admission policy
-#          -> mixed-capacity: validate it under a realistic traffic mix
+#          -> gateway derives a workload-aware admission policy
+#          -> bedrock-platform-eval validates the DEPLOYED policy
 #
 # It is NOT a production config: no admission envelope, no headroom.
-# Calibration points are isolated-workload measurements. Any admission
-# classes or weights derived from them must be validated under
-# representative mixed traffic before production use -- per-shape C_safe
-# values don't combine mathematically into a global policy.
+# Calibration points are isolated-workload measurements; per-shape
+# C_safe values don't combine mathematically into a global policy. Any
+# admission classes or weights derived from them must be validated under
+# representative mixed traffic through the deployed gateway
+# (bedrock-platform-eval) before production use -- this repo calls
+# Bedrock directly and never validates gateway policy.
 #
 # Each shape keeps its own business SLO (catalog/workloads.yaml) -- the
 # gateway needs C_safe under the SLO it will actually enforce, not a

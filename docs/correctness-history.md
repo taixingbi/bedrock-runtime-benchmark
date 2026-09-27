@@ -357,3 +357,10 @@ artifact was ever used to actually inform a gateway config:
     of the measured provider environment too, and derived admission
     classes / weights must be validated under mixed traffic
     (`mixed-capacity`) before production use.
+58. **mixed-capacity was described as validating gateway policy.** It
+    calls Bedrock directly -- no gateway in the path -- so it calibrates
+    R_safe for one explicit mix (backend evidence for a mixed-rate
+    guardrail); validating the deployed gateway policy belongs to
+    `bedrock-platform-eval`. Docs, `token-sweep.yaml` and
+    `calibration_point.use` corrected; the YAML and docs state that one
+    mix gives R_safe(that mix), not a global R_safe. No field changed.

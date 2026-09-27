@@ -57,7 +57,7 @@ every experiment x every model -> capacity-profile.yaml (judged against the cons
 |---|---|---|---|
 | `rate-capacity.yaml` | reference | 0.25x-2.5x ceiling, one reference workload per tier (`short_chat` gold, `rag_answer` silver, `long_generation` bronze) -- the canonical production-envelope run | ~57 min |
 | `concurrency-sweep.yaml` | reference | each of `short_chat` / `rag_answer` / `long_generation` alone, concurrency 1..48 until 2 consecutive FAILs; confirms the top 2 non-failing concurrencies (e.g. C=2 then C=4) | ~1.5 h |
-| `mixed-capacity.yaml` | reference | 0.25x-2.5x ceiling, 60% `short_chat` / 30% `rag_answer` / 10% `long_generation` | ~32 min |
+| `mixed-capacity.yaml` | reference | mixed-rate calibration: 0.25x-2.5x ceiling for ONE mix, 60% `short_chat` / 30% `rag_answer` / 10% `long_generation` | ~32 min |
 | `token-sweep.yaml` | admission_calibration | the 4 non-reference shapes x concurrency 1..48 until 2 consecutive FAILs, each under its own SLO | ~1-2 h |
 
 Every experiment runs adaptive confirmation at its candidate after
@@ -128,15 +128,21 @@ saturation, bottleneck) is an input to gateway policy
 derivation -- admission classes or weights -- never a config value:
 
 ```
-concurrency-sweep  ->  3 reference production points      ┐
-token-sweep        ->  additional shape calibration points ┘
-                   ->  derive workload-aware admission policy (gateway)
-mixed-capacity     ->  validate that policy under a realistic traffic mix
+bedrock-runtime-benchmark (Benchmark -> Bedrock, no gateway in the path)
+  concurrency-sweep  ->  C_admission per reference workload       ┐
+  rate-capacity      ->  R_admission per reference workload       │  backend admission
+  token-sweep        ->  extra workload-shape calibration points  │  evidence
+  mixed-capacity     ->  R_safe for one explicit workload mix     ┘
+          |
+gateway derives its policy / config from that evidence
+          |
+bedrock-platform-eval (-> gateway -> Bedrock)
+  validates the deployed gateway policy under production-like mixed traffic
 ```
 
 `achieved_rps` is an observation -- in a closed-loop sweep the rate is
 what concurrency and latency produce -- not a tested rate envelope; that
-is `rate-capacity`'s `sustained_rps`. Calibration points are isolated-workload measurements. Any admission classes or weights derived from them must be validated under representative mixed traffic (e.g. mixed-capacity) before production use -- per-shape C_safe values don't combine mathematically into a global policy.
+is `rate-capacity`'s `sustained_rps`. Calibration points are isolated-workload measurements; per-shape C_safe values don't combine mathematically into a global policy. Any admission classes or weights derived from them must be validated under representative mixed traffic through the deployed gateway (`bedrock-platform-eval`) before production use -- this repo calls Bedrock directly and never validates gateway policy.
 
 Because it feeds configuration, it needs independent confirmation like
 a reference experiment. Both `role` and `purpose` are recorded in the
@@ -144,12 +150,24 @@ profile.
 
 Responsibilities, without overlap:
 
-| Experiment | Produces |
-|---|---|
-| `concurrency-sweep` | per-class isolated `max_inflight` for the three reference workloads |
-| `rate-capacity` | per-class isolated `sustained_rps` for the same three |
-| `mixed-capacity` | `sustained_rps` for one given mix of them |
-| `token-sweep` | confirmed `calibration_point` per non-reference workload shape (no envelope, no headroom) |
+| Experiment | Produces | Gateway use |
+|---|---|---|
+| `concurrency-sweep` | per-class isolated `max_inflight` for the three reference workloads | reference workload `C_admission` |
+| `rate-capacity` | per-class isolated `sustained_rps` for the same three | reference workload `R_admission` |
+| `token-sweep` | confirmed `calibration_point` per non-reference workload shape (no envelope, no headroom) | extra workload-shape admission calibration points |
+| `mixed-capacity` | `sustained_rps` for ONE explicit mix (`scope: workload_mix`) | global / mixed `R_admission` calibration for that mix |
+
+None of these validates gateway policy: every call goes straight to
+Bedrock. The benchmark produces backend admission evidence; the gateway
+derives its config from it; `bedrock-platform-eval` validates the
+deployed gateway under production-like mixed traffic.
+
+**One mix is one number.** `mixed-capacity`'s 60/30/10 gives
+R_safe(60/30/10), not a global R_safe -- a chat-heavy, balanced or
+generation-heavy mix can need a very different R_admission. For a
+shifting production mix, measure the representative mixes and take
+R_global = min over them, or configure per known traffic profile.
+(Only one mix is shipped; multiple mixes per experiment aren't built.)
 
 Per-class `max_inflight` (and `sustained_rps`) values are **isolated** limits -- each holds for that class running alone (`scope: isolated_workload_class`). They are not additive across classes and are not a global limit; only `mixed-capacity` (`scope: workload_mix`) measures classes together.
 

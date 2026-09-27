@@ -336,7 +336,8 @@ def _calibration_point(spec, subject: str, rec: Optional[Recommendation], ceilin
         "bottleneck": (diagnosis or {}).get("bottleneck"),
         "scope": "isolated_workload_class",
         "use": "input to gateway admission-class / weight derivation; not a config value, no headroom applied; "
-               "derived classes / weights must be validated under representative mixed traffic before production",
+               "derived classes / weights must be validated under representative mixed traffic through the "
+               "deployed gateway (bedrock-platform-eval) before production",
     }
     if confirmed is None:
         point["reason"] = "nothing statistically confirmed for this shape -- see confirmation.candidates"

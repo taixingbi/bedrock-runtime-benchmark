@@ -70,7 +70,7 @@ there is no gateway config schema in this repo.
 |---|---|---|---|
 | `rate-capacity` | reference | 0.25x-2.5x of the provider ceiling, one reference workload per tier (`short_chat` gold, `rag_answer` silver, `long_generation` bronze) -- the canonical envelope run | ~57 min |
 | `concurrency-sweep` | reference | each reference workload alone, concurrency 1..48 until 2 consecutive FAILs; confirms the top 2 non-failing concurrencies | ~1.5 h |
-| `mixed-capacity` | reference | 0.25x-2.5x ceiling, 60% `short_chat` / 30% `rag_answer` / 10% `long_generation` | ~32 min |
+| `mixed-capacity` | reference | mixed-rate calibration: 0.25x-2.5x ceiling for ONE mix, 60% `short_chat` / 30% `rag_answer` / 10% `long_generation` | ~32 min |
 | `token-sweep` | admission_calibration | the 4 non-reference shapes x concurrency 1..48 until 2 consecutive FAILs, each under its own SLO | ~1-2 h |
 
 Only **reference** experiments, on the three **reference** workloads (one
@@ -87,7 +87,7 @@ token-sweep -> confirmed calibration points -> gateway policy derivation -> admi
 A calibration point is an input to that derivation, not a config value:
 no admission envelope, no headroom; its `achieved_rps` is what
 concurrency and latency produced (an observation), not a tested rate
-like `rate-capacity`'s `sustained_rps`. Calibration points are isolated-workload measurements. Any admission classes or weights derived from them must be validated under representative mixed traffic (e.g. mixed-capacity) before production use -- per-shape C_safe values don't combine mathematically into a global policy.
+like `rate-capacity`'s `sustained_rps`. Calibration points are isolated-workload measurements; per-shape C_safe values don't combine mathematically into a global policy. Any admission classes or weights derived from them must be validated under representative mixed traffic through the deployed gateway (`bedrock-platform-eval`) before production use -- this repo calls Bedrock directly and never validates gateway policy.
 
 Each reference workload ends up with both an isolated concurrency and an
 isolated rate envelope:
@@ -100,6 +100,27 @@ isolated rate envelope:
 | the 60/30/10 mix | -- | ✓ (`mixed-capacity`) |
 
 Per-class `max_inflight` (and `sustained_rps`) values are **isolated** limits -- each holds for that class running alone (`scope: isolated_workload_class`). They are not additive across classes and are not a global limit; only `mixed-capacity` (`scope: workload_mix`) measures classes together.
+
+What each experiment gives a gateway:
+
+| Experiment | Produces | Gateway use |
+|---|---|---|
+| `concurrency-sweep` | per-class isolated `max_inflight` for the three reference workloads | reference workload `C_admission` |
+| `rate-capacity` | per-class isolated `sustained_rps` for the same three | reference workload `R_admission` |
+| `token-sweep` | confirmed `calibration_point` per non-reference workload shape (no envelope, no headroom) | extra workload-shape admission calibration points |
+| `mixed-capacity` | `sustained_rps` for ONE explicit mix (`scope: workload_mix`) | global / mixed `R_admission` calibration for that mix |
+
+None of these validates gateway policy: every call goes straight to
+Bedrock. The benchmark produces backend admission evidence; the gateway
+derives its config from it; `bedrock-platform-eval` validates the
+deployed gateway under production-like mixed traffic.
+
+**One mix is one number.** `mixed-capacity`'s 60/30/10 gives
+R_safe(60/30/10), not a global R_safe -- a chat-heavy, balanced or
+generation-heavy mix can need a very different R_admission. For a
+shifting production mix, measure the representative mixes and take
+R_global = min over them, or configure per known traffic profile.
+(Only one mix is shipped; multiple mixes per experiment aren't built.)
 A mixed/global total in-flight limit would need its own experiment
 (not built -- add one only if a consumer needs it). `max_inflight` and
 `sustained_rps` are two independently confirmed **guardrails**, one per

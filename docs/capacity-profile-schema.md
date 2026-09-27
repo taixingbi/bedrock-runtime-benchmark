@@ -196,7 +196,7 @@ Contract rules a consumer can rely on:
   achieved_rps, confirmed_slo_goodput_rps, saturation, bottleneck,
   scope, use}` -- statistically confirmed, no headroom. `achieved_rps` is
   observed (closed-loop C + latency produced it), never a tested rate
-  like `sustained_rps`. Calibration points are isolated-workload measurements. Any admission classes or weights derived from them must be validated under representative mixed traffic (e.g. mixed-capacity) before production use -- per-shape C_safe values don't combine mathematically into a global policy. It is an
+  like `sustained_rps`. Calibration points are isolated-workload measurements; per-shape C_safe values don't combine mathematically into a global policy. Any admission classes or weights derived from them must be validated under representative mixed traffic through the deployed gateway (`bedrock-platform-eval`) before production use -- this repo calls Bedrock directly and never validates gateway policy. It is an
   input for deriving admission classes or weights, not a limit to
   compare a config against (the gateway's review skips these profiles).
 - `max_inflight` is set for concurrency sweeps, `sustained_rps` for rate
