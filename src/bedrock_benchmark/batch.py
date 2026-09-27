@@ -44,6 +44,9 @@ class PlannedRun:
     model: ModelConfig
     sweep: str
     estimated_s: float
+    # The sweep stops after consecutive FAILs, so estimated_s (every
+    # value) is an upper bound for discovery.
+    early_stop: bool = False
     # Set when an --slo-profile filter leaves this pair nothing to run.
     skip_reason: Optional[str] = None
 
@@ -102,22 +105,26 @@ def plan(
             out.append(PlannedRun(
                 path=path, experiment=spec.name, model=model,
                 sweep=describe_sweep(spec), estimated_s=estimated_duration_s(spec),
+                early_stop=spec.sweep.stop_after_fails is not None,
             ))
     return out
 
 
 def format_plan(planned: List[PlannedRun]) -> str:
     runs = [p for p in planned if p.skip_reason is None]
-    lines = [f"{'#':<3} {'model':<14} {'experiment':<20} {'est.':>5}  sweep"]
+    lines = [f"{'#':<3} {'model':<14} {'experiment':<20} {'est.':>7}  sweep"]
     for i, p in enumerate(runs, 1):
-        lines.append(f"{i:<3} {p.model.name:<14} {p.experiment:<20} {p.estimated_s / 60:>4.0f}m  {p.sweep}")
+        mark = "<=" if p.early_stop else "  "
+        lines.append(f"{i:<3} {p.model.name:<14} {p.experiment:<20} {mark}{p.estimated_s / 60:>4.0f}m  {p.sweep}")
     for p in planned:
         if p.skip_reason is not None:
             lines.append(f"--  {p.model.name:<14} {p.experiment:<20} skip  {p.skip_reason}")
     total = sum(p.estimated_s for p in runs)
     n_models = len({p.model.name for p in runs})
     lines.append(
-        f"total: {len(runs)} runs ({n_models} models), >= {total / 60:.0f} min (plus drain time), run sequentially"
+        f"total: {len(runs)} runs ({n_models} models), ~{total / 60:.0f} min (plus drain time), run sequentially"
+        + ("; <= marks sweeps that stop after consecutive FAILs and usually finish well under the estimate"
+           if any(p.early_stop for p in runs) else "")
     )
     return "\n".join(lines)
 

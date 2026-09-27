@@ -1,27 +1,35 @@
-# How do throughput / TTFT / throttling change as concurrency rises, for
-# one workload shape? Closed-loop: N workers, each firing its next
-# request as soon as the previous one returns. Runs against every model
-# in catalog/models.yaml -- this file never names a model.
+# Per-class ISOLATED concurrency envelope for the three reference
+# workloads (one per SLO tier). Closed-loop: N workers, each firing its
+# next request as soon as the previous one returns. Runs against every
+# model in catalog/models.yaml -- this file never names a model.
+#
+# Each class is swept ALONE, so its max_inflight is the safe in-flight
+# count when only that class is running (scope: isolated_workload_class).
+# The three values are NOT additive and are not a global limit -- a
+# mixed-traffic total would need its own mixed experiment.
 #
 # Concurrency is absolute (not quota-relative): it's a property of the
-# caller, not the quota. For a low-quota model (e.g. 50 RPM) even C=1
-# can already exceed quota -- that's a real result (no recommendation),
-# and rate-capacity.yaml is the sweep that resolves such a model.
+# caller, not the quota. By Little's law the quota ceiling (6.67 rps on
+# nova-micro) is reached at C ~= ceiling x latency: ~4 for short_chat
+# (~0.56 s), ~14 for rag_answer (~2 s), ~43 for long_generation (~6.5 s)
+# -- so one list spans 1..48, and stop_after_fails ends each class's
+# discovery two points past its saturation instead of sweeping a
+# throttle storm. For a low-quota model even C=1 can exceed quota --
+# that's a real result, and rate-capacity.yaml resolves such a model.
 #
 # transport.total_max_attempts=1: the SDK must never retry, or a real
 # Bedrock 429 would be absorbed into an eventual 200 and the measured
 # throttle rate understated (see client.py's TransportConfig).
-# reference: produces short_chat's production max_inflight envelope.
 purpose: reference
 name: concurrency-sweep
 description: |
-  short_chat workload (512 input / 64 output tokens), concurrency
-  1/2/4/6/8, 10s warmup + 120s window per point, plus adaptive
-  confirmation at the candidate.
-  Answers: the recommended concurrency for this shape under its SLO
-  profile, and where the saturation edge is.
+  The three reference workloads (short_chat gold, rag_answer silver,
+  long_generation bronze), each swept alone at concurrency 1..48 until
+  two consecutive FAILs, 10s warmup + 120s window per point, plus
+  adaptive confirmation at the top two non-failing concurrencies.
+  Answers: each class's isolated max_inflight and its saturation edge.
 
-workloads: [short_chat]
+workloads: [short_chat, rag_answer, long_generation]
 
 # warmup_s runs load before the measurement window opens and is never
 # counted; in-flight requests at window close drain and are recorded,
@@ -32,7 +40,8 @@ stream: true
 
 sweep:
   type: concurrency
-  values: [1, 2, 4, 6, 8]
+  values: [1, 2, 4, 6, 8, 12, 16, 24, 32, 48]
+  stop_after_fails: 2
 
 
 # Discovery (above) picks the candidate; confirmation collects FRESH
@@ -49,7 +58,8 @@ sweep:
 # only if C=2 confirms, so a FAIL at C=4 still leaves C=2 confirmed.
 # cooldown_s lets the saturation point's overload clear first.
 #
-# Budget for BOTH candidates (gold, 120s window + 10s warmup per rep):
+# Budget for BOTH candidates -- sized for the slowest, gold short_chat
+# (120s window + 10s warmup per rep); silver/bronze need 736 / 368:
 #   C=2  ~388 req/rep -> 3,688 at the first look = 10 reps  ~1,300s
 #   C=4  ~796 req/rep -> 3,688 = 5 reps (5,570 = 7 after a stray event) ~650-910s
 # = ~1,950-2,210s: 1,800 left C=4 INCONCLUSIVE (max_duration) every

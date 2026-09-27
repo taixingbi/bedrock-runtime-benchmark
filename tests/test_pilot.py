@@ -62,9 +62,10 @@ class PilotRunTests(unittest.TestCase):
         paths = ["experiments/rate-capacity.yaml", "experiments/token-sweep.yaml", "experiments/mixed-capacity.yaml"]
         all_ = pilot_workloads(paths, MICRO)
         self.assertEqual([w.name for w in all_.workloads],
-                         ["short_chat", "rag_answer", "long_generation", "long_context_short_answer"])
+                         ["short_chat", "rag_answer", "long_generation", "tiny_request", "medium_context",
+                          "long_context_short_answer", "very_large_context"])
         gold = pilot_workloads(paths, MICRO, only_slo_profiles={"gold"})
-        self.assertEqual([w.name for w in gold.workloads], ["short_chat"])
+        self.assertEqual([w.name for w in gold.workloads], ["short_chat", "tiny_request"])
 
     def test_run_pilot_flags_the_fake_clients_short_output(self):
         """The fake returns 5 output tokens without a stop reason -- the
@@ -72,8 +73,8 @@ class PilotRunTests(unittest.TestCase):
         factory = lambda spec: BedrockConverseTarget(model_id="m", client=FakeBedrockRuntimeClient())
         report = run_pilot_sync(["experiments/concurrency-sweep.yaml"], [MICRO], requests_per_workload=2,
                                 target_factory=factory)
-        [check] = report.checks
-        self.assertEqual((check.workload, check.requests, check.status), ("short_chat", 2, FAIL))
+        self.assertEqual([(c.workload, c.requests, c.status) for c in report.checks],
+                         [(w, 2, FAIL) for w in ("short_chat", "rag_answer", "long_generation")])
         self.assertEqual(report.exit_code, 1)
 
 

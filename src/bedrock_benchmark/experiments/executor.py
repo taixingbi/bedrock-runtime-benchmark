@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Union
 
 from ..analysis.capacity import (
-    INCONCLUSIVE, PASS, Recommendation, SweepAnalysis, SweepPoint, Verdict, analyze_sweep, point_verdict, recommend,
+    FAIL, INCONCLUSIVE, PASS, Recommendation, SweepAnalysis, SweepPoint, Verdict, analyze_sweep, point_verdict, recommend,
 )
 from ..analysis.confirmation import (
     ConfirmationPlan, ConfirmationResult, fixed_sequence_confirmed, limits_for, plan_looks, reachable, step,
@@ -254,12 +254,16 @@ async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress:
         # Phase 1 -- discovery: every value, spec.repetitions each.
         values = spec.sweep_values(subject.name)
         points: List[SweepPoint] = []
+        consecutive_fails = 0
         for value in values:
             await measure(value, spec.repetitions, "discovery")
             point = build(value, "discovery")
             points.append(point)
             if on_progress is not None:
                 on_progress(subject.name, value, point)
+            consecutive_fails = consecutive_fails + 1 if point_verdict(point, class_gate, **gate_kwargs).verdict == FAIL else 0
+            if spec.sweep.stop_after_fails is not None and consecutive_fails >= spec.sweep.stop_after_fails:
+                break  # saturation seen stop_after_fails times in a row -- the rest is past it
 
         # Phase 2 -- confirmation (analysis/confirmation.py): fresh,
         # independent repetitions at candidates chosen from discovery,

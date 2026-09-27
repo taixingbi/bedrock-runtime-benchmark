@@ -346,12 +346,12 @@ class BuildCapacityProfileTests(unittest.TestCase):
         spec = load_experiment("experiments/token-sweep.yaml", load_models(names=["nova-micro"])[0])
         self.assertEqual(spec.purpose, "characterization")
         rec = _rec(point=SweepPoint(concurrency=2, rps=None, metrics=_metrics()), saturation_point=None)
-        report = ExperimentReport(spec=spec, profiles=[ProfileReport(workload_name="short_chat", recommendation=rec)])
+        report = ExperimentReport(spec=spec, profiles=[ProfileReport(workload_name="tiny_request", recommendation=rec)])
 
         profile = build_capacity_profile(report)
 
         self.assertEqual(profile["purpose"], "characterization")
-        entry = profile["workload_classes"]["short_chat"]
+        entry = profile["workload_classes"]["tiny_request"]
         self.assertEqual(entry["concurrency"]["statistically_confirmed"], 2)  # the measurement is kept
         self.assertIsNone(entry["recommendation"]["admission_envelope"])
         self.assertIn("characterization experiment", entry["recommendation"]["reason"])

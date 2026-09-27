@@ -115,7 +115,8 @@ def describe_sweep(spec: ExperimentSpec) -> str:
     short=6.67rps(rpm)" -- a quota-relative sweep's rps differ per
     subject, so the ceiling each resolves against is shown."""
     if spec.sweep.quota_fractions is None:
-        return f"{spec.sweep.type} {spec.sweep.values}"
+        stop = f" until {spec.sweep.stop_after_fails} FAILs" if spec.sweep.stop_after_fails else ""
+        return f"{spec.sweep.type} {spec.sweep.values}{stop}"
     f = spec.sweep.quota_fractions
     ceilings = ", ".join(
         f"{name}={c.rps:.4g}rps({c.binding})" for name, c in spec.provider_ceilings.items()

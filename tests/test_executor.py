@@ -180,6 +180,17 @@ class RunExperimentTests(unittest.IsolatedAsyncioTestCase):
         # window_start = rep start + warmup: the gap spans one window, the cooldown and a warmup.
         self.assertGreaterEqual(confirmation_start - discovery_end, spec.duration_s + 0.3 + spec.warmup_s - 0.02)
 
+    async def test_discovery_stops_after_consecutive_fails(self):
+        from .fakes import ThrottlingError
+        target = BedrockConverseTarget(model_id="m", client=FakeBedrockRuntimeClient(error=ThrottlingError()))
+        spec = _spec(sweep=SweepConfig(type="concurrency", values=[1, 2, 3, 4], stop_after_fails=2), repetitions=1)
+
+        report = await run_experiment(spec, target=target)
+
+        self.assertEqual([p.concurrency for p in report.profiles[0].points], [1, 2])  # 3 and 4 never sent
+        entry = build_capacity_profile(report)["workload_classes"]["short"]
+        self.assertEqual(entry["sweep_stopped_early"], {"after_consecutive_fails": 2, "skipped_values": [3, 4]})
+
     async def test_without_confirmation_discovery_is_a_fixed_sequence_test(self):
         target = BedrockConverseTarget(model_id="m", client=FakeBedrockRuntimeClient())
         report = await run_experiment(_spec(slo=self.LOOSE), target=target)

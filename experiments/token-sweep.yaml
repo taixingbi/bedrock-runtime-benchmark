@@ -1,31 +1,34 @@
-# Does capacity depend on workload SHAPE, not just load? The four most
-# distinct shapes in the catalog (catalog/workloads.yaml), each
-# concurrency-swept on its own:
-#   short_chat                 512 / 64    short baseline
-#   long_context_short_answer  8192 / 64   input-side (prefill) pressure
-#   rag_answer                 4096 / 256  the common mixed case
-#   long_generation            4096 / 1024 output-side (decode) pressure
-# One result per class is the evidence for per-request-class concurrency
-# config; a single shape doesn't generalize to every class. The rest of
-# the catalog (tiny_request, medium_context, very_large_context) is for
-# targeted runs, not this default sweep.
+# Does capacity depend on workload SHAPE, not just load? The four
+# CHARACTERIZATION workloads of the catalog (catalog/workloads.yaml),
+# each concurrency-swept on its own:
+#   tiny_request               256 / 32     low-token latency floor
+#   medium_context             2048 / 128   common app traffic
+#   long_context_short_answer  8192 / 64    input-side (prefill) pressure
+#   very_large_context         16384 / 256  large prefill
+# The reference workloads (short_chat, rag_answer, long_generation) are
+# NOT repeated here: their production concurrency comes from
+# concurrency-sweep. This experiment only characterizes how token /
+# context shape moves the envelope.
 #
-# Each workload is judged against the SLO profile the catalog binds it to.
+# Each workload is judged against the SLO profile the catalog binds it
+# to. The quota ceiling is reached at very different concurrency per
+# shape (~2 for tiny_request up to ~17 for very_large_context on
+# nova-micro), so one list spans 1..24 and stop_after_fails ends each
+# workload two points past its saturation.
 #
-# Slow: 4 workloads x 4 points x (10s warmup + 90s window) ~= 27 min of
-# discovery per model, plus confirmation (~47 min in all). Run it for a
-# capacity re-baseline, not on every change.
+# Slow: run it for a capacity re-baseline, not on every change.
 # characterization: how token shape / context size move the envelope.
 # Measured and confirmed, but it never produces an admission-envelope
 # recommendation -- production envelopes come from reference experiments.
 purpose: characterization
 name: token-sweep
 description: |
-  Concurrency 1/2/4/6 across the four most distinct catalog shapes
-  (short chat, long-context short answer, RAG answer, long generation).
-  One capacity-profile entry per workload.
+  Concurrency 1..24 (until two consecutive FAILs) across the four
+  characterization shapes (tiny request, medium context, long-context
+  short answer, very large context). One capacity-profile entry per
+  workload, never a recommendation.
 
-workloads: [short_chat, long_context_short_answer, rag_answer, long_generation]
+workloads: [tiny_request, medium_context, long_context_short_answer, very_large_context]
 
 warmup_s: 10
 duration_s: 90
@@ -33,7 +36,8 @@ stream: true
 
 sweep:
   type: concurrency
-  values: [1, 2, 4, 6]
+  values: [1, 2, 4, 6, 8, 12, 16, 24]
+  stop_after_fails: 2
 
 
 # Confirmation at each workload's candidate (fresh data, never pooled

@@ -64,6 +64,11 @@ class SweepConfig:
     # Rate sweeps only: fractions of each subject's provider ceiling
     # (value_rps = fraction * ceiling_rps; see ceiling.py).
     quota_fractions: Optional[List[float]] = None
+    # Stop discovery after this many CONSECUTIVE FAIL points (None = sweep
+    # every value). Saturation is then seen twice -- enough for the
+    # non-monotonic check -- without spending windows on a throttle storm
+    # far past it. Values not reached are reported as skipped.
+    stop_after_fails: Optional[int] = None
 
     @property
     def point_count(self) -> int:
@@ -390,6 +395,8 @@ def _validate(spec: ExperimentSpec) -> None:
     if spec.throttle_pause_s > 0 and spec.sweep.type != "concurrency":
         raise ValueError("throttle_pause_s applies to concurrency sweeps only -- a rate sweep's arrivals are "
                          "open-loop and never wait on a response")
+    if spec.sweep.stop_after_fails is not None and spec.sweep.stop_after_fails < 1:
+        raise ValueError(f"sweep.stop_after_fails must be >= 1, got {spec.sweep.stop_after_fails}")
     if spec.repetitions < 1:
         raise ValueError(f"repetitions must be >= 1, got {spec.repetitions}")
     if spec.warmup_s < 0 or spec.duration_s <= 0:

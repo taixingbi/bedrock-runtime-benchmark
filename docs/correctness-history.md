@@ -279,3 +279,13 @@ artifact was ever used to actually inform a gateway config:
     failed checks, with throttle vs other error rates, attempted vs
     served rate against the provider ceiling, and latency health at the
     observed point.
+45. **Only short_chat had a concurrency envelope.** `concurrency-sweep`
+    now sweeps all three reference workloads (1..48, stopping after two
+    consecutive FAILs -- `sweep.stop_after_fails`), and `token-sweep`
+    covers only the four characterization shapes instead of repeating
+    reference workloads. Every block and envelope states `scope:
+    isolated_workload_class | workload_mix`: per-class values are not
+    additive and are not a global limit.
+46. **git_commit was read when the report was written**, so a commit
+    made during a long run was attributed to it (a run started at
+    67fb23b recorded b10099f). It's now captured once at process start.

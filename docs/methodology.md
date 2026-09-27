@@ -9,7 +9,7 @@ How a sweep turns requests into metrics: core abstractions, the capacity definit
 - **`WorkloadProfile`** (`workload.py`) -- a named input/output token
   shape (e.g. `short_chat` = 512 in / 64 out), defined once in the
   catalog `catalog/workloads.yaml`. Capacity depends heavily on
-  this; see `token-sweep.yaml`. Input padding is calibrated per model
+  this; see `token-sweep.yaml` (characterization). Input padding is calibrated per model
   from the provider's own token count (`calibration.py`).
 - **`WorkloadMix`** (`workload.py`) -- weighted classes for a mixed-
   workload sweep; each request draws its class independently.
@@ -131,7 +131,7 @@ nova-micro it produced only 42-50% of the target on every workload, all
 ending `end_turn`. The prompt therefore asks for ~2x the budget and
 forbids wrapping up, so generation ends on `max_tokens` -- measured
 after the fix: 100% of requests hit exactly 64 / 64 / 256 / 1024 output
-tokens across the four token-sweep shapes. Every result records
+tokens across the four shapes then in token-sweep. Every result records
 Bedrock's `stop_reason` (`max_tokens` vs `end_turn`) in the raw JSONL.
 
 Each class's `workload_validation` still checks BOTH sides against what

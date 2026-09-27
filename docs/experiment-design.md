@@ -56,9 +56,9 @@ every experiment x every model -> capacity-profile.yaml (judged against the cons
 | Experiment | Purpose | Sweep | Per model |
 |---|---|---|---|
 | `rate-capacity.yaml` | reference | 0.25x-2.5x ceiling, one reference workload per tier (`short_chat` gold, `rag_answer` silver, `long_generation` bronze) -- the canonical production-envelope run | ~57 min |
-| `concurrency-sweep.yaml` | reference | concurrency 1/2/4/6/8, `short_chat`; confirms the top 2 non-failing concurrencies (e.g. C=2 then C=4) | ~34-50 min |
+| `concurrency-sweep.yaml` | reference | each of `short_chat` / `rag_answer` / `long_generation` alone, concurrency 1..48 until 2 consecutive FAILs; confirms the top 2 non-failing concurrencies (e.g. C=2 then C=4) | ~1.5 h |
 | `mixed-capacity.yaml` | reference | 0.25x-2.5x ceiling, 60% `short_chat` / 30% `rag_answer` / 10% `long_generation` | ~32 min |
-| `token-sweep.yaml` | characterization | 4 most distinct catalog shapes x concurrency 1/2/4/6 | ~47 min |
+| `token-sweep.yaml` | characterization | the 4 characterization shapes x concurrency 1..24 until 2 consecutive FAILs | ~1 h |
 
 Every experiment runs adaptive confirmation at its candidate after
 discovery (see [SLO statistics](slo-statistics.md)) -- without it one
@@ -91,8 +91,8 @@ workloads:
   long_context_short_answer: {input_tokens: 8192,  output_tokens: 64,   slo_profile: silver, latency_p95_ms: 8000,  role: characterization}
   very_large_context:        {input_tokens: 16384, output_tokens: 256,  slo_profile: bronze, latency_p95_ms: 20000, role: characterization}
 
-# experiments/token-sweep.yaml -- the four most distinct shapes
-workloads: [short_chat, long_context_short_answer, rag_answer, long_generation]
+# experiments/token-sweep.yaml -- the four characterization shapes
+workloads: [tiny_request, medium_context, long_context_short_answer, very_large_context]
 ```
 
 The catalog is deliberately broader than any experiment: adding a
@@ -119,6 +119,26 @@ context size move the envelope; it measures and confirms, but its
 `recommendation` is always null. Both are declared: `role` in the
 catalog, `purpose` in each experiment, and the profile records both.
 
+Responsibilities, without overlap:
+
+| Experiment | Produces |
+|---|---|
+| `concurrency-sweep` | per-class isolated `max_inflight` for the three reference workloads |
+| `rate-capacity` | per-class isolated `sustained_rps` for the same three |
+| `mixed-capacity` | `sustained_rps` for one given mix of them |
+| `token-sweep` | token / context-shape characterization only (no reference workloads) |
+
+Per-class `max_inflight` (and `sustained_rps`) values are **isolated** limits -- each holds for that class running alone (`scope: isolated_workload_class`). They are not additive across classes and are not a global limit; only `mixed-capacity` (`scope: workload_mix`) measures classes together.
+
+**Concurrency ranges.** Concurrency is absolute, but the quota ceiling
+is reached at C ~= ceiling_rps x latency (Little's law) -- on nova-micro
+~4 for `short_chat`, ~14 for `rag_answer`, ~43 for `long_generation`. So
+one wide list serves every class, and `sweep.stop_after_fails: 2` ends a
+class's discovery after two consecutive FAILs (saturation seen twice,
+enough for the non-monotonic check) instead of sweeping a throttle storm
+far past it; the profile lists `sweep_stopped_early.skipped_values`. The
+dry-run marks those estimates `<=`: they assume every value runs.
+
 ## Running experiments
 
 ```bash
@@ -139,7 +159,7 @@ python3.11 -m venv .venv && .venv/bin/pip install -e ".[dev]"   # same install C
 
 `--slo-profile NAME` (repeatable) runs only the workloads bound to that
 profile in `catalog/workloads.yaml`: an isolated sweep keeps its
-matching workloads (`token-sweep --slo-profile gold` runs just
+matching workloads (`concurrency-sweep --slo-profile gold` runs just
 `short_chat`); a mix runs only if every class matches -- a partial mix
 is a different mix, so it's skipped; an experiment with nothing
 matching is skipped. The plan lists every skip and why.

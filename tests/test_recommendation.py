@@ -29,9 +29,14 @@ class AdmissionEnvelopeTests(unittest.TestCase):
 
     def test_confirmed_concurrency(self):
         env = admission_envelope("concurrency", 5, headroom=0.2)["admission_envelope"]
-        self.assertEqual(env, {"max_inflight": 4, "sustained_rps": None, "source": SOURCE,
+        self.assertEqual(env, {"max_inflight": 4, "sustained_rps": None, "scope": "isolated_workload_class",
+                               "source": SOURCE,
                                "headroom_fraction": 0.2, "effective_headroom_fraction": 0.2,
                                "rounding_policy": "floor", "basis": {"statistically_confirmed_concurrency": 5}})
+
+    def test_mix_envelope_is_scoped_to_the_mix(self):
+        env = admission_envelope("rate", 5.0, headroom=0.2, scope="workload_mix")["admission_envelope"]
+        self.assertEqual(env["scope"], "workload_mix")
 
     def test_small_concurrency_reports_the_effective_headroom_after_rounding(self):
         """Confirmed C=2 at a 20% target floors to 1: a 50% margin."""

@@ -45,9 +45,19 @@ class ShippedExperimentTests(unittest.TestCase):
                 self.assertFalse(any(w in spec.name for w in model_words), spec.name)
                 self.assertFalse(any(w in path.stem for w in model_words), path.stem)
 
-    def test_token_sweep_covers_the_four_most_distinct_shapes(self):
-        names = [w.name for w in load_experiment("experiments/token-sweep.yaml", MICRO).workloads]
-        self.assertEqual(names, ["short_chat", "long_context_short_answer", "rag_answer", "long_generation"])
+    def test_token_sweep_covers_only_characterization_shapes(self):
+        """Reference workloads get their concurrency from concurrency-sweep;
+        token-sweep never repeats them."""
+        spec = load_experiment("experiments/token-sweep.yaml", MICRO)
+        self.assertEqual([w.name for w in spec.workloads],
+                         ["tiny_request", "medium_context", "long_context_short_answer", "very_large_context"])
+        self.assertTrue(all(w.role == "characterization" for w in spec.workloads))
+
+    def test_concurrency_sweep_covers_the_three_reference_workloads(self):
+        spec = load_experiment("experiments/concurrency-sweep.yaml", MICRO)
+        self.assertEqual([(w.name, w.slo_profile) for w in spec.workloads],
+                         [("short_chat", "gold"), ("rag_answer", "silver"), ("long_generation", "bronze")])
+        self.assertEqual(spec.sweep.stop_after_fails, 2)
 
     def test_mixed_capacity_defines_a_valid_mix(self):
         spec = load_experiment("experiments/mixed-capacity.yaml", MICRO)
@@ -83,7 +93,7 @@ class ModelBindingTests(unittest.TestCase):
 
 class SloProfileTests(unittest.TestCase):
     def test_workloads_resolve_the_slo_profile_the_catalog_binds(self):
-        spec = load_experiment("experiments/token-sweep.yaml", MICRO)
+        spec = load_experiment("experiments/concurrency-sweep.yaml", MICRO)
         self.assertEqual(spec.slo_for("short_chat").tpot_p95_ms, 40)        # gold
         self.assertEqual(spec.slo_for("rag_answer").tpot_p95_ms, 70)        # silver
         self.assertEqual(spec.slo_for("long_generation").tpot_p95_ms, 120)  # bronze
@@ -109,21 +119,26 @@ class WorkloadE2ECapTests(unittest.TestCase):
 
 class SloProfileFilterTests(unittest.TestCase):
     def test_isolated_sweep_keeps_only_matching_workloads(self):
-        spec = load_experiment("experiments/token-sweep.yaml", MICRO, only_slo_profiles={"gold"})
+        spec = load_experiment("experiments/concurrency-sweep.yaml", MICRO, only_slo_profiles={"gold"})
         self.assertEqual([w.name for w in spec.workloads], ["short_chat"])
         self.assertEqual(set(spec.provider_ceilings), {"short_chat"})
 
     def test_several_profiles(self):
-        spec = load_experiment("experiments/token-sweep.yaml", MICRO, only_slo_profiles={"gold", "bronze"})
+        spec = load_experiment("experiments/concurrency-sweep.yaml", MICRO, only_slo_profiles={"gold", "bronze"})
         self.assertEqual([w.name for w in spec.workloads], ["short_chat", "long_generation"])
 
     def test_silver_selects_both_silver_shapes(self):
         spec = load_experiment("experiments/token-sweep.yaml", MICRO, only_slo_profiles={"silver"})
-        self.assertEqual([w.name for w in spec.workloads], ["long_context_short_answer", "rag_answer"])
+        self.assertEqual([w.name for w in spec.workloads], ["medium_context", "long_context_short_answer"])
 
     def test_nothing_matching_is_a_skip_not_an_error(self):
-        with self.assertRaisesRegex(NoMatchingWorkloads, "bronze"):
-            load_experiment("experiments/concurrency-sweep.yaml", MICRO, only_slo_profiles={"bronze"})
+        with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as f:
+            f.write(MINIMAL)  # short_chat (gold) only
+        try:
+            with self.assertRaisesRegex(NoMatchingWorkloads, "bronze"):
+                load_experiment(f.name, MICRO, only_slo_profiles={"bronze"})
+        finally:
+            Path(f.name).unlink()
 
     def test_partial_mix_is_skipped_whole_mix_runs(self):
         with self.assertRaisesRegex(NoMatchingWorkloads, "partial mix"):

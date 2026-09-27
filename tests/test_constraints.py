@@ -90,8 +90,9 @@ class SloFileTests(unittest.TestCase):
     def test_custom_slo_file_is_used_by_experiments(self):
         path = _write("profiles:\n  gold: {tpot_p95_ms: 5}\n  silver: {tpot_p95_ms: 6}\n  bronze: {tpot_p95_ms: 7}\n")
         try:
-            spec = load_experiment("experiments/token-sweep.yaml", MICRO, slo_file=path)
-            self.assertEqual(spec.slo_for("long_context_short_answer").tpot_p95_ms, 6)
+            self.assertEqual(load_experiment("experiments/token-sweep.yaml", MICRO, slo_file=path)
+                             .slo_for("long_context_short_answer").tpot_p95_ms, 6)
+            spec = load_experiment("experiments/concurrency-sweep.yaml", MICRO, slo_file=path)
             self.assertEqual(spec.slo_for("short_chat").tpot_p95_ms, 5)
             self.assertEqual(spec.slo_for("rag_answer").tpot_p95_ms, 6)
             self.assertEqual(spec.slo_for("long_generation").tpot_p95_ms, 7)

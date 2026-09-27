@@ -69,15 +69,29 @@ there is no gateway config schema in this repo.
 | Experiment | Purpose | Sweep | Per model |
 |---|---|---|---|
 | `rate-capacity` | reference | 0.25x-2.5x of the provider ceiling, one reference workload per tier (`short_chat` gold, `rag_answer` silver, `long_generation` bronze) -- the canonical envelope run | ~57 min |
-| `concurrency-sweep` | reference | concurrency 1/2/4/6/8, `short_chat`; confirms the top 2 non-failing concurrencies | ~34-50 min |
+| `concurrency-sweep` | reference | each reference workload alone, concurrency 1..48 until 2 consecutive FAILs; confirms the top 2 non-failing concurrencies | ~1.5 h |
 | `mixed-capacity` | reference | 0.25x-2.5x ceiling, 60% `short_chat` / 30% `rag_answer` / 10% `long_generation` | ~32 min |
-| `token-sweep` | characterization | the 4 most distinct catalog shapes x concurrency 1/2/4/6 | ~47 min |
+| `token-sweep` | characterization | the 4 characterization shapes x concurrency 1..24 until 2 consecutive FAILs | ~1 h |
 
 Only **reference** experiments, on the three **reference** workloads (one
 per SLO tier), produce an admission-envelope recommendation. The other
 catalog workloads and `token-sweep` are **characterization**: they
 measure how token shape and context move the envelope, and their
 profiles carry no recommendation.
+
+Each reference workload ends up with both an isolated concurrency and an
+isolated rate envelope:
+
+| Class | `max_inflight` (`concurrency-sweep`) | `sustained_rps` (`rate-capacity`) |
+|---|---|---|
+| `short_chat` (gold) | ✓ | ✓ |
+| `rag_answer` (silver) | ✓ | ✓ |
+| `long_generation` (bronze) | ✓ | ✓ |
+| the 60/30/10 mix | -- | ✓ (`mixed-capacity`) |
+
+Per-class `max_inflight` (and `sustained_rps`) values are **isolated** limits -- each holds for that class running alone (`scope: isolated_workload_class`). They are not additive across classes and are not a global limit; only `mixed-capacity` (`scope: workload_mix`) measures classes together.
+A mixed/global total in-flight limit would need its own experiment
+(not built -- add one only if a consumer needs it).
 
 Every experiment is discovery followed by adaptive confirmation at the
 candidate -- the only way a point becomes statistically confirmed.

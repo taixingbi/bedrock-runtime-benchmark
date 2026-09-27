@@ -57,12 +57,18 @@ def _effective(recommended: float, confirmed: float) -> float:
 def admission_envelope(
     sweep_type: str, confirmed: Optional[float], *, headroom: float, quota_headroom: float = 0.0,
     provider_ceiling_rps: Optional[float] = None, unconfirmed_reason: Optional[str] = None,
+    scope: str = "isolated_workload_class",
 ) -> dict:
     """The `recommendation` block for one workload class or mix.
     `confirmed` is the statistically confirmed concurrency (concurrency
     sweep) or offered rps (rate sweep) -- None when nothing was confirmed,
     in which case `unconfirmed_reason` (the measurement-specific cause,
-    see report.py) replaces the generic reason."""
+    see report.py) replaces the generic reason.
+
+    `scope` says what traffic the envelope holds for:
+    isolated_workload_class -- that class running ALONE; per-class values
+    are NOT additive and are not a global limit. workload_mix -- the
+    measured mix at its measured shares, as one total."""
     if confirmed is None:
         return {"admission_envelope": None, "reason": unconfirmed_reason or _NO_CONFIRMED}
 
@@ -75,6 +81,7 @@ def admission_envelope(
         return {"admission_envelope": {
             "max_inflight": max_inflight,
             "sustained_rps": None,
+            "scope": scope,
             "source": SOURCE,
             "headroom_fraction": headroom,                               # policy target
             "effective_headroom_fraction": _effective(max_inflight, confirmed),  # after rounding
@@ -92,6 +99,7 @@ def admission_envelope(
         return {"admission_envelope": {
             "max_inflight": None,
             "sustained_rps": sustained,
+            "scope": scope,
             "source": SOURCE,
             "headroom_fraction": headroom,
             "quota_headroom_fraction": quota_headroom,

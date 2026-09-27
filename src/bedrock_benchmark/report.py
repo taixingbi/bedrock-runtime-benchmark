@@ -384,6 +384,10 @@ def _envelope(entry: dict, profile_report, spec) -> None:
     if profile_report.verdicts:
         # Discovery only: picks candidates and shows the transition region.
         entry["sweep_points"] = _sweep_points(profile_report)
+    swept = {_value(p) for p in points}
+    skipped = [v for v in spec.sweep_values(subject) if v not in swept]
+    if skipped and spec.sweep.stop_after_fails is not None:
+        entry["sweep_stopped_early"] = {"after_consecutive_fails": spec.sweep.stop_after_fails, "skipped_values": skipped}
     if profile_report.confirmation_plan is not None:
         # Independent data at the candidates; the only source of
         # statistically_confirmed when present.
@@ -414,6 +418,10 @@ def _envelope(entry: dict, profile_report, spec) -> None:
         entry["rate"] = _rate_block(rec, ceiling_rps=ceiling_rps)
         confirmed = rec.confirmed_point.rps if rec.confirmed_point is not None else None
     block = entry["concurrency" if spec.sweep.type == "concurrency" else "rate"]
+    # isolated_workload_class: this class running ALONE -- per-class
+    # values are not additive across classes and are not a global limit.
+    scope = "workload_mix" if profile_report.mix_shares is not None else "isolated_workload_class"
+    block["scope"] = scope
     block["summary"] = _summary(rec)
     # MEASUREMENT interpretation: what limits this envelope.
     entry["diagnosis"] = _diagnosis(rec, profile_report, ceiling)
@@ -422,7 +430,7 @@ def _envelope(entry: dict, profile_report, spec) -> None:
     # from a reference experiment.
     entry["recommendation"] = _characterization() if spec.purpose != "reference" else admission_envelope(
         spec.sweep.type, confirmed, headroom=spec.provider_headroom, quota_headroom=spec.quota_headroom,
-        provider_ceiling_rps=ceiling_rps,
+        provider_ceiling_rps=ceiling_rps, scope=scope,
         unconfirmed_reason=None if confirmed is not None else _unconfirmed_reason(profile_report, spec),
     )
     # evidence = the observed point; confirmed_evidence = the point the
@@ -444,6 +452,12 @@ def _git(*args: str) -> Optional[str]:
     return out.stdout.strip() if out.returncode == 0 else None
 
 
+# The code that RUNS is the code imported when the process started -- a
+# commit made during a long run must not be attributed to it. Captured
+# once, at import.
+_GIT_AT_START = (_git("rev-parse", "HEAD"), _git("status", "--porcelain", "--untracked-files=no"))
+
+
 def _version(dist: str) -> Optional[str]:
     try:
         return metadata.version(dist)
@@ -463,8 +477,7 @@ def _environment(report: ExperimentReport) -> dict:
     spec = report.spec
     started = [r.started_at for r in report.all_results if r.started_at]
     completed = [r.completed_at for r in report.all_results if r.completed_at]
-    commit = _git("rev-parse", "HEAD")
-    status = _git("status", "--porcelain", "--untracked-files=no")
+    commit, status = _GIT_AT_START
     return {
         "measured_at": {"start": _iso(min(started) if started else None),
                         "end": _iso(max(completed) if completed else None)},

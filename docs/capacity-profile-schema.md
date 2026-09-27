@@ -84,6 +84,7 @@ workload_classes:
       admission_envelope:                   # null (+ reason) when nothing is statistically confirmed
         max_inflight: null                  # set by concurrency sweeps
         sustained_rps: 4.0                  # min(CONFIRMED x 0.8, ceiling x 0.9)
+        scope: isolated_workload_class      # this class alone -- NOT additive across classes
         source: statistically_confirmed_measurement
         headroom_fraction: 0.2              # policy target
         quota_headroom_fraction: 0.1
@@ -98,9 +99,15 @@ transport: {max_connections: 64, executor_workers: 64, total_max_attempts: 1, co
 
 A concurrency sweep writes `concurrency: {observed_nonfailing,
 observed_verdict, statistically_confirmed, saturation, saturation_status,
-observed_slo_goodput_rps}` instead of `rate`, and its recommendation sets
-`max_inflight` instead of `sustained_rps` -- likewise from the confirmed
-point only.
+observed_slo_goodput_rps, scope, summary}` instead of `rate`, and its
+recommendation sets `max_inflight` instead of `sustained_rps` --
+likewise from the confirmed point only. A sweep with
+`stop_after_fails` records the values it never ran:
+`sweep_stopped_early: {after_consecutive_fails: 2, skipped_values: [...]}`.
+
+**Scope.** Every measurement block and admission envelope states
+`scope`: `isolated_workload_class` (the class swept ALONE) or
+`workload_mix` (a `mixed_workloads` entry). Per-class `max_inflight` (and `sustained_rps`) values are **isolated** limits -- each holds for that class running alone (`scope: isolated_workload_class`). They are not additive across classes and are not a global limit; only `mixed-capacity` (`scope: workload_mix`) measures classes together.
 
 This is the actual deliverable -- not an HTML report. A gateway's own
 config review reads this file, and decides its own global/tenant/AIMD
@@ -177,6 +184,9 @@ Contract rules a consumer can rely on:
   profile never carries one -- skip it.
 - `max_inflight` is set for concurrency sweeps, `sustained_rps` for rate
   sweeps; the other is `null`.
+- `scope: isolated_workload_class` values hold for that class alone:
+  never sum them across classes or treat one as a global limit (the
+  gateway's review takes the minimum across classes).
 - Nothing gateway-specific (tenant limits, queues, AIMD, allocation) is
   ever emitted.
 - `schema_version` increases on any change to these fields; see
