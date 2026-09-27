@@ -95,21 +95,45 @@ def _value(point: SweepPoint) -> float:
 def _candidates(points: List[SweepPoint], rec: Recommendation, spec: ExperimentSpec, subject: str,
                 how_many: int) -> List[SweepPoint]:
     """The `how_many` highest points in discovery's leading non-failing
-    run -- for a rate sweep, only those at or below the provider ceiling:
-    production is capped at the ceiling anyway, and a point above it
-    passes on burst allowance at best. Returned ascending (the
+    run, at or below the provider ceiling: for a rate sweep its offered
+    rps, for a concurrency sweep the request rate it ACHIEVED. A point
+    above the ceiling passed discovery on burst allowance -- a concurrency
+    that needs 9 rps can't hold under a 6.67 rps quota -- so confirming it
+    only measures the bucket draining. Returned ascending (the
     fixed-sequence test order)."""
     limit = rec.analysis.stable_pass_max
     eligible = [p for p in points if limit is not None and _value(p) <= limit]
     ceiling = spec.provider_ceilings.get(subject)
     if spec.sweep.type == "rate" and ceiling is not None and ceiling.rps:
         eligible = [p for p in eligible if _value(p) <= ceiling.rps + _ROUNDING_TOLERANCE]
+    elif ceiling is not None and ceiling.rps:
+        eligible = [p for p in eligible if not above_ceiling(p, ceiling.rps)]
     eligible.sort(key=_value)
     return eligible[-how_many:]
 
 
+# A concurrency point whose achieved rate exceeds the provider ceiling by
+# more than this ran on burst allowance, not sustainable quota. 10%: a
+# point AT the ceiling reads a few % over in a short window (short_chat
+# C=4 on nova-micro: 7.16 rps vs 6.67 in discovery, then confirmed at
+# 6.69 rps with 0 throttles); burst-inflated points read 1.2-1.4x.
+CEILING_RATE_TOLERANCE = 0.10
+
+
+def achieved_rps(point: SweepPoint) -> Optional[float]:
+    """Requests sent per second of measured window (closed loop: what C
+    and latency produced)."""
+    m = point.metrics
+    return round(m.n / m.measured_duration_s, 4) if m.measured_duration_s else None
+
+
+def above_ceiling(point: SweepPoint, ceiling_rps: float) -> bool:
+    rate = achieved_rps(point)
+    return rate is not None and rate > ceiling_rps * (1 + CEILING_RATE_TOLERANCE)
+
+
 # Distinct seeds per phase, so no phase replays another's arrival pattern.
-_SEED_OFFSET = {"discovery": 0, "refinement": 20_000, "confirmation": 10_000}
+_SEED_OFFSET = {"discovery": 0, "refinement": 20_000, "confirmation": 10_000, "conditioning": 30_000}
 
 
 def _slo_kwargs(slo, *, latency: bool = True) -> dict:
@@ -227,6 +251,21 @@ async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress:
                 report.all_results.extend(results)
             return state
 
+        async def condition(value: float, seconds: float) -> None:
+            """Load at `value` for `seconds`, DISCARDED -- tagged
+            phase=conditioning, measured=False, never in any metric."""
+            seed = None if spec.seed is None else spec.seed + _SEED_OFFSET["conditioning"]
+            if spec.sweep.type == "concurrency":
+                runner = ConcurrencyRunner(target, subject, concurrency=int(value), duration_s=seconds, warmup_s=0.0,
+                                           stream=spec.stream, seed=seed, throttle_pause_s=spec.throttle_pause_s)
+            else:
+                runner = RateRunner(target, subject, rps=value, duration_s=seconds, warmup_s=0.0,
+                                    stream=spec.stream, seed=seed)
+            for r in await runner.run():
+                r.tags.update({"subject": subject.name, "sweep_type": spec.sweep.type, "sweep_value": value,
+                               "phase": "conditioning", "measured": False})
+                report.all_results.append(r)
+
         def build(value: float, phase: str, conf: Optional[float] = None,
                   subset: Optional[List[RequestResult]] = None) -> SweepPoint:
             """Metrics from ONE phase's data; bounds at `conf` (default:
@@ -281,9 +320,19 @@ async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress:
         # the candidate is the real edge rather than the coarse grid
         # point below it. Still discovery-class data: selects, never confirms.
         if spec.sweep.refinement is not None:
+            # Upper bound: the first FAIL -- or, with a known ceiling, the
+            # first point whose achieved rate is above it (burst, not
+            # sustainable). Lower bound: the highest point below that.
+            sub_ceiling = spec.provider_ceilings.get(subject.name)
+            ceiling_rps = sub_ceiling.rps if sub_ceiling is not None else None
+
+            def upper(p: SweepPoint) -> bool:
+                return (point_verdict(p, class_gate, **gate_kwargs).verdict == FAIL
+                        or (ceiling_rps is not None and above_ceiling(p, ceiling_rps)))
+
             lo = hi = None
             for p in sorted(points, key=_value):
-                if point_verdict(p, class_gate, **gate_kwargs).verdict == FAIL:
+                if upper(p):
                     hi = _value(p)
                     break
                 lo = _value(p)
@@ -296,7 +345,7 @@ async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress:
                 points.append(point)
                 if on_progress is not None:
                     on_progress(subject.name, mid, point)
-                if point_verdict(point, class_gate, **gate_kwargs).verdict == FAIL:
+                if upper(point):
                     hi = mid
                 else:
                     lo = mid
@@ -334,6 +383,8 @@ async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress:
                 est_per_rep = disc.metrics.n / max(1, len(disc.repetitions))
                 result = None
                 looks_used = 0
+                if cfg.warmup_s > 0:
+                    await condition(value, cfg.warmup_s)  # discarded: steady state before the looks
                 if not reachable(plan, est_requests_per_rep=est_per_rep, per_rep_s=per_rep_s,
                                  remaining_duration_s=cfg.max_duration_s - (time.perf_counter() - started)):
                     result = ConfirmationResult(value, INCONCLUSIVE, "unreachable_within_caps",

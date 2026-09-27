@@ -40,6 +40,12 @@
 # so the list spans 1..48 like concurrency-sweep; stop_after_fails ends
 # each shape two points past its saturation and refinement bisects the
 # bracket. Slow: run it for a capacity re-baseline, not on every change.
+#
+# Research limit: on nova-micro (400 RPM) every shape hits the RPM quota
+# long before any token or compute limit, so C_safe here is ~ 6.67 rps x
+# request service time -- the shape enters only through latency.
+# Isolating how input / output tokens themselves limit capacity needs an
+# account or model whose RPM quota doesn't bind first.
 purpose: admission_calibration
 name: workload-shape-calibration
 description: |
@@ -65,16 +71,31 @@ sweep:
     max_points: 4
 
 
-# Confirmation at each workload's candidate (fresh data, never pooled
-# with discovery -- see docs/slo-statistics.md). Looks at fixed sample
-# sizes: gold N = 3,688 / 5,570, silver 736 / 1,113, bronze 368 / 555
-# requests; stopped by max_requests / max_duration_s, never by a count
-# of windows.
+# Confirmation at each shape's candidates (fresh data, never pooled with
+# discovery -- see docs/slo-statistics.md). Looks at fixed sample sizes:
+# gold N = 3,688 / 5,570, silver 736 / 1,113, bronze 368 / 555 requests;
+# stopped by max_requests / max_duration_s, never by a count of windows.
+#
+# The first run (2026-09-27) confirmed nothing: every candidate had
+# achieved 8.3-9.1 rps in discovery -- above the 6.67 rps ceiling, i.e.
+# on burst allowance -- and throttled 64-81% once the bucket drained.
+# Hence:
+#   - candidates are only points whose ACHIEVED rate is at or below the
+#     provider ceiling (code rule, like rate sweeps), and refinement
+#     treats an above-ceiling point as the upper bound of the bracket;
+#   - cooldown_s: 120 lets discovery's overload clear first;
+#   - warmup_s: 60 conditions each candidate (data discarded) so the
+#     fixed-N looks read steady state, not a rested bucket's burst credit;
+#   - candidates: 2 -- if the higher one FAILs, the lower one can still
+#     confirm (fixed sequence, lowest first); max_duration_s 3000 fits two
+#     gold candidates (C=1 at ~2.2 rps needs ~1,700 s for 3,688).
 confirmation:
   max_looks: 2
   max_requests: 8000
-  max_duration_s: 1800
-  candidates: 1
+  max_duration_s: 3000
+  candidates: 2
+  cooldown_s: 120
+  warmup_s: 60
 
 transport:
   max_connections: 64

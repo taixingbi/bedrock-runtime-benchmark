@@ -126,6 +126,12 @@ class ConfirmationConfig:
     # the provider's token bucket drained for the first confirmation rep.
     # Not counted against max_duration_s.
     cooldown_s: float = 0.0
+    # Conditioning before each candidate's first confirmation repetition:
+    # this many seconds of load at the candidate whose data is DISCARDED
+    # -- so the fixed-N looks read steady state, not the burst credit a
+    # rested provider bucket hands out at first. Not counted against
+    # max_duration_s.
+    warmup_s: float = 0.0
 
 
 @dataclass
@@ -427,9 +433,9 @@ def _validate(spec: ExperimentSpec) -> None:
     c = spec.confirmation
     if c is not None and (c.max_looks < 1 or (c.max_repetitions is not None and c.max_repetitions < 1)
                           or c.max_requests < 1
-                          or c.max_duration_s <= 0 or c.candidates < 1 or c.cooldown_s < 0):
+                          or c.max_duration_s <= 0 or c.candidates < 1 or c.cooldown_s < 0 or c.warmup_s < 0):
         raise ValueError("confirmation: max_looks, max_repetitions, max_requests, candidates must be >= 1, "
-                         "max_duration_s > 0 and cooldown_s >= 0")
+                         "max_duration_s > 0, cooldown_s >= 0 and warmup_s >= 0")
     if spec.throttle_pause_s < 0:
         raise ValueError(f"throttle_pause_s must be >= 0, got {spec.throttle_pause_s}")
     if spec.throttle_pause_s > 0 and spec.sweep.type != "concurrency":

@@ -68,7 +68,9 @@ def estimated_duration_s(spec: ExperimentSpec) -> float:
     total = 0.0
     for subject in spec.subject_names:
         confirm = _confirmation_estimate_s(spec, subject, per_run)
-        total += discovery + confirm + (spec.confirmation.cooldown_s if confirm > 0 else 0.0)
+        if confirm > 0:  # cooldown once, conditioning once per candidate
+            confirm += spec.confirmation.cooldown_s + spec.confirmation.candidates * spec.confirmation.warmup_s
+        total += discovery + confirm
     return total
 
 

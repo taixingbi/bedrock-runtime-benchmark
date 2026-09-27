@@ -52,11 +52,11 @@ class BuildCapacityProfileTests(unittest.TestCase):
         defaults.update(overrides)
         return ExperimentSpec(**defaults)
 
-    def test_schema_version_is_17(self):
+    def test_schema_version_is_18(self):
         spec = self._spec()
         report = ExperimentReport(spec=spec, profiles=[ProfileReport(workload_name="short", recommendation=None)])
         profile = build_capacity_profile(report)
-        self.assertEqual(profile["schema_version"], 17)
+        self.assertEqual(profile["schema_version"], 18)
 
     def test_concurrency_sweep_writes_a_concurrency_block_not_rate(self):
         spec = self._spec(sweep_type="concurrency")
@@ -75,7 +75,8 @@ class BuildCapacityProfileTests(unittest.TestCase):
         self.assertNotIn("rate", entry)
         self.assertEqual(entry["concurrency"]["observed_nonfailing"], 6)
         self.assertEqual(entry["concurrency"]["statistically_confirmed"], 6)
-        self.assertEqual(entry["concurrency"]["saturation"], 8)
+        self.assertEqual(entry["concurrency"]["saturation"],
+                         {"observed_edge": 8, "phase": "discovery", "status": "discovery_resolved"})
         # 6 * (1 - 0.20) = 4.8 -> floored to 4
         self.assertNotIn("production_max", entry["concurrency"])          # measurement block holds no policy
         self.assertEqual(entry["recommendation"]["admission_envelope"]["max_inflight"], 4)  # floor(6 x 0.8)
@@ -98,7 +99,7 @@ class BuildCapacityProfileTests(unittest.TestCase):
 
         self.assertIn("rate", entry)
         self.assertNotIn("concurrency", entry)
-        self.assertEqual(entry["rate"]["saturation_offered_rps"], 7.0)
+        self.assertEqual(entry["rate"]["saturation"]["observed_edge"], 7.0)
 
     def test_rate_block_keeps_offered_load_and_goodput_separate(self):
         """The schema v3 fix: v2's `measured_sustainable_rps` was the
@@ -359,7 +360,7 @@ class BuildCapacityProfileTests(unittest.TestCase):
         point = entry["calibration_point"]
         self.assertEqual(point["workload_shape"], {"input_tokens": 256, "output_tokens": 32})
         self.assertEqual(point["slo_profile"], "gold")                       # its own business SLO
-        self.assertEqual((point["statistically_confirmed_concurrency"], point["saturation"]), (4, 6))
+        self.assertEqual((point["statistically_confirmed_concurrency"], point["observed_saturation_edge"]), (4, 6))
         self.assertEqual(point["achieved_rps"], 6.2)                         # observed, not a tested rate
         self.assertNotIn("sustained_rps", point)
         self.assertEqual(point["scope"], "isolated_workload_class")
@@ -406,7 +407,8 @@ class BuildCapacityProfileTests(unittest.TestCase):
 
         self.assertEqual(entry["concurrency"]["summary"],
                          "statistically_confirmed=2 (the capacity) | observed_nonfailing=4 (INCONCLUSIVE -- no "
-                         "violation seen, too few requests to prove the SLO; not shown unsafe) | saturation=6 (first FAIL)")
+                         "violation seen, too few requests to prove the SLO; not shown unsafe) | saturation=6 (first FAIL in "
+                         "discovery -- an observed edge, not confirmed)")
         d = entry["diagnosis"]
         self.assertEqual((d["bottleneck"], d["saturation_at"]), ("rpm_quota", 6))
         self.assertEqual(d["failed_checks"], ["success_rate", "throttle_rate"])

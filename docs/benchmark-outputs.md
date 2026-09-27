@@ -44,8 +44,8 @@ admission_control:
 |---|---|---|
 | `C_confirmed` | `statistically_confirmed_concurrency` | Highest statistically confirmed SLO-compliant concurrency |
 | `R_confirmed` | `statistically_confirmed_offered_rps` | Highest statistically confirmed SLO-compliant offered request rate |
-| `C_saturation` | concurrency saturation point | Concurrency where the workload begins to violate the SLO or overload the backend |
-| `R_saturation` | `saturation_offered_rps` | Offered rate where the workload begins to violate the SLO or overload the backend |
+| `C_saturation` | `concurrency.saturation.observed_edge` | Concurrency where the DISCOVERY sweep first saw an SLO violation -- an observed edge, not statistically confirmed |
+| `R_saturation` | `rate.saturation.observed_edge` | Offered rate where the DISCOVERY sweep first saw an SLO violation -- an observed edge, not statistically confirmed |
 
 ### SLO Evidence
 

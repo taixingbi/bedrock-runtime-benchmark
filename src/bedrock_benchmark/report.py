@@ -77,7 +77,7 @@ from typing import Dict, List, Optional
 
 from .analysis.capacity import FAIL, INCONCLUSIVE, PASS, Recommendation
 from .analysis.metrics import DEFAULT_CONFIDENCE, RunMetrics, min_samples_to_resolve_rate, percentile
-from .experiments.executor import ExperimentReport
+from .experiments.executor import ExperimentReport, above_ceiling, achieved_rps
 from .recommendation import admission_envelope
 from .results import RequestResult
 from .workload import WorkloadProfile
@@ -97,12 +97,18 @@ def _observed_tokens(results: List[RequestResult]) -> dict:
     }
 
 
-def _saturation_fields(rec: Recommendation) -> dict:
-    """saturation_status is always stated; for a non-monotonic sweep no
-    saturation value is claimed -- the unstable region is described
+def _saturation(rec: Recommendation) -> dict:
+    """The first FAIL the DISCOVERY sweep (incl. refinement) observed --
+    an observed edge, never a statistically confirmed one; the capacity
+    is statistically_confirmed alone. status is discovery_resolved /
+    discovery_not_reached / discovery_unresolved; for a non-monotonic
+    sweep no edge is claimed and the unstable region is described
     instead (see analysis/capacity.py's SweepAnalysis)."""
     a = rec.analysis
-    out: dict = {"saturation_status": a.status}
+    sat = rec.saturation_point
+    out: dict = {"observed_edge": _value(sat) if sat is not None else None,
+                 "phase": sat.phase if sat is not None else None,
+                 "status": f"discovery_{a.status}"}
     if a.status == "unresolved":
         out.update(unstable_region=a.unstable_region, confirmed_fail_from=a.confirmed_fail_from)
     return out
@@ -123,21 +129,25 @@ def _observed_fields(rec: Recommendation) -> dict:
     return out
 
 
-def _concurrency_block(rec: Recommendation) -> dict:
+def _concurrency_block(rec: Recommendation, *, ceiling_rps: Optional[float] = None) -> dict:
     """MEASUREMENT only: observed_nonfailing -> statistically_confirmed.
     The policy step (headroom -> max_inflight) lives in the entry's
-    `recommendation` block (recommendation.py), never here."""
-    saturation = rec.saturation_point.concurrency if rec.saturation_point is not None else None
+    `recommendation` block (recommendation.py), never here.
+    observed_nonfailing_achieved_rps is the request rate that point
+    produced; above the provider ceiling it ran on burst allowance."""
     confirmed = rec.confirmed_point.concurrency if rec.confirmed_point is not None else None
     out = {
         "observed_nonfailing": rec.point.concurrency,
         **_observed_fields(rec),
+        "observed_nonfailing_achieved_rps": achieved_rps(rec.point),
         "statistically_confirmed": confirmed,
         "confirmation_source": rec.confirmation_source,
-        "saturation": saturation,
-        **_saturation_fields(rec),
+        "saturation": _saturation(rec),
         "observed_slo_goodput_rps": rec.point.metrics.slo_goodput_rps,
     }
+    if ceiling_rps:
+        out["provider_ceiling_rps"] = round(ceiling_rps, 4)
+        out["observed_nonfailing_above_provider_ceiling"] = above_ceiling(rec.point, ceiling_rps)
     return out
 
 
@@ -154,7 +164,6 @@ def _rate_block(rec: Recommendation, *, ceiling_rps: Optional[float]) -> dict:
     (headroom + quota cap -> sustained_rps) is the entry's
     `recommendation` block (recommendation.py), never here.
     """
-    saturation_rps = rec.saturation_point.rps if rec.saturation_point is not None else None
     confirmed = rec.confirmed_point.rps if rec.confirmed_point is not None else None
     out = {
         "observed_nonfailing_offered_rps": rec.point.rps,
@@ -167,18 +176,23 @@ def _rate_block(rec: Recommendation, *, ceiling_rps: Optional[float]) -> dict:
         # observed short-window serving, possibly above quota on burst.
         "measured_burst_ceiling_rps": rec.burst_point.rps if rec.burst_point is not None else None,
         "provider_ceiling_rps": round(ceiling_rps, 4) if ceiling_rps else None,
-        "saturation_offered_rps": saturation_rps,
-        **_saturation_fields(rec),
+        "saturation": _saturation(rec),
     }
     return out
 
 
-def _sweep_points(profile_report) -> List[dict]:
-    """Every swept point's verdict -- the transition region at a glance."""
+def _sweep_points(profile_report, ceiling_rps: Optional[float] = None) -> List[dict]:
+    """Every swept point's verdict -- the transition region at a glance.
+    Concurrency points carry the rate they achieved; one above the
+    provider ceiling passed on burst allowance and is never a candidate."""
     out = []
     for point, verdict in zip(profile_report.points, profile_report.verdicts):
         row = {"value": _value(point), "verdict": verdict.verdict, "phase": point.phase,
                "repetitions": len(point.repetitions) or 1, "n": point.metrics.n}
+        if point.concurrency is not None:
+            row["achieved_rps"] = achieved_rps(point)
+            if ceiling_rps and above_ceiling(point, ceiling_rps):
+                row["above_provider_ceiling"] = True
         failed = [c.name for c in verdict.checks if c.verdict == "FAIL"]
         if failed:
             row["failed"] = failed
@@ -214,7 +228,8 @@ def _summary(rec: Recommendation) -> str:
                 "PASS": "PASS in discovery, not confirmed on independent data"}.get(rec.verdict.verdict, rec.verdict.verdict)
         parts.append(f"observed_nonfailing={observed} ({note})")
     sat = _value(rec.saturation_point) if rec.saturation_point is not None else None
-    parts.append(f"saturation={sat} (first FAIL)" if sat is not None else f"saturation={rec.analysis.status}")
+    parts.append(f"saturation={sat} (first FAIL in discovery -- an observed edge, not confirmed)" if sat is not None
+                 else f"saturation=discovery_{rec.analysis.status}")
     return " | ".join(parts)
 
 
@@ -332,7 +347,7 @@ def _calibration_point(spec, subject: str, rec: Optional[Recommendation], ceilin
         # Observed, not controlled: closed-loop C + latency produced it.
         "achieved_rps": confirmed.metrics.request_throughput_rps if confirmed is not None else None,
         "confirmed_slo_goodput_rps": confirmed.metrics.slo_goodput_rps if confirmed is not None else None,
-        "saturation": _value(rec.saturation_point) if rec is not None and rec.saturation_point is not None else None,
+        "observed_saturation_edge": _value(rec.saturation_point) if rec is not None and rec.saturation_point is not None else None,
         "bottleneck": (diagnosis or {}).get("bottleneck"),
         "scope": "isolated_workload_class",
         "use": "input to gateway admission-class / weight derivation; not a config value, no headroom applied; "
@@ -457,7 +472,8 @@ def _envelope(entry: dict, profile_report, spec, report_results: List[RequestRes
         entry["load_generator"] = generator
     if profile_report.verdicts:
         # Discovery only: picks candidates and shows the transition region.
-        entry["sweep_points"] = _sweep_points(profile_report)
+        sub_ceiling = spec.provider_ceilings.get(subject)
+        entry["sweep_points"] = _sweep_points(profile_report, sub_ceiling.rps if sub_ceiling else None)
     swept = {_value(p) for p in points}
     skipped = [v for v in spec.sweep_values(subject) if v not in swept]
     if skipped and spec.sweep.stop_after_fails is not None:
@@ -488,7 +504,7 @@ def _envelope(entry: dict, profile_report, spec, report_results: List[RequestRes
     ceiling = spec.provider_ceilings.get(subject)
     ceiling_rps = ceiling.rps if ceiling else None
     if spec.sweep.type == "concurrency":
-        entry["concurrency"] = _concurrency_block(rec)
+        entry["concurrency"] = _concurrency_block(rec, ceiling_rps=ceiling_rps)
         confirmed = rec.confirmed_point.concurrency if rec.confirmed_point is not None else None
     else:
         entry["rate"] = _rate_block(rec, ceiling_rps=ceiling_rps)
@@ -622,7 +638,7 @@ def build_capacity_profile(report: ExperimentReport) -> dict:
 
     confidence = spec.slo.confidence or DEFAULT_CONFIDENCE
     return {
-        "schema_version": 17,
+        "schema_version": 18,
         "experiment": spec.name,
         # reference: carries production admission envelopes;
         # admission_calibration: confirmed calibration_point per workload
@@ -696,7 +712,8 @@ def build_capacity_profile(report: ExperimentReport) -> dict:
             "confirmation": (
                 {"max_looks": spec.confirmation.max_looks, "max_repetitions": spec.confirmation.max_repetitions,
                  "max_requests": spec.confirmation.max_requests, "max_duration_s": spec.confirmation.max_duration_s,
-                 "candidates": spec.confirmation.candidates, "cooldown_s": spec.confirmation.cooldown_s}
+                 "candidates": spec.confirmation.candidates, "cooldown_s": spec.confirmation.cooldown_s,
+                 "warmup_s": spec.confirmation.warmup_s}
                 if spec.confirmation is not None else None
             ),
             "min_requests_to_resolve_throttle_slo": min_samples_to_resolve_rate(

@@ -387,3 +387,24 @@ artifact was ever used to actually inform a gateway config:
     envelope -> production capacity input, and that max_inflight and
     sustained_rps are two independent guardrails, not a jointly
     validated (C, R) region (planned: `joint-capacity`).
+
+## Schema v18 fixes
+
+62. **Concurrency candidates could be burst-inflated.** The first
+    `workload-shape-calibration` run confirmed nothing: every candidate
+    had achieved 8.3-9.1 rps in discovery, above the 6.67 rps RPM
+    ceiling, and throttled 64-81% once the burst bucket drained. A
+    concurrency sweep now only picks candidates whose achieved rate is
+    within 10% of the provider ceiling, refinement treats an
+    above-ceiling point as its upper bound, and `sweep_points` /
+    `concurrency` report `achieved_rps` and `above_provider_ceiling`.
+63. **Confirmation could read burst or overload state.** New
+    `confirmation.warmup_s` (discarded conditioning load before each
+    candidate's looks); `workload-shape-calibration` also gets
+    `cooldown_s: 120`, `candidates: 2` and `max_duration_s: 3000`.
+64. **`saturation` read like a confirmed edge.** It is now
+    `saturation: {observed_edge, phase, status: discovery_*}` in both
+    concurrency and rate blocks (replacing `saturation` /
+    `saturation_offered_rps` + `saturation_status`); calibration points
+    say `observed_saturation_edge`. Only `statistically_confirmed_*` is
+    capacity.

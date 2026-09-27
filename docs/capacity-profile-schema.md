@@ -2,20 +2,20 @@
 
 > Docs: [methodology](methodology.md) · [SLO statistics](slo-statistics.md) · [quota model](quota-model.md) · [capacity-profile schema](capacity-profile-schema.md) · [experiment design](experiment-design.md) · [correctness history](correctness-history.md) · [README](../README.md)
 
-The benchmark's one deliverable and its contract with consumers. Schema version 17.
+The benchmark's one deliverable and its contract with consumers. Schema version 18.
 
 ## The profile
 
 Each run writes raw per-request JSONL and a `capacity-profile.yaml`
 artifact under `results/` (gitignored -- these are real measurement outputs, not
-checked-in fixtures). The `capacity-profile.yaml` schema (v17 -- see
+checked-in fixtures). The `capacity-profile.yaml` schema (v18 -- see
 [correctness history](correctness-history.md) for why `rate` and `concurrency` are always
 kept in separate blocks, why the rate block separates offered load
 from goodput, and why there's no `global_max_concurrency`). A
 rate-capacity result:
 
 ```yaml
-schema_version: 17
+schema_version: 18
 experiment: rate-capacity
 purpose: reference                                 # admission_calibration | characterization -- then recommendation is always null
 environment:                                       # provenance -- see methodology.md, "Provenance and temporal validation"
@@ -66,9 +66,11 @@ workload_classes:
       confirmed_slo_goodput_rps: 4.9
       measured_burst_ceiling_rps: 10.0      # highest swept rate that didn't FAIL (may be burst)
       provider_ceiling_rps: 6.6667          # from the quota
-      saturation_offered_rps: 13.3333
-      saturation_status: resolved           # or not_reached / unresolved (+ unstable_region)
-      summary: "statistically_confirmed=5.0 (the capacity) | observed_nonfailing=8.3333 (INCONCLUSIVE -- ...; not shown unsafe) | saturation=13.3333 (first FAIL)"
+      saturation:                           # a DISCOVERY observation -- never the capacity
+        observed_edge: 13.3333              # first FAIL seen by the discovery sweep (incl. refinement)
+        phase: discovery                    # or refinement
+        status: discovery_resolved          # discovery_not_reached / discovery_unresolved (+ unstable_region)
+      summary: "statistically_confirmed=5.0 (the capacity) | observed_nonfailing=8.3333 (INCONCLUSIVE -- ...; not shown unsafe) | saturation=13.3333 (first FAIL in discovery -- an observed edge, not confirmed)"
     diagnosis:                              # MEASUREMENT interpretation: what limits the envelope
       bottleneck: rpm_quota                 # tpm_quota | latency | quota_and_latency | errors | not_reached | unresolved
       saturation_at: 13.3333
@@ -108,8 +110,11 @@ transport: {max_connections: 64, executor_workers: 64, total_max_attempts: 1, co
 ```
 
 A concurrency sweep writes `concurrency: {observed_nonfailing,
-observed_verdict, statistically_confirmed, saturation, saturation_status,
-observed_slo_goodput_rps, scope, summary}` instead of `rate`, and its
+observed_verdict, observed_nonfailing_achieved_rps, statistically_confirmed,
+saturation, observed_slo_goodput_rps, provider_ceiling_rps,
+observed_nonfailing_above_provider_ceiling, scope, summary}` instead of
+`rate` (its `sweep_points` carry `achieved_rps`, and
+`above_provider_ceiling: true` for points that ran on burst), and its
 recommendation sets `max_inflight` instead of `sustained_rps` --
 likewise from the confirmed point only. A sweep with
 `stop_after_fails` records the values it never ran:

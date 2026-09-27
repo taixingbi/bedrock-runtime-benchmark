@@ -168,10 +168,21 @@ double-dipping: the point was picked *because* its discovery sample
 looked good. So confirmation starts from zero.
 
 **Candidates.** The highest point(s) of discovery's leading non-failing
-run -- for a rate sweep, only at or below the provider ceiling
-(production is quota-capped anyway; above it a point passes on burst
-allowance at best); for a concurrency sweep, the highest non-failing
-concurrency. With `candidates: N > 1` they're tested
+run, at or below the provider ceiling -- for a rate sweep its offered
+rps, for a concurrency sweep the request rate it ACHIEVED (more than 10%
+over the ceiling = burst). Above the ceiling a point passes discovery on
+burst allowance only: a concurrency that needs 9 rps can't hold under a
+6.67 rps quota, and confirming it just measures the bucket draining (the
+first `workload-shape-calibration` run: every candidate was at 8.3-9.1
+rps and throttled 64-81% in confirmation). Refinement treats an
+above-ceiling point as the upper bound of its bracket too.
+
+**Steady state before the looks.** `confirmation.cooldown_s` idles after
+discovery (its overload drains the provider's burst / rolling quota), and
+`confirmation.warmup_s` then runs load at each candidate with the data
+DISCARDED (`phase: conditioning`, never measured) -- a rested bucket
+hands out burst credit at first, which fixed-N looks must not read.
+Neither counts against `max_duration_s`. With `candidates: N > 1` they're tested
 lowest-first and stop at the first one not confirmed (a fixed-sequence
 test, which keeps the family-wise error at alpha without splitting it).
 `concurrency-sweep` uses 2: with C=6 failing, C=2 is confirmed first and

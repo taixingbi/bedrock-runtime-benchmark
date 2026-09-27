@@ -249,6 +249,35 @@ class RunExperimentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((result.verdict, result.stop_reason), ("PASS", "confirmed"))
         self.assertEqual(result.decision_n, report.profiles[0].confirmation_plan.look_schedule[0])
 
+    async def test_points_above_the_provider_ceiling_are_upper_bounds_and_never_candidates(self):
+        """~19 rps per worker (50 ms calls) against an 85 rps ceiling: C=4
+        (~77 rps) is sustainable, C=5+ only ran on burst. No throttling in
+        the fake -- so without the ceiling rule every point would PASS and
+        C=8 would be the candidate."""
+        from bedrock_benchmark.ceiling import ProviderCeiling
+        from bedrock_benchmark.experiments.schema import ConfirmationConfig, RefinementConfig
+        from .fakes import ConcurrencyLimitedClient
+        target = BedrockConverseTarget(model_id="m", client=ConcurrencyLimitedClient(limit=100, call_s=0.05))
+        spec = _spec(sweep=SweepConfig(type="concurrency", values=[1, 4, 8], refinement=RefinementConfig()),
+                     repetitions=1, slo=self.LOOSE,
+                     confirmation=ConfirmationConfig(max_requests=10**6, candidates=1, warmup_s=0.1))
+        spec.provider_ceilings = {"short": ProviderCeiling(tokens_per_request=116, rpm_rps=85.0, tpm_rps=None)}
+
+        report = await run_experiment(spec, target=target)
+
+        profile = report.profiles[0]
+        self.assertEqual(sorted(p.concurrency for p in profile.points if p.phase == "refinement"), [5, 6])
+        [candidate] = profile.confirmations
+        self.assertEqual(candidate.value, 4)               # not 5 / 6 / 8: they needed burst
+        entry = build_capacity_profile(report)["workload_classes"]["short"]
+        rows = {r["value"]: r for r in entry["sweep_points"]}
+        self.assertTrue(rows[8].get("above_provider_ceiling"))
+        self.assertNotIn("above_provider_ceiling", rows[4])
+        # Conditioning ran before the looks and never counted.
+        conditioning = [r for r in report.all_results if r.tags.get("phase") == "conditioning"]
+        self.assertTrue(conditioning and not any(r.tags["measured"] for r in conditioning))
+        self.assertEqual(candidate.decision_n, profile.confirmation_plan.look_schedule[0])
+
     async def test_without_confirmation_discovery_is_a_fixed_sequence_test(self):
         target = BedrockConverseTarget(model_id="m", client=FakeBedrockRuntimeClient())
         report = await run_experiment(_spec(slo=self.LOOSE), target=target)

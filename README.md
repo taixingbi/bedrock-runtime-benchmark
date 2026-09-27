@@ -191,7 +191,7 @@ workload_classes:
       observed_verdict: INCONCLUSIVE            # no violation seen, too few requests to prove it
       statistically_confirmed_offered_rps: 6.6667
       provider_ceiling_rps: 6.6667
-      saturation_offered_rps: 10.0
+      saturation: {observed_edge: 10.0, phase: discovery, status: discovery_resolved}   # observed, not confirmed
     confirmation:
       candidates: [{value: 6.6667, verdict: PASS, stop_reason: confirmed, n: 4173}]
     recommendation:                             # POLICY
