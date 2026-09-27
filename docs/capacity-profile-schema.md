@@ -2,21 +2,22 @@
 
 > Docs: [methodology](methodology.md) · [SLO statistics](slo-statistics.md) · [quota model](quota-model.md) · [capacity-profile schema](capacity-profile-schema.md) · [experiment design](experiment-design.md) · [correctness history](correctness-history.md) · [README](../README.md)
 
-The benchmark's one deliverable and its contract with consumers. Schema version 11.
+The benchmark's one deliverable and its contract with consumers. Schema version 12.
 
 ## The profile
 
 Each run writes raw per-request JSONL and a `capacity-profile.yaml`
 artifact under `results/` (gitignored -- these are real measurement outputs, not
-checked-in fixtures). The `capacity-profile.yaml` schema (v11 -- see
+checked-in fixtures). The `capacity-profile.yaml` schema (v12 -- see
 [correctness history](correctness-history.md) for why `rate` and `concurrency` are always
 kept in separate blocks, why the rate block separates offered load
 from goodput, and why there's no `global_max_concurrency`). A
 rate-capacity result:
 
 ```yaml
-schema_version: 11
+schema_version: 12
 experiment: rate-capacity
+purpose: reference                                 # or characterization -- then recommendation is always null
 environment:                                       # provenance -- see methodology.md, "Provenance and temporal validation"
   measured_at: {start: 2026-09-26T19:06:40+00:00, end: ...}
   account: "646821141010"
@@ -35,7 +36,7 @@ constraints:                                       # what every number was judge
     profiles:
       gold: {ttft_p95_ms: 800, tpot_p95_ms: 40, latency_p95_ms: null, success_rate_min: 0.995, throttle_rate_max: 0.001, confidence: 0.95}
   workloads:                                                                 # catalog/workloads.yaml -- the E2E cap is per workload
-    short_chat: {input_tokens: 512, output_tokens: 64, slo_profile: gold, latency_p95_ms: 3000}
+    short_chat: {input_tokens: 512, output_tokens: 64, slo_profile: gold, latency_p95_ms: 3000, role: reference}
 measurement:
   warmup_s: 10
   window_s: 90
@@ -51,16 +52,17 @@ sweep: {type: rate, quota_fractions: [0.25, ...], relative_to: provider_ceiling}
 workload_classes:
   short_chat:
     slo_profile: gold
+    role: reference                                # catalog/workloads.yaml
     observed: {input_tokens_p50: 505, output_tokens_p50: 61}
     workload_validation: {input: {...}, output: {...}, valid: true}
     provider_constraints: {tokens_per_request: 576.0, ceiling_rps: 6.6667, binding_constraint: rpm, ...}
     sweep_values_rps: [1.6667, 3.3333, ...]
     rate:
-      observed_nonfailing_offered_rps: 8.3333      # no FAIL observed before the first failure...
+      observed_nonfailing_offered_rps: 8.3333      # highest point before the first FAIL...
       observed_verdict: INCONCLUSIVE               # ...but not enough requests to PROVE the SLO
       observed_inconclusive_checks: [{name: throttle_rate, n: 600, required_n: 2995, ...}]
       observed_slo_goodput_rps: 8.1
-      statistically_confirmed_offered_rps: 5.0     # strictly PASS at 95% -- null if none
+      statistically_confirmed_offered_rps: 5.0     # THE CAPACITY: highest confirmed SLO-compliant point -- null if none
       confirmed_slo_goodput_rps: 4.9
       measured_burst_ceiling_rps: 10.0      # highest swept rate that didn't FAIL (may be burst)
       provider_ceiling_rps: 6.6667          # from the quota
@@ -77,7 +79,7 @@ workload_classes:
         basis: {statistically_confirmed_offered_rps: 5.0, provider_ceiling_rps: 6.6667}
     sweep_points: [{value: 1.6667, verdict: INCONCLUSIVE, phase: discovery, n: 150, inconclusive: [...]}, ...]
     evidence: {n: 1740, n_throttled: 0, throttle_rate_upper: 0.0017, verdict: {...}, peak_outstanding: 9, ...}
-recommendation_policy: {headroom_fraction: 0.20, quota_headroom_fraction: 0.10}
+recommendation_policy: {headroom_fraction: 0.20, quota_headroom_fraction: 0.10}   # constraints/recommendation-policy.yaml
 transport: {max_connections: 64, executor_workers: 64, total_max_attempts: 1, connect_timeout_s: 5, read_timeout_s: 60}
 ```
 
@@ -100,8 +102,14 @@ or mix keeps them in separate blocks:
 
 | Block | Holds | Kind |
 |---|---|---|
-| `rate` / `concurrency` | `observed_nonfailing_*`, `statistically_confirmed_*`, `measured_burst_ceiling_rps`, `provider_ceiling_rps`, saturation, verdicts | measurement |
-| `recommendation.admission_envelope` | the confirmed point after this benchmark's safety headroom | policy |
+| `rate` / `concurrency` | `observed_nonfailing_*`, `statistically_confirmed_*` (the capacity), `measured_burst_ceiling_rps`, `provider_ceiling_rps`, saturation, SLO goodput, verdicts -- never a safety margin | measurement |
+| `recommendation.admission_envelope` | the confirmed point after the safety headroom in `constraints/recommendation-policy.yaml` | policy |
+
+```
+measured        statistically_confirmed_offered_rps = 6.67
+policy          headroom_fraction = 0.20
+recommendation  sustained_rps = 5.33
+```
 
 The recommendation says only: *based on this measured model/workload
 envelope, this is the recommended maximum backend in-flight concurrency
@@ -147,7 +155,9 @@ that the producer doesn't depend on the consumer.
 Contract rules a consumer can rely on:
 
 - `recommendation.admission_envelope` is derived only from a
-  statistically confirmed point; it is `null` (with `reason`) otherwise.
+  statistically confirmed point, and only in a `purpose: reference`
+  profile; it is `null` (with `reason`) otherwise. A characterization
+  profile never carries one -- skip it.
 - `max_inflight` is set for concurrency sweeps, `sustained_rps` for rate
   sweeps; the other is `null`.
 - Nothing gateway-specific (tenant limits, queues, AIMD, allocation) is

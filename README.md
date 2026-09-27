@@ -27,15 +27,20 @@ Two framing rules:
 - **The SLO is an input, not a finding.** Gold / silver / bronze
   (`constraints/slo.yaml`) are externally supplied policy; the benchmark
   never derives, tunes or relaxes them from measurements.
+- **Capacity = the highest statistically confirmed SLO-compliant
+  operating point.** SLO goodput is reported as an observed metric but
+  never selects it; headroom is policy, applied only in the
+  recommendation.
 
 ## Architecture
 
 ```
 catalog/models.yaml          which models
-catalog/workloads.yaml       which requests (shape + SLO profile)       ─┐
-experiments/*.yaml           how to load them (workload names + sweep)  ─┤
+catalog/workloads.yaml       which requests (shape + SLO profile + role) ─┐
+experiments/*.yaml           how to load them (purpose + workloads + sweep) ┤
 constraints/slo.yaml         SLO: what quality we require (policy)      ─┤
 constraints/quota.yaml       quota: what the provider allows            ─┤
+constraints/recommendation-policy.yaml   headroom (policy)              ─┤
                                                                           v
              discovery sweep ──> adaptive confirmation ──> verdicts (PASS / FAIL / INCONCLUSIVE)
                                                                           |
@@ -61,12 +66,18 @@ there is no gateway config schema in this repo.
 
 ## Experiments
 
-| Experiment | Sweep | Per model |
-|---|---|---|
-| `concurrency-sweep` | concurrency 1/2/4/6/8, `short_chat`; confirms the top 2 non-failing concurrencies | ~34 min |
-| `rate-capacity` | 0.25x-2.5x of the provider ceiling, one workload per tier (`short_chat` gold, `rag_answer` silver, `long_generation` bronze) -- the canonical envelope run | ~57 min |
-| `mixed-capacity` | 0.25x-2.5x ceiling, 60% `short_chat` / 30% `rag_answer` / 10% `long_generation` | ~32 min |
-| `token-sweep` | the 4 most distinct catalog shapes x concurrency 1/2/4/6 | ~47 min |
+| Experiment | Purpose | Sweep | Per model |
+|---|---|---|---|
+| `rate-capacity` | reference | 0.25x-2.5x of the provider ceiling, one reference workload per tier (`short_chat` gold, `rag_answer` silver, `long_generation` bronze) -- the canonical envelope run | ~57 min |
+| `concurrency-sweep` | reference | concurrency 1/2/4/6/8, `short_chat`; confirms the top 2 non-failing concurrencies | ~34 min |
+| `mixed-capacity` | reference | 0.25x-2.5x ceiling, 60% `short_chat` / 30% `rag_answer` / 10% `long_generation` | ~32 min |
+| `token-sweep` | characterization | the 4 most distinct catalog shapes x concurrency 1/2/4/6 | ~47 min |
+
+Only **reference** experiments, on the three **reference** workloads (one
+per SLO tier), produce an admission-envelope recommendation. The other
+catalog workloads and `token-sweep` are **characterization**: they
+measure how token shape and context move the envelope, and their
+profiles carry no recommendation.
 
 Every experiment is discovery followed by adaptive confirmation at the
 candidate -- the only way a point becomes statistically confirmed.
@@ -139,11 +150,12 @@ point, and `reason` says why (e.g. `confirmation at 6.6667: FAIL
 
 ## Not in scope
 
-AIMD, tenant limiters, global admission control, queueing, fairness,
-and any gateway-specific setting -- all `bedrock-runtime-gateway`'s job.
-This repo outputs a measured, statistically confirmed envelope and an
-admission-envelope recommendation; it never implements, applies or
-pre-decides the runtime policy that enforces it.
+Tenant quotas, fairness, queue policy, AIMD, adaptive global
+concurrency, auth and gateway config -- all `bedrock-runtime-gateway`'s
+job. This repo outputs only a safe backend operating envelope (measured,
+statistically confirmed, plus an admission-envelope recommendation); it
+never implements, applies or pre-decides the runtime policy that
+enforces it, and reads nothing from a gateway's tables or config.
 
 ## Documentation
 

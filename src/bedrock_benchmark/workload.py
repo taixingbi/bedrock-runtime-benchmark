@@ -52,6 +52,10 @@ class WorkloadProfile:
     # workload, because a 64-, 256- and 1024-token output can't share
     # one E2E budget. Overrides any latency_p95_ms in the profile.
     latency_p95_ms: Optional[float] = None
+    # reference (a production admission envelope is produced for it, by a
+    # reference experiment) | characterization (studies token / context
+    # effects; measured, never recommended). Set in the catalog.
+    role: Optional[str] = None
     # Padding length in chars, set by calibration.py from a provider
     # token count. None = the 4-chars/token estimate.
     filler_chars: Optional[int] = None
@@ -109,6 +113,9 @@ class WorkloadMix:
         return rng.choices(profiles, weights=weights, k=1)[0]
 
 
+WORKLOAD_ROLES = ("reference", "characterization")
+
+
 def load_workloads(path: str = DEFAULT_WORKLOADS_FILE) -> Dict[str, WorkloadProfile]:
     """The workload catalog: name -> WorkloadProfile. Every workload
     binds an slo_profile explicitly; whether that profile exists is
@@ -125,6 +132,8 @@ def load_workloads(path: str = DEFAULT_WORKLOADS_FILE) -> Dict[str, WorkloadProf
         workload = WorkloadProfile(name=name, **cfg)
         if not workload.slo_profile:
             raise ValueError(f"{path}: workload {name!r} needs an explicit slo_profile")
+        if workload.role not in WORKLOAD_ROLES:
+            raise ValueError(f"{path}: workload {name!r} needs `role:` one of {list(WORKLOAD_ROLES)}")
         if workload.latency_p95_ms is not None and workload.latency_p95_ms <= 0:
             raise ValueError(f"{path}: workload {name!r} latency_p95_ms must be > 0")
         if workload.input_tokens <= 0 or workload.output_tokens <= 0:

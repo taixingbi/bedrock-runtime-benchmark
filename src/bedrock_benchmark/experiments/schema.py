@@ -31,7 +31,7 @@ import yaml
 
 from ..ceiling import ProviderCeiling, provider_ceiling
 from ..client import TransportConfig
-from ..constraints import DEFAULT_SLO_FILE, SloConfig, load_slo
+from ..constraints import DEFAULT_POLICY_FILE, DEFAULT_SLO_FILE, SloConfig, load_policy, load_slo
 from ..models import ModelConfig
 from ..workload import DEFAULT_WORKLOADS_FILE, WorkloadProfile, load_workloads
 
@@ -123,7 +123,8 @@ class ExperimentSpec:
     # run-to-run spread is visible.
     repetitions: int = 1
     stream: bool = True
-    # Back-off from the MEASURED safe rate for production.
+    # POLICY (constraints/recommendation-policy.yaml), not measurement:
+    # back-off from the statistically confirmed point.
     provider_headroom: float = 0.20
     # Back-off from the provider CEILING (quota) for production: a sweep
     # that passed above quota may have ridden Bedrock's short-window
@@ -131,6 +132,11 @@ class ExperimentSpec:
     # min(statistically_confirmed x (1 - provider_headroom), ceiling x (1 - quota_headroom)).
     quota_headroom: float = 0.10
     confirmation: Optional[ConfirmationConfig] = None
+    # reference: produces the production admission envelope, and may only
+    # list reference workloads. characterization: studies how token shape
+    # / context move the envelope -- measured and confirmed, but its
+    # profile carries no admission-envelope recommendation.
+    purpose: str = "reference"
     # Concurrency sweeps only: a closed-loop worker that gets a 429 waits
     # this long before its next request instead of re-firing at once (a
     # 429 returns in milliseconds, so without it one throttled worker
@@ -198,11 +204,12 @@ class NoMatchingWorkloads(Exception):
 
 _MODEL_KEYS = ("target", "quota_snapshot", "quota")
 _SLO_KEYS = ("slo", "slo_profiles")
+_POLICY_KEYS = ("provider_headroom", "quota_headroom")
 
 
 def load_experiment(
     path: str, model: ModelConfig, *, slo_file: str = DEFAULT_SLO_FILE, workloads_file: str = DEFAULT_WORKLOADS_FILE,
-    only_slo_profiles: Optional[Collection[str]] = None,
+    only_slo_profiles: Optional[Collection[str]] = None, policy_file: str = DEFAULT_POLICY_FILE,
 ) -> ExperimentSpec:
     """only_slo_profiles (e.g. {"gold"}) keeps just the workloads bound to
     those profiles. An isolated sweep keeps its matching workloads; a mix
@@ -223,7 +230,14 @@ def load_experiment(
             f"{path}: remove {present} -- SLOs are defined once in {slo_file}; "
             f"give a workload `slo_profile: <name>` to use a non-default one"
         )
+    present = [k for k in _POLICY_KEYS if k in raw]
+    if present:
+        raise ValueError(
+            f"{path}: remove {present} -- headroom is recommendation POLICY, defined once in {policy_file}; "
+            f"an experiment defines only what is measured"
+        )
     slos = load_slo(slo_file)
+    policy = load_policy(policy_file)
     sweep = raw["sweep"]
     transport = raw.get("transport") or {}
     workloads = _resolve_workloads(raw.get("workloads"), path, workloads_file)
@@ -242,10 +256,11 @@ def load_experiment(
         repetitions=raw.get("repetitions", 1),
         stream=raw.get("stream", True),
         sweep=SweepConfig(**sweep),
-        provider_headroom=raw.get("provider_headroom", 0.20),
-        quota_headroom=raw.get("quota_headroom", 0.10),
+        provider_headroom=policy.headroom_fraction,
+        quota_headroom=policy.quota_headroom_fraction,
         confirmation=ConfirmationConfig(**raw["confirmation"]) if raw.get("confirmation") else None,
         throttle_pause_s=raw.get("throttle_pause_s", 0.0),
+        purpose=_purpose(raw, workloads, path, workloads_file),
         seed=raw.get("seed"),
         transport=TransportConfig(**transport),
         mix=MixConfig(**raw["mix"]) if raw.get("mix") else None,
@@ -281,6 +296,22 @@ def _filter_by_slo_profile(workloads, raw, only, defined, slo_file: str) -> List
     if not kept:
         raise NoMatchingWorkloads(f"no workloads bound to {sorted(only)}")
     return kept
+
+
+EXPERIMENT_PURPOSES = ("reference", "characterization")
+
+
+def _purpose(raw: dict, workloads: List[WorkloadProfile], path: str, workloads_file: str) -> str:
+    purpose = raw.get("purpose")
+    if purpose not in EXPERIMENT_PURPOSES:
+        raise ValueError(f"{path}: needs `purpose:` one of {list(EXPERIMENT_PURPOSES)} -- reference experiments "
+                         f"produce the production admission envelope; characterization ones only measure")
+    if purpose == "reference":
+        other = [w.name for w in workloads if w.role != "reference"]
+        if other:
+            raise ValueError(f"{path}: a reference experiment may only list reference workloads; {other} are "
+                             f"not (role in {workloads_file}) -- use a characterization experiment for them")
+    return purpose
 
 
 def _resolve_workloads(names, path: str, workloads_file: str) -> List[WorkloadProfile]:

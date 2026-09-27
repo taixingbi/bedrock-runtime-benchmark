@@ -24,6 +24,7 @@ OTHER = ModelConfig(name="other", model_id="m.other-v1:0", quota_rpm=1200, quota
 def _experiment(name: str, **extra) -> dict:
     spec = {
         "name": name,
+        "purpose": "reference",
         "workloads": ["short"],
         "sweep": {"type": "rate", "quota_fractions": [1.0]},
         "warmup_s": 0.02, "duration_s": 0.1, "stream": False, "seed": 1,
@@ -50,7 +51,7 @@ class BatchTests(unittest.TestCase):
         self.slo_file = self.dir / "slo.yaml"
         self.slo_file.write_text("profiles:\n  fast: {latency_p95_ms: 3000}\n")
         self.workloads_file = self.dir / "workloads.yaml"
-        self.workloads_file.write_text("workloads:\n  short: {input_tokens: 100, output_tokens: 16, slo_profile: fast}\n")
+        self.workloads_file.write_text("workloads:\n  short: {input_tokens: 100, output_tokens: 16, slo_profile: fast, role: reference}\n")
 
     def tearDown(self):
         self._tmp.cleanup()
@@ -140,8 +141,8 @@ class SloProfileFilterBatchTests(unittest.TestCase):
             (d / "slo.yaml").write_text("profiles:\n  gold: {latency_p95_ms: 3000}\n  bronze: {latency_p95_ms: 9000}\n")
             (d / "workloads.yaml").write_text(
                 "workloads:\n"
-                "  chat: {input_tokens: 100, output_tokens: 16, slo_profile: gold}\n"
-                "  gen: {input_tokens: 100, output_tokens: 16, slo_profile: bronze}\n"
+                "  chat: {input_tokens: 100, output_tokens: 16, slo_profile: gold, role: reference}\n"
+                "  gen: {input_tokens: 100, output_tokens: 16, slo_profile: bronze, role: reference}\n"
             )
             both = _experiment("both", workloads=["chat", "gen"])
             only_gen = _experiment("only_gen", workloads=["gen"])

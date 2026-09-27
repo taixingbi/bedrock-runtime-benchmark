@@ -4,15 +4,11 @@
 --all checks every model's entry in constraints/quota.yaml against its
 real RPM/TPM quota and reports which are stale -- rate sweeps are quota
 fractions, so a stale number shifts every rate tested. --model-id
-prints one model's quota as a line for constraints/quota.yaml. Quotas come table-first, AWS Service Quotas fallback (see
-quota.py's own docstring). Deliberately a
-manual, explicit step, not something run_experiment() calls
-automatically -- matches this repo's existing style (see
-bedrock-runtime-gateway's own sync_model_quotas_from_aws.py, which is
-equally explicit/manual for the same reason: a number an experiment's
-sweep values get DESIGNED around shouldn't silently change between one
-run and the next just because a background lookup returned something
-different this time).
+prints one model's quota as a line for constraints/quota.yaml. Quotas
+come from AWS Service Quotas (see quota.py). Deliberately a manual,
+explicit step, not something run_experiment() calls automatically: a
+number an experiment's sweep values are DESIGNED around shouldn't
+silently change between one run and the next.
 
 Usage:
     python scripts/fetch_quota.py --all
@@ -32,14 +28,14 @@ from bedrock_benchmark.models import DEFAULT_MODELS_FILE, load_models  # noqa: E
 from bedrock_benchmark.quota import fetch_quota_snapshot  # noqa: E402
 
 
-def check_all(models_file: str, quota_file: str, table_name: str, account: str) -> int:
+def check_all(models_file: str, quota_file: str, account: str) -> int:
     """Exit 1 if any quota-file entry (for the live account, each model's
     region) differs from the live value, or can't be determined."""
     stale = 0
     models = load_models(models_file, include_disabled=True, quota_file=quota_file, account=account)
     print(f"account {models[0].account} ({quota_file})")
     for m in models:
-        q = fetch_quota_snapshot(m.model_id, region=m.region, table_name=table_name)
+        q = fetch_quota_snapshot(m.model_id, region=m.region)
         if q.source == "unknown":
             print(f"?  {m.name:<14} {m.model_id}: live quota unknown")
             stale += 1
@@ -65,17 +61,15 @@ def main() -> None:
     parser.add_argument("--quota-file", default=DEFAULT_QUOTA_FILE)
     parser.add_argument("--account", help="default: the live account from STS")
     parser.add_argument("--region", default="us-east-1")
-    parser.add_argument("--table-name", default="gateway-model-quotas-dev")
     args = parser.parse_args()
 
     if args.all:
-        raise SystemExit(check_all(args.models_file, args.quota_file, args.table_name,
-                                   args.account or current_account_id()))
+        raise SystemExit(check_all(args.models_file, args.quota_file, args.account or current_account_id()))
 
-    quota = fetch_quota_snapshot(args.model_id, region=args.region, table_name=args.table_name)
+    quota = fetch_quota_snapshot(args.model_id, region=args.region)
 
     if quota.source == "unknown":
-        print(f"could not determine quota for {args.model_id!r} (table unreachable, and no Service Quotas mapping/permission)", file=sys.stderr)
+        print(f"could not determine quota for {args.model_id!r} (no Service Quotas mapping or permission)", file=sys.stderr)
         raise SystemExit(1)
 
     rps = round(quota.rpm / 60.0, 2) if quota.rpm is not None else None

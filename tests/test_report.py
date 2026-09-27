@@ -52,11 +52,11 @@ class BuildCapacityProfileTests(unittest.TestCase):
         defaults.update(overrides)
         return ExperimentSpec(**defaults)
 
-    def test_schema_version_is_11(self):
+    def test_schema_version_is_12(self):
         spec = self._spec()
         report = ExperimentReport(spec=spec, profiles=[ProfileReport(workload_name="short", recommendation=None)])
         profile = build_capacity_profile(report)
-        self.assertEqual(profile["schema_version"], 11)
+        self.assertEqual(profile["schema_version"], 12)
 
     def test_concurrency_sweep_writes_a_concurrency_block_not_rate(self):
         spec = self._spec(sweep_type="concurrency")
@@ -335,7 +335,26 @@ class BuildCapacityProfileTests(unittest.TestCase):
 
         self.assertIsNone(c["slo"]["profiles"]["gold"]["latency_p95_ms"])
         self.assertEqual(c["workloads"]["short_chat"],
-                         {"input_tokens": 512, "output_tokens": 64, "slo_profile": "gold", "latency_p95_ms": 3000})
+                         {"input_tokens": 512, "output_tokens": 64, "slo_profile": "gold", "latency_p95_ms": 3000,
+                          "role": "reference"})
+
+
+    def test_characterization_experiment_never_recommends(self):
+        """token-sweep measures and confirms, but a production admission
+        envelope comes only from a reference experiment."""
+        from bedrock_benchmark.models import load_models
+        spec = load_experiment("experiments/token-sweep.yaml", load_models(names=["nova-micro"])[0])
+        self.assertEqual(spec.purpose, "characterization")
+        rec = _rec(point=SweepPoint(concurrency=2, rps=None, metrics=_metrics()), saturation_point=None)
+        report = ExperimentReport(spec=spec, profiles=[ProfileReport(workload_name="short_chat", recommendation=rec)])
+
+        profile = build_capacity_profile(report)
+
+        self.assertEqual(profile["purpose"], "characterization")
+        entry = profile["workload_classes"]["short_chat"]
+        self.assertEqual(entry["concurrency"]["statistically_confirmed"], 2)  # the measurement is kept
+        self.assertIsNone(entry["recommendation"]["admission_envelope"])
+        self.assertIn("characterization experiment", entry["recommendation"]["reason"])
 
 
 if __name__ == "__main__":

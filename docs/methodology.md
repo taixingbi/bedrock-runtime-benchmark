@@ -2,7 +2,7 @@
 
 > Docs: [methodology](methodology.md) · [SLO statistics](slo-statistics.md) · [quota model](quota-model.md) · [capacity-profile schema](capacity-profile-schema.md) · [experiment design](experiment-design.md) · [correctness history](correctness-history.md) · [README](../README.md)
 
-How a sweep turns requests into metrics: core abstractions, the SLO-goodput headline metric, the measurement window, workload calibration and validation, mixed workloads, provenance, and temporal validation across runs.
+How a sweep turns requests into metrics: core abstractions, the capacity definition and SLO goodput, the measurement window, workload calibration and validation, mixed workloads, provenance, and temporal validation across runs.
 
 ## Core abstractions
 
@@ -24,14 +24,33 @@ How a sweep turns requests into metrics: core abstractions, the SLO-goodput head
   Poisson at a fixed rps: "what does offered rate R do") -- kept
   separate because they answer different questions and conflating them
   produces a confounded measurement.
-- **`analysis/capacity.py`** -- explicit rule-based recommendation, not
-  a black-box score: SLO-filter the swept points, pick the one with the
-  highest `slo_goodput_rps` among survivors, apply `provider_headroom`.
-  Never fits a curve or guesses a number no measured point produced.
+- **`analysis/capacity.py`** -- explicit rules, not a black-box score:
+  verdicts per point, the observed non-failing point, and the
+  statistically confirmed point (the capacity). Measurement only -- it
+  applies no headroom; policy lives in `recommendation.py`. Never fits a
+  curve or guesses a number no measured point produced.
 
-## SLO goodput -- the headline metric
+## Capacity, and SLO goodput
 
-Raw throughput is misleading on its own:
+One definition, used everywhere:
+
+> **capacity = the highest statistically confirmed SLO-compliant
+> operating point** (`statistically_confirmed` /
+> `statistically_confirmed_offered_rps`).
+
+Every other number is a measurement around it, and none selects it:
+
+| Number | What it is |
+|---|---|
+| `observed_nonfailing` | highest point before the first FAIL -- may be INCONCLUSIVE |
+| `statistically_confirmed` | **the capacity**: highest point that strictly PASSes, on independent confirmation data |
+| `saturation` | first FAIL |
+| `slo_goodput_rps` | an observed metric at each point -- reported, never a selection rule |
+| `recommendation.admission_envelope` | POLICY: capacity after headroom (`constraints/recommendation-policy.yaml`) |
+
+SLO goodput -- successes per second that also met their latency SLO --
+is still the most useful OBSERVED metric, because raw throughput is
+misleading on its own:
 
 ```
 C    Throughput   TTFT P95   429%    SLO Goodput
@@ -42,9 +61,10 @@ C    Throughput   TTFT P95   429%    SLO Goodput
 8       5.4         1600ms    7%        3.9
 ```
 
-Naive throughput says "C=8 is fastest." This repo says "C=6 is the
-recommended concurrency" -- the highest concurrency that still clears
-the configured SLO, which is what a gateway config actually needs.
+Naive throughput says "C=8 is fastest." Goodput shows C=8 is worse --
+but the capacity is still not "the best-goodput point": it is the
+highest concurrency that is statistically CONFIRMED to meet the SLO
+(here, if confirmation passes, C=6).
 
 ## Measurement policy
 
@@ -148,7 +168,7 @@ mixed_workloads:
     rate: {observed_nonfailing_offered_rps: ..., observed_verdict: ..., statistically_confirmed_offered_rps: ...}
     recommendation: {admission_envelope: {sustained_rps: ..., ...}}
     evidence: {...}
-    classes_at_recommended_point: {short_chat: {...}, rag_answer: {...}, long_generation: {...}}
+    classes_at_confirmed_point: {short_chat: {...}, rag_answer: {...}, long_generation: {...}}  # at the capacity
 ```
 
 It's valid for that mix's shares only -- a different traffic mix

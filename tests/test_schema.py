@@ -11,6 +11,7 @@ NO_QUOTA = ModelConfig(name="mystery", model_id="x.y-v1:0")
 
 MINIMAL = (
     "name: minimal\n"
+    "purpose: reference\n"
     "workloads: [short_chat]\n"
     "sweep: {type: concurrency, values: [1]}\n"
 )
@@ -162,6 +163,9 @@ class ValidationTests(unittest.TestCase):
             MINIMAL + "confirmation: {max_looks: 0}\n",
             MINIMAL + "confirmation: {max_duration_s: 0}\n",
             MINIMAL + "confirmation: {cooldown_s: -1}\n",
+            MINIMAL + "provider_headroom: 0.2\n",                              # policy lives in constraints/
+            MINIMAL.replace("purpose: reference\n", ""),                       # purpose is explicit
+            MINIMAL.replace("[short_chat]", "[short_chat, tiny_request]"),      # reference lists a characterization workload
             MINIMAL + "throttle_pause_s: -1\n",
             MINIMAL.replace("{type: concurrency, values: [1]}", "{type: rate, values: [1]}") + "throttle_pause_s: 1\n",  # open-loop
         ]

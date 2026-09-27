@@ -11,6 +11,8 @@
 # 0.25x..2.5x is 0.21..2.08 rps for a 50 RPM model and 4.2..41.7 rps
 # for a 1000 RPM one. The first batch showed real ceilings between
 # ~1.0x and ~1.9x quota, so the sweep extends to 2.5x to find the edge.
+# reference: THE production envelope run -- one reference workload per SLO tier.
+purpose: reference
 name: rate-capacity
 description: |
   Poisson rate sweep at 0.25x..2.5x of each workload's provider ceiling,
@@ -28,12 +30,6 @@ stream: true
 sweep:
   type: rate
   quota_fractions: [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 2.5]
-
-# Production = min(statistically_confirmed x (1 - provider_headroom),
-#                  provider_ceiling x (1 - quota_headroom)): passing above
-# quota in a 90s window may be Bedrock burst allowance, not sustainable.
-provider_headroom: 0.20
-quota_headroom: 0.10
 
 # Two phases with separate jobs (analysis/confirmation.py):
 #   discovery     every value once -- picks the candidate and reports the

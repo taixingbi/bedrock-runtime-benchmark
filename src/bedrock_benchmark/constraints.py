@@ -1,8 +1,9 @@
 """Constraints -- the two inputs every capacity number is judged against:
 
     constraints/
-      slo.yaml     SLO:   what quality we REQUIRE (named profiles per use case)
-      quota.yaml   quota: what capacity the PROVIDER ALLOWS (per account/region/model)
+      slo.yaml                    SLO:    what quality we REQUIRE (named profiles per use case)
+      quota.yaml                  quota:  what capacity the PROVIDER ALLOWS (per account/region/model)
+      recommendation-policy.yaml  policy: headroom from a confirmed measurement to a recommendation
 
 Both are defined once, outside experiments and outside the models
 list, so every experiment x model run is judged by the same SLO for the
@@ -20,6 +21,24 @@ import yaml
 
 DEFAULT_SLO_FILE = "constraints/slo.yaml"
 DEFAULT_QUOTA_FILE = "constraints/quota.yaml"
+DEFAULT_POLICY_FILE = "constraints/recommendation-policy.yaml"
+
+
+@dataclass
+class RecommendationPolicy:
+    """Policy, not measurement: the safety margins recommendation.py
+    applies to a statistically confirmed point."""
+    headroom_fraction: float = 0.20
+    quota_headroom_fraction: float = 0.10
+
+
+def load_policy(path: str = DEFAULT_POLICY_FILE) -> RecommendationPolicy:
+    raw = yaml.safe_load(Path(path).read_text()) or {}
+    policy = RecommendationPolicy(**raw)
+    for name in ("headroom_fraction", "quota_headroom_fraction"):
+        if not 0 <= getattr(policy, name) < 1:
+            raise ValueError(f"{path}: {name} must be in [0, 1)")
+    return policy
 
 
 @dataclass

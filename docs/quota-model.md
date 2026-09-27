@@ -67,20 +67,13 @@ number before an experiment is written, not a name for it to just do.
 
 `--all` compares each entry in `constraints/quota.yaml` with the live
 value and prints a replacement line for any stale one (exit 1 if any
-differ). It looks up the model's real RPM/TPM in two steps, table first:
+differ). The live value comes from AWS Service Quotas
+(`service-quotas:ListServiceQuotas`), the provider's source of truth --
+never from any gateway's tables or config; the benchmark depends only
+on Bedrock and AWS.
 
-1. `gateway-model-quotas-dev`'s `quota#<model_id>` row, if that table
-   happens to be reachable -- a cheap `GetItem` against a value
-   `bedrock-runtime-gateway` already synced from AWS. A soft
-   convenience: this repo doesn't provision that table and doesn't
-   assume it exists.
-2. AWS Service Quotas directly (`service-quotas:ListServiceQuotas`),
-   the actual source of truth, whenever the table lookup fails for
-   any reason (table missing, row missing, no permission, wrong
-   account/region).
-
-If neither source is available it returns `source: unknown` rather
-than raising -- a missing quota number should never block an
+If it's unavailable (no permission, unmapped model) it returns
+`source: unknown` rather than raising -- a missing quota number should never block an
 experiment design conversation, it should just make the gap visible.
 This is read-only, design-time context: nothing at runtime checks or
 caps against it -- enforcement is the gateway's job.

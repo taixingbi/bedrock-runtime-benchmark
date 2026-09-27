@@ -1,7 +1,7 @@
 import unittest
 
 from bedrock_benchmark.analysis.capacity import (
-    SweepPoint, analyze_sweep, apply_headroom, evaluate, meets_slo, point_meets_slo, point_verdict, recommend,
+    SweepPoint, analyze_sweep, evaluate, meets_slo, point_meets_slo, point_verdict, recommend,
 )
 from bedrock_benchmark.analysis.metrics import RunMetrics
 
@@ -195,7 +195,7 @@ class NonMonotonicSweepTests(unittest.TestCase):
 
 
 class RecommendTests(unittest.TestCase):
-    def test_picks_highest_slo_goodput_among_passing_points(self):
+    def test_observed_point_is_the_highest_non_failing_one(self):
         points = [
             SweepPoint(concurrency=1, rps=None, metrics=_metrics(slo_goodput_rps=1.8)),
             SweepPoint(concurrency=2, rps=None, metrics=_metrics(slo_goodput_rps=3.1)),
@@ -233,22 +233,18 @@ class RecommendTests(unittest.TestCase):
         rec = recommend(points)
         self.assertEqual(rec.point.rps, 5.0)
 
-    def test_ties_broken_toward_lower_concurrency(self):
+    def test_goodput_never_selects_the_point(self):
+        """SLO goodput is an observed metric, not the selection rule: a
+        lower point with higher goodput doesn't displace the highest
+        non-failing one, and capacity is the highest CONFIRMED point."""
+        resolved = dict(throttle_rate_upper=0.0005, success_rate_lower=0.999)
         points = [
-            SweepPoint(concurrency=2, rps=None, metrics=_metrics(slo_goodput_rps=5.0)),
-            SweepPoint(concurrency=6, rps=None, metrics=_metrics(slo_goodput_rps=5.0)),
+            SweepPoint(concurrency=2, rps=None, metrics=_metrics(n=5000, slo_goodput_rps=6.0, **resolved)),
+            SweepPoint(concurrency=6, rps=None, metrics=_metrics(n=5000, slo_goodput_rps=5.0, **resolved)),
         ]
         rec = recommend(points)
-        self.assertEqual(rec.point.concurrency, 2)
-
-
-class ApplyHeadroomTests(unittest.TestCase):
-    def test_reduces_by_the_headroom_fraction(self):
-        self.assertEqual(apply_headroom(10.0, headroom=0.20), 8.0)
-
-    def test_zero_headroom_is_a_no_op(self):
-        self.assertEqual(apply_headroom(10.0, headroom=0.0), 10.0)
-
+        self.assertEqual(rec.point.concurrency, 6)
+        self.assertEqual(rec.confirmed_point.concurrency, 6)
 
 if __name__ == "__main__":
     unittest.main()

@@ -11,11 +11,12 @@ Independent inputs, combined at run time:
 ```
 catalog/                   WHAT exists -- the benchmark's inputs
   ├─ models.yaml           which models: name (= results folder), model_id, region
-  └─ workloads.yaml        which requests: workload shapes, each bound to an SLO profile
-constraints/               what every result is JUDGED AGAINST
-  ├─ slo.yaml              SLO:   what quality we REQUIRE  (gold / silver / bronze)
-  └─ quota.yaml            quota: what the provider ALLOWS (per account / region / model)
-experiments/*.yaml         HOW to load: workload names + sweep -- no shapes, no SLO, no quota
+  └─ workloads.yaml        which requests: shapes, each bound to an SLO profile and a role
+constraints/               what every result is JUDGED AGAINST, and the policy applied after
+  ├─ slo.yaml              SLO:    what quality we REQUIRE  (gold / silver / bronze)
+  ├─ quota.yaml            quota:  what the provider ALLOWS (per account / region / model)
+  └─ recommendation-policy.yaml  policy: headroom from a confirmed point to a recommendation
+experiments/*.yaml         HOW to load: purpose + workload names + sweep -- no shapes, SLO, quota or headroom
 scripts/                   entry points only (run.py, run_all.py, fetch_quota.py, drift.py)
         ↓
 every experiment x every model -> capacity-profile.yaml (judged against the constraints)
@@ -25,7 +26,11 @@ every experiment x every model -> capacity-profile.yaml (judged against the cons
   `bedrock-runtime-gateway` certifies (nova-micro, nova-lite, nova-pro,
   llama3-3-70b, qwen3-32b). `enabled: false` skips one by default.
 - **Experiments** -- `experiments/*.yaml`: model-agnostic workload +
-  sweep definitions. Every experiment runs unchanged against every model.
+  sweep definitions, each with an explicit `purpose` (see
+  [Reference vs characterization](#reference-vs-characterization)).
+  Every experiment runs unchanged against every model. They define only
+  what is measured: headroom (`provider_headroom` / `quota_headroom`)
+  in an experiment is rejected.
 - **Constraints** -- `constraints/`: each number defined exactly once.
   The loaders reject SLO or quota numbers anywhere else (an experiment
   with `slo:`/`target:`/`quota:`, a models entry with `quota:`), so no
@@ -35,6 +40,10 @@ every experiment x every model -> capacity-profile.yaml (judged against the cons
   - `slo.yaml`: three service classes (`gold`, `silver`, `bronze`) by
     business criticality of the request, not by model; **no default** --
     each workload in the catalog binds its profile explicitly.
+  - `recommendation-policy.yaml`: `headroom_fraction` (0.20) and
+    `quota_headroom_fraction` (0.10) -- the POLICY that turns a
+    statistically confirmed measurement into a recommendation; never
+    applied inside a measurement block.
   - `quota.yaml`: scoped like Bedrock quotas themselves --
     `accounts: {<account id>: {<region>: {<model name>: {rpm, tpm}}}}`.
     The account comes from the live credentials (STS; `--account`
@@ -44,12 +53,12 @@ every experiment x every model -> capacity-profile.yaml (judged against the cons
     exactly one account is used as-is.
 
 
-| Experiment | Sweep | Per model |
-|---|---|---|
-| `concurrency-sweep.yaml` | concurrency 1/2/4/6/8, `short_chat`; confirms the top 2 non-failing concurrencies (e.g. C=4 then C=6) | ~34 min |
-| `rate-capacity.yaml` | 0.25x-2.5x ceiling, one workload per tier (`short_chat` gold, `rag_answer` silver, `long_generation` bronze) -- the canonical production-envelope run | ~57 min |
-| `mixed-capacity.yaml` | 0.25x-2.5x ceiling, 60% `short_chat` / 30% `rag_answer` / 10% `long_generation` | ~32 min |
-| `token-sweep.yaml` | 4 most distinct catalog shapes x concurrency 1/2/4/6 | ~47 min |
+| Experiment | Purpose | Sweep | Per model |
+|---|---|---|---|
+| `rate-capacity.yaml` | reference | 0.25x-2.5x ceiling, one reference workload per tier (`short_chat` gold, `rag_answer` silver, `long_generation` bronze) -- the canonical production-envelope run | ~57 min |
+| `concurrency-sweep.yaml` | reference | concurrency 1/2/4/6/8, `short_chat`; confirms the top 2 non-failing concurrencies (e.g. C=4 then C=6) | ~34 min |
+| `mixed-capacity.yaml` | reference | 0.25x-2.5x ceiling, 60% `short_chat` / 30% `rag_answer` / 10% `long_generation` | ~32 min |
+| `token-sweep.yaml` | characterization | 4 most distinct catalog shapes x concurrency 1/2/4/6 | ~47 min |
 
 Every experiment runs adaptive confirmation at its candidate after
 discovery (see [SLO statistics](slo-statistics.md)) -- without it one
@@ -65,20 +74,22 @@ rate a quota-relative sweep tests.
 ## Workload catalog
 
 Every request shape is defined once in `catalog/workloads.yaml` and
-bound there -- explicitly, no default -- to an SLO profile.
+bound there -- explicitly, no default -- to an SLO profile and a role.
 Experiments only list workload names; a shape or SLO inside an
 experiment is rejected.
 
 ```yaml
 # catalog/workloads.yaml
 workloads:
-  tiny_request:              {input_tokens: 256,   output_tokens: 32,   slo_profile: gold,   latency_p95_ms: 2000}
-  short_chat:                {input_tokens: 512,   output_tokens: 64,   slo_profile: gold,   latency_p95_ms: 3000}
-  medium_context:            {input_tokens: 2048,  output_tokens: 128,  slo_profile: silver, latency_p95_ms: 6000}
-  long_context_short_answer: {input_tokens: 8192,  output_tokens: 64,   slo_profile: silver, latency_p95_ms: 8000}
-  rag_answer:                {input_tokens: 4096,  output_tokens: 256,  slo_profile: silver, latency_p95_ms: 10000}
-  long_generation:           {input_tokens: 4096,  output_tokens: 1024, slo_profile: bronze, latency_p95_ms: 60000}
-  very_large_context:        {input_tokens: 16384, output_tokens: 256,  slo_profile: bronze, latency_p95_ms: 20000}
+  # Reference workloads -- one per SLO tier
+  short_chat:                {input_tokens: 512,   output_tokens: 64,   slo_profile: gold,   latency_p95_ms: 3000,  role: reference}
+  rag_answer:                {input_tokens: 4096,  output_tokens: 256,  slo_profile: silver, latency_p95_ms: 10000, role: reference}
+  long_generation:           {input_tokens: 4096,  output_tokens: 1024, slo_profile: bronze, latency_p95_ms: 60000, role: reference}
+  # Characterization workloads -- token / context effects
+  tiny_request:              {input_tokens: 256,   output_tokens: 32,   slo_profile: gold,   latency_p95_ms: 2000,  role: characterization}
+  medium_context:            {input_tokens: 2048,  output_tokens: 128,  slo_profile: silver, latency_p95_ms: 6000,  role: characterization}
+  long_context_short_answer: {input_tokens: 8192,  output_tokens: 64,   slo_profile: silver, latency_p95_ms: 8000,  role: characterization}
+  very_large_context:        {input_tokens: 16384, output_tokens: 256,  slo_profile: bronze, latency_p95_ms: 20000, role: characterization}
 
 # experiments/token-sweep.yaml -- the four most distinct shapes
 workloads: [short_chat, long_context_short_answer, rag_answer, long_generation]
@@ -90,6 +101,23 @@ workload sends no traffic, only experiments that list it do.
 `long_generation` output-side (decode) pressure; the former is also
 TPM-bound on low-TPM models (llama3-3-70b: ~1.21 rps by TPM vs 1.33 by
 RPM).
+
+## Reference vs characterization
+
+Not every catalog workload gets a capacity recommendation.
+
+| | Workloads (`role`) | Experiments (`purpose`) | Profile carries |
+|---|---|---|---|
+| **reference** | `short_chat` (gold), `rag_answer` (silver), `long_generation` (bronze) -- one per tier | `rate-capacity`, `concurrency-sweep`, `mixed-capacity` | measurement **and** `recommendation.admission_envelope` |
+| **characterization** | `tiny_request`, `medium_context`, `long_context_short_answer`, `very_large_context` | `token-sweep` | measurement only -- `admission_envelope: null` |
+
+A production envelope comes only from a reference experiment, and a
+reference experiment may only list reference workloads (the loader
+rejects anything else). A characterization experiment may use any
+workload, reference ones included, to study how token shape and
+context size move the envelope; it measures and confirms, but its
+`recommendation` is always null. Both are declared: `role` in the
+catalog, `purpose` in each experiment, and the profile records both.
 
 ## Running experiments
 

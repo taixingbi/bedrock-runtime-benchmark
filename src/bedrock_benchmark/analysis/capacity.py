@@ -260,8 +260,8 @@ def analyze_sweep(points: List[SweepPoint], class_slo: Optional[Dict[str, dict]]
 
 @dataclass
 class Recommendation:
-    # Highest-goodput point in the leading run of non-FAIL points (PASS
-    # or INCONCLUSIVE) -- the measured safe operating point.
+    # OBSERVED: the highest point in the leading run of non-FAIL points
+    # (PASS or INCONCLUSIVE). Not the capacity -- see confirmed_point.
     point: SweepPoint
     # The sweep's saturation edge -- the first point that FAILED the
     # SLO, set only when the sweep is cleanly monotonic
@@ -273,7 +273,9 @@ class Recommendation:
     # `point`'s verdict: PASS = statistically demonstrated; INCONCLUSIVE =
     # no violation observed but not enough requests to prove the rate SLOs.
     verdict: Verdict = field(default_factory=lambda: Verdict(PASS))
-    # The statistically confirmed point, or None. Set from the DISCOVERY
+    # CAPACITY: the highest statistically confirmed SLO-compliant
+    # operating point, or None. SLO goodput never selects it -- it's an
+    # observed metric only. Set from the DISCOVERY
     # sweep by recommend() (a fixed-sequence test: the top of the leading
     # run of strict PASSes, in ascending order) -- and, when a
     # confirmation phase runs, replaced by the executor with the result
@@ -286,25 +288,23 @@ class Recommendation:
 
 
 def recommend(points: List[SweepPoint], class_slo: Optional[Dict[str, dict]] = None, **slo_kwargs) -> Optional[Recommendation]:
-    """Among the LEADING run of non-failing points (everything up to the
-    first FAIL), picks the highest slo_goodput_rps -- ties broken toward
-    the LOWER concurrency/rps. INCONCLUSIVE points are eligible (no
-    violation was observed) but the recommendation carries their
-    verdict. Points that pass only after an earlier failure are never
-    recommended: a pass above a failure is exactly the noise a
-    conservative envelope must not bet on. Returns None if no leading
-    point passes -- see analyze_sweep for the why."""
+    """capacity = the highest STATISTICALLY CONFIRMED SLO-compliant
+    operating point (confirmed_point). Alongside it, the OBSERVED point:
+    the highest point of the leading run of non-failing points
+    (everything up to the first FAIL; INCONCLUSIVE counts as non-failing
+    and the verdict is carried along). SLO goodput is reported, never
+    used to select either. Points that pass only after an earlier
+    failure are never used: a pass above a failure is exactly the noise
+    a conservative envelope must not bet on. Returns None if no leading
+    point is non-failing -- see analyze_sweep for the why."""
     analysis = analyze_sweep(points, class_slo, **slo_kwargs)
     if analysis.stable_pass_max is None:
         return None
     ordered = sorted(points, key=_key)
     verdicts = {id(p): point_verdict(p, class_slo, **slo_kwargs) for p in ordered}
 
-    def goodput(p: SweepPoint):
-        return (p.metrics.slo_goodput_rps or 0.0, -(_key(p) or 0))
-
     stable = [p for p in ordered if _key(p) <= analysis.stable_pass_max]
-    best = max(stable, key=goodput)
+    best = max(stable, key=_key)
     # Fixed-sequence test over the sweep's own ascending order: each point
     # is tested at the full confidence, and the claim stops at the first
     # point that isn't a strict PASS -- so the family-wise false-PASS rate
@@ -324,12 +324,3 @@ def recommend(points: List[SweepPoint], class_slo: Optional[Dict[str, dict]] = N
         confirmed_point=confirmed[-1] if confirmed else None,
         burst_point=max(non_failing, key=_key) if non_failing else None,
     )
-
-
-def apply_headroom(value: float, *, headroom: float) -> float:
-    """A recommended concurrency/rps is a MEASURED ceiling, not a
-    production target -- see this repo's own README on why running a
-    tenant's normal traffic right up against a measured knee is exactly
-    the mistake this tool exists to prevent. headroom=0.20 means "back
-    off 20% from what was measured to still pass."""
-    return round(value * (1.0 - headroom), 4)

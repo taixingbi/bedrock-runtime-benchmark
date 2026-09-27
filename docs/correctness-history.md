@@ -229,3 +229,30 @@ artifact was ever used to actually inform a gateway config:
     confirmed min/median/max, conservative values, and an `envelope`
     verdict), and each profile's `validity.envelope` says
     `single_run_operating_envelope`.
+
+## Schema v12 fixes
+
+37. **Two capacity definitions.** `observed_nonfailing` was the
+    highest-SLO-goodput point in the leading non-failing run (docs
+    called that "the recommended concurrency"), while the recommendation
+    came from the statistically confirmed point. Now one definition:
+    capacity = the highest statistically confirmed SLO-compliant
+    operating point. `observed_nonfailing` is the highest non-failing
+    point, and SLO goodput is reported but selects nothing. A mix's
+    `classes_at_recommended_point` (which showed the observed point) is
+    now `classes_at_confirmed_point`.
+38. **Every catalog workload looked recommendable.** Workloads now carry
+    `role: reference | characterization` and experiments `purpose:
+    reference | characterization`. Only a reference experiment -- which
+    may list only the three reference workloads -- produces an
+    admission envelope; a characterization profile (`token-sweep`)
+    always has `admission_envelope: null`. Both are recorded in the
+    profile.
+39. **Policy sat in measurement files.** Headroom moved from every
+    `experiments/*.yaml` to `constraints/recommendation-policy.yaml`
+    (experiments with it are rejected), and `apply_headroom` left the
+    measurement module -- policy is applied only in
+    `recommendation.py`.
+40. **The benchmark read gateway infrastructure.** `fetch_quota.py`
+    tried `bedrock-runtime-gateway`'s DynamoDB quota table before AWS
+    Service Quotas. Removed: the producer depends only on Bedrock / AWS.

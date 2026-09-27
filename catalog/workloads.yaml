@@ -7,13 +7,26 @@
 #   slo        profile from constraints/slo.yaml: TTFT / TPOT / success / throttle
 #   e2e        latency_p95_ms -- end-to-end cap for THIS workload (business-defined;
 #              different output lengths can't share one E2E budget)
+#   role       reference         -- one per SLO tier; the ONLY workloads a
+#                                   production admission envelope is produced for
+#                                   (by reference experiments: rate-capacity,
+#                                   concurrency-sweep, mixed-capacity)
+#              characterization  -- for studying how token shape / context size
+#                                   move the envelope; measured, never recommended
+#
+# Not every catalog workload gets a capacity recommendation: only the
+# reference ones, and only from a reference experiment.
 
 workloads:
-  # name                       in      out   slo     e2e ms      typical use -- purpose
-  tiny_request:              {input_tokens: 256,   output_tokens: 32,   slo_profile: gold,   latency_p95_ms: 2000}   # intent/routing/tool selection -- low-token latency floor
-  short_chat:                {input_tokens: 512,   output_tokens: 64,   slo_profile: gold,   latency_p95_ms: 3000}   # chatbot/copilot/short Q&A -- interactive baseline
-  medium_context:            {input_tokens: 2048,  output_tokens: 128,  slo_profile: silver, latency_p95_ms: 6000}   # small RAG/doc Q&A/ticket summary -- common app traffic
-  long_context_short_answer: {input_tokens: 8192,  output_tokens: 64,   slo_profile: silver, latency_p95_ms: 8000}   # long-doc/contract lookup -- prefill pressure (TPM-bound on llama3-3-70b)
-  rag_answer:                {input_tokens: 4096,  output_tokens: 256,  slo_profile: silver, latency_p95_ms: 10000}  # knowledge assistant/support RAG -- context + medium answer
-  long_generation:           {input_tokens: 4096,  output_tokens: 1024, slo_profile: bronze, latency_p95_ms: 60000}  # reports/code/drafts -- decode pressure, long occupancy
-  very_large_context:        {input_tokens: 16384, output_tokens: 256,  slo_profile: bronze, latency_p95_ms: 20000}  # multi-doc/filing analysis -- large prefill (UNCONFIRMED placeholder values)
+  # name                       in      out   slo     e2e ms   role                      typical use -- purpose
+
+  # Reference workloads -- one per SLO tier
+  short_chat:                {input_tokens: 512,   output_tokens: 64,   slo_profile: gold,   latency_p95_ms: 3000,  role: reference}         # chatbot/copilot/short Q&A -- interactive baseline
+  rag_answer:                {input_tokens: 4096,  output_tokens: 256,  slo_profile: silver, latency_p95_ms: 10000, role: reference}         # knowledge assistant/support RAG -- context + medium answer
+  long_generation:           {input_tokens: 4096,  output_tokens: 1024, slo_profile: bronze, latency_p95_ms: 60000, role: reference}         # reports/code/drafts -- decode pressure, long occupancy
+
+  # Characterization workloads -- token / context effects
+  tiny_request:              {input_tokens: 256,   output_tokens: 32,   slo_profile: gold,   latency_p95_ms: 2000,  role: characterization}  # intent/routing/tool selection -- low-token latency floor
+  medium_context:            {input_tokens: 2048,  output_tokens: 128,  slo_profile: silver, latency_p95_ms: 6000,  role: characterization}  # small RAG/doc Q&A/ticket summary -- common app traffic
+  long_context_short_answer: {input_tokens: 8192,  output_tokens: 64,   slo_profile: silver, latency_p95_ms: 8000,  role: characterization}  # long-doc/contract lookup -- prefill pressure (TPM-bound on llama3-3-70b)
+  very_large_context:        {input_tokens: 16384, output_tokens: 256,  slo_profile: bronze, latency_p95_ms: 20000, role: characterization}  # multi-doc/filing analysis -- large prefill (UNCONFIRMED placeholder values)

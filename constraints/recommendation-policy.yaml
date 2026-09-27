@@ -1,0 +1,17 @@
+# Recommendation POLICY -- how a statistically confirmed MEASUREMENT
+# becomes an admission-envelope recommendation (recommendation.py).
+# Not a measurement setting: experiments never carry these, and nothing
+# under a profile's `rate` / `concurrency` blocks ever has them applied.
+#
+#   measured        statistically_confirmed_offered_rps = 6.67
+#   policy          headroom_fraction = 0.20 (this file)
+#   recommendation  sustained_rps = min(6.67 x 0.8, ceiling x 0.9) = 5.33
+#
+# headroom_fraction        back-off from the statistically confirmed point
+#                          (max_inflight = floor(C x (1 - h)); sustained_rps
+#                          = confirmed_rps x (1 - h))
+# quota_headroom_fraction  rate sweeps: sustained_rps is also capped at
+#                          provider_ceiling x (1 - q) -- a point that passed
+#                          above quota rode burst allowance, not a sustainable rate
+headroom_fraction: 0.20
+quota_headroom_fraction: 0.10

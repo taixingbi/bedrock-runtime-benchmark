@@ -11,6 +11,8 @@
 # catalog/workloads.yaml) -- a real mix of request classes on one model. The mixed_workloads
 # envelope is valid for THIS mix's shares only -- a different traffic
 # mix needs its own run.
+# reference: produces the envelope for this mix of reference workloads.
+purpose: reference
 name: mixed-capacity
 description: |
   Poisson rate sweep at 0.25x..2.5x of the model's provider ceiling,
@@ -35,8 +37,6 @@ sweep:
   type: rate
   quota_fractions: [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 2.5]
 
-provider_headroom: 0.20
-quota_headroom: 0.10
 
 # Confirmation at the mix's candidate (fresh data -- see
 # docs/slo-statistics.md). Every class is gated on its own profile but

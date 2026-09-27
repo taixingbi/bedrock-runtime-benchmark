@@ -24,6 +24,7 @@ from .constraints import DEFAULT_SLO_FILE
 from .experiments.schema import ExperimentSpec, load_experiment
 from .models import ModelConfig
 from .workload import DEFAULT_WORKLOADS_FILE
+from .recommendation import admission_envelope
 from .report import build_capacity_profile
 from .storage import write_jsonl
 
@@ -138,10 +139,23 @@ def recommendation_summary(report: ExperimentReport) -> List[str]:
         confirmed = rec.confirmed_point
         confirmed_value = None if confirmed is None else (
             confirmed.concurrency if confirmed.concurrency is not None else confirmed.rps)
+        spec = report.spec
+        if spec.purpose != "reference":
+            policy = "no recommendation (characterization experiment)"
+        elif confirmed_value is None:
+            policy = "no recommendation (nothing statistically confirmed)"
+        else:
+            ceiling = spec.provider_ceilings.get(profile_report.workload_name)
+            envelope = admission_envelope(
+                spec.sweep.type, confirmed_value, headroom=spec.provider_headroom,
+                quota_headroom=spec.quota_headroom, provider_ceiling_rps=ceiling.rps if ceiling else None,
+            )["admission_envelope"]
+            policy = "no recommendation (confirmed point too small for the headroom)" if envelope is None else (
+                f"recommendation: max_inflight={envelope['max_inflight']}" if spec.sweep.type == "concurrency"
+                else f"recommendation: sustained_rps={envelope['sustained_rps']}")
         lines.append(
-            f"{profile_report.workload_name}: observed_nonfailing={value} [{rec.verdict.verdict}] "
-            f"statistically_confirmed={confirmed_value} saturation={sat}"
-            + ("" if confirmed_value is not None else "  (no production value: nothing statistically confirmed)")
+            f"{profile_report.workload_name}: measured observed_nonfailing={value} [{rec.verdict.verdict}] "
+            f"statistically_confirmed={confirmed_value} saturation={sat} | {policy}"
         )
     return lines
 

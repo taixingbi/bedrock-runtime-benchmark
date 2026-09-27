@@ -11,6 +11,8 @@
 # transport.total_max_attempts=1: the SDK must never retry, or a real
 # Bedrock 429 would be absorbed into an eventual 200 and the measured
 # throttle rate understated (see client.py's TransportConfig).
+# reference: produces short_chat's production max_inflight envelope.
+purpose: reference
 name: concurrency-sweep
 description: |
   short_chat workload (512 input / 64 output tokens), concurrency
@@ -32,7 +34,6 @@ sweep:
   type: concurrency
   values: [1, 2, 4, 6, 8]
 
-provider_headroom: 0.20
 
 # Discovery (above) picks the candidate; confirmation collects FRESH
 # repetitions there -- the only source of statistically_confirmed (see

@@ -92,7 +92,7 @@ another:
 ```
 observed_nonfailing          best point before the first FAIL -- may be INCONCLUSIVE
       |
-statistically_confirmed      best strictly-PASS point before the first FAIL -- or null
+statistically_confirmed      THE CAPACITY: highest strictly-PASS point before the first FAIL -- or null
       |
 recommendation.              derived ONLY from the confirmed point, after headroom
   admission_envelope         (and quota-capped); null when nothing is confirmed

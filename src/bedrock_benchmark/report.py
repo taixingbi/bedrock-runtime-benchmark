@@ -199,6 +199,12 @@ _STOP_HINTS = {
 }
 
 
+def _characterization() -> dict:
+    return {"admission_envelope": None,
+            "reason": "characterization experiment -- measures how token shape / context move the envelope; "
+                      "production admission envelopes come only from reference experiments"}
+
+
 def _unconfirmed_reason(profile_report, spec) -> str:
     """WHY nothing was statistically confirmed, from what actually ran --
     a confirmation phase's stop reason, or (discovery only) the point
@@ -324,7 +330,7 @@ def _envelope(entry: dict, profile_report, spec) -> None:
             entry["unstable_region"] = analysis.unstable_region
         else:
             entry["note"] = "no swept value met the configured SLO -- re-run with lower sweep values"
-        entry["recommendation"] = admission_envelope(
+        entry["recommendation"] = _characterization() if spec.purpose != "reference" else admission_envelope(
             spec.sweep.type, None, headroom=spec.provider_headroom,
             unconfirmed_reason=_unconfirmed_reason(profile_report, spec),
         )
@@ -338,8 +344,9 @@ def _envelope(entry: dict, profile_report, spec) -> None:
         entry["rate"] = _rate_block(rec, ceiling_rps=ceiling_rps)
         confirmed = rec.confirmed_point.rps if rec.confirmed_point is not None else None
     # POLICY, kept apart from the measurement above: the confirmed point
-    # after this benchmark's safety headroom (recommendation.py).
-    entry["recommendation"] = admission_envelope(
+    # after this benchmark's safety headroom (recommendation.py) -- only
+    # from a reference experiment.
+    entry["recommendation"] = _characterization() if spec.purpose != "reference" else admission_envelope(
         spec.sweep.type, confirmed, headroom=spec.provider_headroom, quota_headroom=spec.quota_headroom,
         provider_ceiling_rps=ceiling_rps,
         unconfirmed_reason=None if confirmed is not None else _unconfirmed_reason(profile_report, spec),
@@ -413,6 +420,7 @@ def build_capacity_profile(report: ExperimentReport) -> dict:
         ]
         entry: dict = {
             "slo_profile": workload.slo_profile,
+            "role": workload.role,  # reference | characterization (catalog/workloads.yaml)
             "observed": _observed_tokens(own_results),
             "workload_validation": _workload_validation(workload, own_results, report),
         }
@@ -428,20 +436,25 @@ def build_capacity_profile(report: ExperimentReport) -> dict:
         entry = {"shares": {k: round(v, 4) for k, v in profile_report.mix_shares.items()}}
         _envelope(entry, profile_report, spec)
         rec = profile_report.recommendation
-        if rec is not None:
-            entry["classes_at_recommended_point"] = {
+        if rec is not None and rec.confirmed_point is not None:
+            # Per class at the CONFIRMED point -- the capacity -- not the
+            # observed one.
+            entry["classes_at_confirmed_point"] = {
                 name: {
                     "n": m.n, "slo_goodput_rps": m.slo_goodput_rps, "throttle_rate": m.throttle_rate,
                     "ttft_p95_ms": m.ttft_p95_ms, "tpot_p95_ms": m.tpot_p95_ms, "latency_p95_ms": m.latency_p95_ms,
                 }
-                for name, m in rec.point.class_metrics.items()
+                for name, m in rec.confirmed_point.class_metrics.items()
             }
         mixed[profile_report.workload_name] = entry
 
     confidence = spec.slo.confidence or DEFAULT_CONFIDENCE
     return {
-        "schema_version": 11,
+        "schema_version": 12,
         "experiment": spec.name,
+        # reference: carries production admission envelopes;
+        # characterization: measurement only (recommendation always null).
+        "purpose": spec.purpose,
         "environment": _environment(report),
         # One profile is ONE snapshot of provider conditions. Validity
         # across time comes from comparing repeated runs (scripts/drift.py),
@@ -489,7 +502,7 @@ def build_capacity_profile(report: ExperimentReport) -> dict:
             # effective E2E limit is the one here.
             "workloads": {
                 w.name: {"input_tokens": w.input_tokens, "output_tokens": w.output_tokens,
-                         "slo_profile": w.slo_profile, "latency_p95_ms": w.latency_p95_ms}
+                         "slo_profile": w.slo_profile, "latency_p95_ms": w.latency_p95_ms, "role": w.role}
                 for w in spec.workloads
             },
         },
@@ -529,7 +542,8 @@ def build_capacity_profile(report: ExperimentReport) -> dict:
         # of a cross-class envelope, and only for THAT mix's shares.
         **({"mixed_workloads": mixed} if mixed else {}),
         # The policy applied to turn confirmed measurements into each
-        # entry's `recommendation` -- configured, not measured.
+        # entry's `recommendation` -- configured
+        # (constraints/recommendation-policy.yaml), not measured.
         "recommendation_policy": {
             "headroom_fraction": spec.provider_headroom,        # back-off from the confirmed point
             "quota_headroom_fraction": spec.quota_headroom,     # back-off from the provider ceiling
