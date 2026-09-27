@@ -55,7 +55,8 @@ def estimated_duration_s(spec: ExperimentSpec) -> float:
     a concurrency sweep's request rate isn't known up front, so its
     candidates are assumed to run at the ceiling (a non-failing point
     can't sustain much more). Capped at min(max_duration_s, candidates
-    x max_repetitions x (warmup + window)); without a known ceiling,
+    x max_repetitions x (warmup + window)) -- max_duration_s alone when
+    there's no repetition cap; without a known ceiling,
     the cap itself. Plus `cooldown_s` once per subject that confirms.
 
     Real runs take longer when a look is spent on a stray bad event
@@ -82,7 +83,8 @@ def _confirmation_estimate_s(spec: ExperimentSpec, subject: str, per_run: float)
     c = spec.confirmation
     if c is None:
         return 0.0
-    cap = min(c.max_duration_s, c.candidates * c.max_repetitions * per_run)
+    rep_cap = c.max_repetitions if c.max_repetitions is not None else math.inf
+    cap = min(c.max_duration_s, c.candidates * rep_cap * per_run)
     ceiling = spec.provider_ceilings.get(subject)
     if ceiling is None or not ceiling.rps:
         return cap
@@ -105,8 +107,8 @@ def _confirmation_estimate_s(spec: ExperimentSpec, subject: str, per_run: float)
     total = 0.0
     for rps in rates:
         per_rep = rps * spec.duration_s
-        reps = math.ceil(plan.look_schedule[0] / per_rep) if per_rep > 0 else c.max_repetitions + 1
-        if reps <= c.max_repetitions and plan.look_schedule[0] <= c.max_requests:
+        reps = math.ceil(plan.look_schedule[0] / per_rep) if per_rep > 0 else math.inf
+        if reps <= rep_cap and plan.look_schedule[0] <= c.max_requests:
             total += reps * per_run
     return min(total, cap)
 

@@ -53,30 +53,38 @@ sweep:
     max_points: 4
 
 
-# Discovery (above) picks the candidate; confirmation collects FRESH
-# repetitions there -- the only source of statistically_confirmed (see
-# docs/slo-statistics.md). One 120s window resolves nothing for gold: C=4
-# on nova-micro gave 796 requests, 0 throttles -- a 0.38% upper bound,
-# INCONCLUSIVE against 0.1% (needs 2,995). Gold's looks are at 3,688 and
-# 5,570 requests: ~5 and 7 repetitions at the 6.67 rps ceiling. Caps end
-# in INCONCLUSIVE, never a looser SLO.
+# The whole experiment, per class:
 #
-# candidates: 2 -- the two highest non-failing concurrencies (e.g. C=2
-# and C=4 when C=6 FAILs), tested lowest-first (fixed sequence -- keep
-# this order; don't skip to the higher one to save time): C=4 is tried
-# only if C=2 confirms, so a FAIL at C=4 still leaves C=2 confirmed.
+#   coarse concurrency sweep          fixed-duration windows (warmup_s / duration_s above)
+#           |
+#   two consecutive FAILs             stop_after_fails
+#           |
+#   integer bisection refinement      refinement -- still discovery-class data
+#           |
+#   top 2 non-failing candidates      candidates, tested lowest-first (fixed sequence)
+#           |
+#   fresh fixed-count confirmation    new data only; looks at pre-planned N
+#           |
+#   statistically confirmed max concurrency     (the capacity)
+#           |
+#   headroom                          constraints/recommendation-policy.yaml
+#           |
+#   recommended max_inflight          floor(confirmed x (1 - headroom))
+#
+# Confirmation is SAMPLE-COUNT driven. The code plans the looks before
+# any confirmation data exists -- gold: N1 = 3,688, N2 = 5,570 requests
+# (silver 736 / 1,113, bronze 368 / 555) -- and look j is decided on
+# EXACTLY the first N_j requests, even if the window that crossed N_j
+# ran on to 3,980. Repetitions are only how requests are collected, so
+# there is no repetition cap; the caps are:
+#   max_requests    per candidate
+#   max_duration_s  the whole phase for one class -- sized so BOTH gold
+#                   candidates fit (C=2 at ~3.2 rps needs ~1,150 s of
+#                   windows to reach 3,688, C=4 ~560-850 s)
+# Reaching a cap without a PASS is INCONCLUSIVE, never a looser SLO.
 # cooldown_s lets the saturation point's overload clear first.
-#
-# Budget for BOTH candidates -- sized for the slowest, gold short_chat
-# (120s window + 10s warmup per rep); silver/bronze need 736 / 368:
-#   C=2  ~388 req/rep -> 3,688 at the first look = 10 reps  ~1,300s
-#   C=4  ~796 req/rep -> 3,688 = 5 reps (5,570 = 7 after a stray event) ~650-910s
-# = ~1,950-2,210s: 1,800 left C=4 INCONCLUSIVE (max_duration) every
-# time. 3,000s resolves both; max_repetitions 12 keeps C=2 reachable
-# when a rep comes in under 369 requests. More SAMPLES, same SLO.
 confirmation:
   max_looks: 2
-  max_repetitions: 12
   max_requests: 8000
   max_duration_s: 3000
   candidates: 2

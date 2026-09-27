@@ -110,8 +110,11 @@ class ConfirmationConfig:
     # PASS may be declared only at this many pre-planned sample sizes,
     # each at confidence 1 - alpha / max_looks (Bonferroni).
     max_looks: int = 2
-    # Per-candidate caps.
-    max_repetitions: int = 10
+    # Per-candidate caps. The statistics are SAMPLE-COUNT driven (fixed-
+    # count looks at pre-planned N); repetitions are only how data is
+    # collected. max_repetitions is an optional extra cap -- None (the
+    # default) caps by max_requests and max_duration_s only.
+    max_repetitions: Optional[int] = None
     max_requests: int = 8000
     # Wall-time cap for the whole confirmation phase of one sweep subject.
     max_duration_s: float = 1800.0
@@ -417,7 +420,8 @@ def _validate(spec: ExperimentSpec) -> None:
         if not 0 <= getattr(spec, name) < 1:
             raise ValueError(f"{name} must be in [0, 1)")
     c = spec.confirmation
-    if c is not None and (c.max_looks < 1 or c.max_repetitions < 1 or c.max_requests < 1
+    if c is not None and (c.max_looks < 1 or (c.max_repetitions is not None and c.max_repetitions < 1)
+                          or c.max_requests < 1
                           or c.max_duration_s <= 0 or c.candidates < 1 or c.cooldown_s < 0):
         raise ValueError("confirmation: max_looks, max_repetitions, max_requests, candidates must be >= 1, "
                          "max_duration_s > 0 and cooldown_s >= 0")

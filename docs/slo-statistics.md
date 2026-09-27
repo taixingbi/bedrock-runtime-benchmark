@@ -176,10 +176,10 @@ lowest-first and stop at the first one not confirmed (a fixed-sequence
 test, which keeps the family-wise error at alpha without splitting it).
 `concurrency-sweep` uses 2: with C=6 failing, C=2 is confirmed first and
 C=4 only if C=2 passes -- a FAIL at C=4 still leaves C=2 confirmed. Keep
-that order even though the lower candidate is the slow one (C=2 needs
-~10 repetitions to reach gold's 3,688, C=4 ~5): the budget must fit
-both, so `concurrency-sweep` has `max_duration_s: 3000` and
-`max_repetitions: 12` -- at 1,800 s C=4 always ran out of time.
+that order even though the lower candidate is the slow one (C=2 at
+~3.5 rps needs ~1,150 s to collect gold's 3,688 requests, C=4 ~560 s):
+the budget must fit both, so `concurrency-sweep` has
+`max_duration_s: 3000` -- at 1,800 s C=4 always ran out of time.
 `cooldown_s` idles between the phases so discovery's overload (the
 saturation point is the last one swept) doesn't bleed into the first
 confirmation repetition; it isn't counted against `max_duration_s`.
@@ -228,12 +228,17 @@ look times stay outcome-independent and the Bonferroni bound holds.
 used for caps and time estimates -- `mixed-capacity`'s caps are raised
 to fit it. More samples, never a looser SLO.
 
-**Caps -> INCONCLUSIVE, never a looser SLO.** `max_repetitions`
-(default 10) and `max_requests` (8,000) per candidate, `max_duration_s`
-(1,800) for the phase. A candidate whose next look can't be reached
-within the caps -- estimated from discovery's requests per repetition --
-stops as `unreachable_within_caps` without spending the calls (a gold
-candidate at 1.67 rps: ~150 requests/rep, can't reach 3,688 in 10 reps).
+**Caps -> INCONCLUSIVE, never a looser SLO.** Confirmation is
+sample-count driven: the looks are fixed N, and repetitions are only how
+requests are collected. The caps are `max_requests` (8,000) per
+candidate and `max_duration_s` for the phase; `max_repetitions` is an
+optional extra cap (none by default -- `concurrency-sweep` sets none;
+`rate-capacity`, `token-sweep` and `mixed-capacity` still set one). A
+candidate whose next look can't be reached within the caps -- estimated
+from discovery's requests per repetition -- stops as
+`unreachable_within_caps` without spending the calls (a gold candidate
+at 1.67 rps collects ~150 requests per 90 s window: 3,688 doesn't fit in
+1,800 s).
 Each candidate reports `verdict`, `stop_reason` (`confirmed`,
 `observed_violation`, `looks_exhausted`, `max_repetitions`,
 `max_requests`, `max_duration`, `unreachable_within_caps`,

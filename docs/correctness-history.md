@@ -327,3 +327,7 @@ artifact was ever used to actually inform a gateway config:
 54. **Rounded rates decided verdicts.** Observed-violation checks now use
     exact counts (`n_success`, `n_throttled`); the rounded rates are for
     reporting.
+55. **Repetitions looked like the statistical unit.** With fixed-count
+    looks (51-54) the unit is the request; `confirmation.max_repetitions`
+    is now optional (default none -- caps are `max_requests` and
+    `max_duration_s`), and `concurrency-sweep` sets none.

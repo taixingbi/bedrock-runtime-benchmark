@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import time
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Union
@@ -363,7 +364,8 @@ async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress:
                     else:
                         v, reason = INCONCLUSIVE, None
                         remaining = cfg.max_duration_s - (time.perf_counter() - started)
-                        if reps >= cfg.max_repetitions:
+                        rep_cap = cfg.max_repetitions if cfg.max_repetitions is not None else math.inf
+                        if reps >= rep_cap:
                             reason = "max_repetitions"
                         elif n >= cfg.max_requests:
                             reason = "max_requests"
@@ -372,7 +374,7 @@ async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress:
                         else:
                             # Requests still collectable within the caps,
                             # at this candidate's observed rate per rep.
-                            more_reps = min(cfg.max_repetitions - reps, int(remaining // per_rep_s))
+                            more_reps = min(rep_cap - reps, int(remaining // per_rep_s))
                             max_n = min(cfg.max_requests, n + (n / reps) * more_reps)
                             if max_n < plan.look_schedule[looks_used]:
                                 reason = "unreachable_within_caps"

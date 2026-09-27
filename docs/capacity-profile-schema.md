@@ -46,7 +46,7 @@ measurement:
   clock: monotonic_durations__wall_clock_timestamps
   gate: pass_fail_inconclusive              # every check is PASS / FAIL / INCONCLUSIVE
   confidence: 0.95
-  confirmation: {max_looks: 2, max_repetitions: 10, max_requests: 8000, max_duration_s: 1800, candidates: 1, cooldown_s: 0.0}
+  confirmation: {max_looks: 2, max_repetitions: 10, max_requests: 8000, max_duration_s: 1800, candidates: 1, cooldown_s: 0.0}  # max_repetitions null = no repetition cap
   min_requests_to_resolve_throttle_slo: 2995
 sweep: {type: rate, quota_fractions: [0.25, ...], relative_to: provider_ceiling}
 workload_classes:

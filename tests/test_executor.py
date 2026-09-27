@@ -234,6 +234,21 @@ class RunExperimentTests(unittest.IsolatedAsyncioTestCase):
         rec = report.profiles[0].recommendation
         self.assertEqual((rec.point.concurrency, rec.saturation_point.concurrency), (45, 46))
 
+    async def test_confirmation_without_a_repetition_cap_is_bounded_by_requests(self):
+        """No max_repetitions: the look is still reached by sample count,
+        and max_requests is what bounds a candidate that can't PASS."""
+        from bedrock_benchmark.experiments.schema import ConfirmationConfig
+        target = BedrockConverseTarget(model_id="m", client=FakeBedrockRuntimeClient())
+        spec = _spec(sweep=SweepConfig(type="rate", values=[200.0]), repetitions=1, slo=self.LOOSE,
+                     confirmation=ConfirmationConfig(max_requests=10**6))
+        self.assertIsNone(spec.confirmation.max_repetitions)
+
+        report = await run_experiment(spec, target=target)
+
+        [result] = report.profiles[0].confirmations
+        self.assertEqual((result.verdict, result.stop_reason), ("PASS", "confirmed"))
+        self.assertEqual(result.decision_n, report.profiles[0].confirmation_plan.look_schedule[0])
+
     async def test_without_confirmation_discovery_is_a_fixed_sequence_test(self):
         target = BedrockConverseTarget(model_id="m", client=FakeBedrockRuntimeClient())
         report = await run_experiment(_spec(slo=self.LOOSE), target=target)

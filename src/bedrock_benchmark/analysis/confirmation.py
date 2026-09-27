@@ -83,7 +83,7 @@ class ConfirmationPlan:
     max_looks: int              # L
     per_look_confidence: float  # 1 - (1 - confidence) / L
     look_schedule: List[int]    # N_1 < ... < N_L total confirmation requests (expected, for a mix)
-    max_repetitions: int
+    max_repetitions: Optional[int]  # None: no repetition cap (sample-count driven)
     max_requests: int
     max_duration_s: float
     # Per look, the ACTUAL count each group needs: "total" (the blend's
@@ -117,7 +117,7 @@ class ConfirmationPlan:
 TOTAL = "total"  # the look-requirement group of blend (non-class) checks
 
 
-def plan_looks(limits: List[RateLimit], *, confidence: float, max_looks: int, max_repetitions: int,
+def plan_looks(limits: List[RateLimit], *, confidence: float, max_looks: int, max_repetitions: Optional[int],
                max_requests: int, max_duration_s: float) -> ConfirmationPlan:
     """Look j (1-based) is where every rate check could still PASS with
     j - 1 bad events of its own -- fixed before any confirmation data
@@ -227,8 +227,9 @@ def reachable(plan: ConfirmationPlan, *, est_requests_per_rep: float, remaining_
     """Can the next scheduled look be reached within the caps?"""
     if looks_used >= plan.max_looks or est_requests_per_rep <= 0:
         return False
-    reps_by_time = int(remaining_duration_s // per_rep_s) if per_rep_s > 0 else plan.max_repetitions
-    max_n = min(plan.max_requests, est_requests_per_rep * min(plan.max_repetitions, reps_by_time))
+    rep_cap = plan.max_repetitions if plan.max_repetitions is not None else math.inf
+    reps_by_time = int(remaining_duration_s // per_rep_s) if per_rep_s > 0 else rep_cap
+    max_n = min(plan.max_requests, est_requests_per_rep * min(rep_cap, reps_by_time))
     return max_n >= plan.look_schedule[looks_used]
 
 

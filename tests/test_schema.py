@@ -59,6 +59,10 @@ class ShippedExperimentTests(unittest.TestCase):
         self.assertEqual([(w.name, w.slo_profile) for w in spec.workloads],
                          [("short_chat", "gold"), ("rag_answer", "silver"), ("long_generation", "bronze")])
         self.assertEqual(spec.sweep.stop_after_fails, 2)
+        # Sample-count driven: no repetition cap, only requests and time.
+        c = spec.confirmation
+        self.assertEqual((c.max_repetitions, c.max_requests, c.max_duration_s, c.candidates, c.cooldown_s),
+                         (None, 8000, 3000, 2, 120))
 
     def test_mixed_capacity_defines_a_valid_mix(self):
         spec = load_experiment("experiments/mixed-capacity.yaml", MICRO)
