@@ -419,3 +419,10 @@ artifact was ever used to actually inform a gateway config:
     so the procedure stays provably <= alpha. `confirmation.plan` states
     `candidates` and `order: highest_first`; gold's looks with K = 2 are
     4,380 / 6,379.
+
+## Schema v20 fixes
+
+66. **`per_look_confidence` no longer described what it held.** Since
+    v19 it corrects for candidates as well as looks, so it is now
+    `confirmation.plan.per_test_confidence` = 1 - alpha / (L x K), and
+    the module / config docs say 1 - alpha / (L x K), not 1 - alpha / L.

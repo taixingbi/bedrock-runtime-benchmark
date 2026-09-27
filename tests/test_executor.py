@@ -88,7 +88,7 @@ class RunExperimentTests(unittest.IsolatedAsyncioTestCase):
         conf_measured = [r for r in report.all_results
                          if r.tags["phase"] == "confirmation" and r.tags["measured"]]
         self.assertEqual(rec.confirmed_point.metrics.n, len(conf_measured))
-        self.assertEqual(rec.confirmed_point.metrics.bound_confidence, profile.confirmation_plan.per_look_confidence)
+        self.assertEqual(rec.confirmed_point.metrics.bound_confidence, profile.confirmation_plan.per_test_confidence)
         # Discovery points are untouched by confirmation.
         self.assertTrue(all(len(p.repetitions) == 1 and p.phase == "discovery" for p in profile.points))
 
@@ -155,7 +155,7 @@ class RunExperimentTests(unittest.IsolatedAsyncioTestCase):
                          [(400.0, "PASS", "confirmed"), (200.0, "INCONCLUSIVE", "not_tested")])  # 400 first
         self.assertEqual(profile.recommendation.confirmed_point.rps, 400.0)
         self.assertEqual(profile.confirmation_plan.candidates, 2)
-        self.assertAlmostEqual(profile.confirmation_plan.per_look_confidence, 1 - 0.05 / 4)  # alpha over 2 x 2
+        self.assertAlmostEqual(profile.confirmation_plan.per_test_confidence, 1 - 0.05 / 4)  # alpha over 2 x 2
 
     async def test_a_failing_highest_candidate_falls_back_to_the_next_lower(self):
         """Discovery sees no limit, so C=4 and C=8 are the candidates; then

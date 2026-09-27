@@ -48,8 +48,8 @@ class PlanTests(unittest.TestCase):
 
     def test_looks_are_bonferroni_corrected_and_fixed_up_front(self):
         one, two = _plan(max_looks=1), _plan(max_looks=2)
-        self.assertEqual((one.per_look_confidence, one.look_schedule), (0.95, [2995]))
-        self.assertAlmostEqual(two.per_look_confidence, 0.975)
+        self.assertEqual((one.per_test_confidence, one.look_schedule), (0.95, [2995]))
+        self.assertAlmostEqual(two.per_test_confidence, 0.975)
         self.assertEqual(two.look_schedule, [3688, 5570])
 
     def test_mixed_class_limits_scale_by_share(self):
@@ -125,8 +125,8 @@ class HighestFirstTests(unittest.TestCase):
     def test_alpha_is_split_over_candidates_and_looks(self):
         one, two = _plan(max_looks=2), plan_looks(GOLD, confidence=0.95, max_looks=2, max_repetitions=10,
                                                   max_requests=8000, max_duration_s=1800, candidates=2)
-        self.assertAlmostEqual(one.per_look_confidence, 1 - 0.05 / 2)
-        self.assertAlmostEqual(two.per_look_confidence, 1 - 0.05 / 4)
+        self.assertAlmostEqual(one.per_test_confidence, 1 - 0.05 / 2)
+        self.assertAlmostEqual(two.per_test_confidence, 1 - 0.05 / 4)
         self.assertEqual((one.look_schedule[0], two.look_schedule[0]), (3688, 4380))
         self.assertEqual(two.to_dict()["order"], "highest_first")
 
@@ -145,7 +145,7 @@ class HighestFirstTests(unittest.TestCase):
             for _ in range(12):
                 n += per_rep
                 k += _poisson(rng, per_rep * limit)
-                conf = plan.per_look_confidence
+                conf = plan.per_test_confidence
                 v = FAIL if k / n > limit else (PASS if rate_upper(k, n, confidence=conf) <= limit else INCONCLUSIVE)
                 d = step(Verdict(v), n, looks, plan)
                 if d:
@@ -201,7 +201,7 @@ class ErrorControlSimulationTests(unittest.TestCase):
             for _ in range(10):
                 n += self.PER_REP
                 k += _poisson(rng, self.PER_REP * self.LIMIT)
-                d = step(self._verdict(k, n, plan.per_look_confidence), n, looks, plan)
+                d = step(self._verdict(k, n, plan.per_test_confidence), n, looks, plan)
                 if d:
                     return d[0]
             return INCONCLUSIVE
@@ -245,9 +245,9 @@ class ErrorControlSimulationTests(unittest.TestCase):
                         break
                     end = grown
                 n = end
-                d = step(self._verdict(k_before(n), n, plan.per_look_confidence), n, looks, plan,
+                d = step(self._verdict(k_before(n), n, plan.per_test_confidence), n, looks, plan,
                          look_verdict=lambda j: self._verdict(k_before(plan.look_schedule[j]), plan.look_schedule[j],
-                                                              plan.per_look_confidence))
+                                                              plan.per_test_confidence))
                 if d:
                     return d[0]
                 looks = sum(1 for N in plan.look_schedule if N <= n)

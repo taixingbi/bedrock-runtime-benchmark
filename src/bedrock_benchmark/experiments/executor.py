@@ -269,7 +269,7 @@ async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress:
         def build(value: float, phase: str, conf: Optional[float] = None,
                   subset: Optional[List[RequestResult]] = None) -> SweepPoint:
             """Metrics from ONE phase's data; bounds at `conf` (default:
-            the SLO's confidence; confirmation uses the per-look one).
+            the SLO's confidence; confirmation uses the per-test one).
             `subset` replaces the phase's results -- a confirmation look's
             exact first-N sample."""
             state = dict(acc[phase][value])
@@ -369,9 +369,9 @@ async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress:
                 max_requests=cfg.max_requests, max_duration_s=cfg.max_duration_s,
                 candidates=len(candidates),
             )
-            gate_look = {**gate_kwargs, "confidence": plan.per_look_confidence}
+            gate_look = {**gate_kwargs, "confidence": plan.per_test_confidence}
             class_look = None if class_gate is None else {
-                n: {**kw, "confidence": plan.per_look_confidence} for n, kw in class_gate.items()
+                n: {**kw, "confidence": plan.per_test_confidence} for n, kw in class_gate.items()
             }
             if candidates and cfg.cooldown_s > 0:
                 await asyncio.sleep(cfg.cooldown_s)  # let discovery's overload (e.g. saturation) clear
@@ -394,7 +394,7 @@ async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress:
                                                 next_look_n=plan.look_schedule[0])
                 while result is None:
                     state = await measure(value, 1, "confirmation")
-                    point = build(value, "confirmation", conf=plan.per_look_confidence)
+                    point = build(value, "confirmation", conf=plan.per_test_confidence)
                     if on_progress is not None:
                         on_progress(subject.name, value, point)
                     verdict = point_verdict(point, class_look, **gate_look)
@@ -407,7 +407,7 @@ async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress:
                         # requests, however many this repetition produced.
                         measured = [r for r in state["results"] if r.tags.get("measured")]
                         sample = look_sample(measured, plan.look_sizes(j))
-                        look_point = build(value, "confirmation", conf=plan.per_look_confidence, subset=sample)
+                        look_point = build(value, "confirmation", conf=plan.per_test_confidence, subset=sample)
                         v_look = point_verdict(look_point, class_look, **gate_look)
                         looked[j] = (look_point, v_look, len(sample))
                         return v_look

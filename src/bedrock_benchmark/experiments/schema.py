@@ -107,8 +107,9 @@ class ConfirmationConfig:
     picks candidates, fresh independent repetitions at each candidate
     until a pre-planned look can PASS it, an observed violation FAILs it,
     or a cap is reached (-> INCONCLUSIVE). Discovery data never counts."""
-    # PASS may be declared only at this many pre-planned sample sizes,
-    # each at confidence 1 - alpha / max_looks (Bonferroni).
+    # PASS may be declared only at this many pre-planned sample sizes;
+    # each test runs at 1 - alpha / (max_looks x K) for K candidates
+    # (Bonferroni over looks and candidates).
     max_looks: int = 2
     # Per-candidate caps. The statistics are SAMPLE-COUNT driven (fixed-
     # count looks at pre-planned N); repetitions are only how data is

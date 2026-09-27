@@ -194,7 +194,8 @@ one falsely passes"), so alpha is split over candidates AND looks: each
 look runs at `1 - alpha / (max_looks x K)` (Bonferroni), which proves
 the procedure's false-PASS rate <= alpha. K is the number of candidates
 discovery actually chose -- known before any confirmation data -- so a
-single candidate keeps `1 - alpha / max_looks`.
+single candidate keeps `1 - alpha / max_looks`. The plan reports it as
+`per_test_confidence` -- per test, i.e. per look of each candidate.
 
 | Tier | Looks, K = 1 | Looks, K = 2 |
 |---|---|---|
@@ -243,7 +244,7 @@ exactly at gold's limit (`tests/test_confirmation.py`):
 | planned looks, exact bound, `max_looks: 2` | 2.75% (<= 5%) |
 | naive peeking after every collection window | 7.0% |
 
-For gold (`max_looks: 2`, per-look 97.5%) the looks are at N = 3,688
+For gold (`max_looks: 2`, one candidate: per-test 97.5%) the looks are at N = 3,688
 and 5,570 requests (at the 6.67 rps ceiling, ~560 s and ~840 s of
 windows -- a time estimate, not part of the rule). In a mix each class's checks
 see only that class's requests, so a look is taken when EVERY class has
@@ -286,8 +287,8 @@ Each candidate reports `verdict`, `stop_reason` (`confirmed`,
 `observed_violation`, `looks_exhausted`, `max_repetitions`,
 `max_requests`, `max_duration`, `unreachable_within_caps`,
 `not_tested`), `n`, `looks_used` and `next_look_n` under the subject's
-`confirmation` block, next to the `plan` (confidence, per-look
-confidence, look schedule, caps).
+`confirmation` block, next to the `plan` (confidence, candidates, order,
+`per_test_confidence`, look schedule, caps).
 
 Only a characterization experiment can run without a confirmation
 phase. Then `statistically_confirmed` comes from discovery as a

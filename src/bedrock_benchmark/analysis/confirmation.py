@@ -17,11 +17,12 @@ Two rules keep the false-PASS rate at or below alpha = 1 - confidence:
    and stopping the first time it clears is optional stopping: given
    enough looks, noise alone eventually produces a PASS. So PASS can be
    declared only at L sample sizes fixed BEFORE any confirmation data
-   exists (the look schedule), each at confidence 1 - alpha / L
-   (Bonferroni): P(false PASS at any look) <= L x alpha / L = alpha.
-   The per-look test is the EXACT Clopper-Pearson bound, so each look's
-   error really is <= alpha / L (Wilson would not guarantee that at the
-   0-2 events gold operates at).
+   exists (the look schedule). With K candidates (see below) there are
+   L x K tests in all, each at the per-test confidence 1 - alpha / (L x K)
+   (Bonferroni): P(any false PASS) <= L x K x alpha / (L x K) = alpha.
+   Each test is the EXACT Clopper-Pearson bound, so its error really is
+   <= alpha / (L x K) (Wilson would not guarantee that at the 0-2 events
+   gold operates at).
    Look j's sample size is the smallest n at which j - 1 observed bad
    events would still clear the limit -- so later looks exist to absorb
    a stray throttle, not to retry until lucky.
@@ -61,7 +62,7 @@ or "high fails, then low falsely passes"), so alpha is split across
 candidates as well as looks: every look runs at 1 - alpha / (L x K) for
 K candidates (Bonferroni) -- P(any false PASS) <= L x K x alpha / (L x K)
 = alpha. K is the number of candidates discovery actually chose -- fixed
-before any confirmation data exists -- so one candidate keeps the full
+before any confirmation data exists -- so one candidate keeps
 1 - alpha / L. (Lowest-first as a fixed sequence would keep alpha per
 test unsplit, but confirms every lower point on the way up; with K = 2,
 gold's first look is 4,380 requests instead of 2 x 3,688.)
@@ -89,7 +90,9 @@ class RateLimit:
 class ConfirmationPlan:
     confidence: float           # the SLO's (family-wise) confidence, e.g. 0.95
     max_looks: int              # L
-    per_look_confidence: float  # 1 - (1 - confidence) / L
+    # Confidence of EACH test (every look of every candidate):
+    # 1 - (1 - confidence) / (L x K) -- corrects for looks AND candidates.
+    per_test_confidence: float
     look_schedule: List[int]    # N_1 < ... < N_L total confirmation requests (expected, for a mix)
     max_repetitions: Optional[int]  # None: no repetition cap (sample-count driven)
     max_requests: int
@@ -116,7 +119,7 @@ class ConfirmationPlan:
             "confidence": self.confidence, "max_looks": self.max_looks,
             "candidates": self.candidates, "order": "highest_first",
             # 1 - (1 - confidence) / (max_looks x candidates), Bonferroni
-            "per_look_confidence": round(self.per_look_confidence, 6),
+            "per_test_confidence": round(self.per_test_confidence, 6),
             "look_schedule_requests": self.look_schedule,
             "caps": {"max_repetitions": self.max_repetitions, "max_requests": self.max_requests,
                      "max_duration_s": self.max_duration_s},
@@ -137,7 +140,7 @@ def plan_looks(limits: List[RateLimit], *, confidence: float, max_looks: int, ma
     class's own n); look_schedule is the total request count at which
     they're EXPECTED to be met (class requirement / share), used for
     caps and time estimates only."""
-    per_look = 1.0 - (1.0 - confidence) / (max_looks * max(1, candidates))
+    per_test = 1.0 - (1.0 - confidence) / (max_looks * max(1, candidates))
     groups: Dict[str, List[RateLimit]] = {}
     for lim in limits:
         group = lim.name.split(".", 1)[0] if "." in lim.name else TOTAL
@@ -145,7 +148,7 @@ def plan_looks(limits: List[RateLimit], *, confidence: float, max_looks: int, ma
     requirements: List[Dict[str, int]] = []
     schedule: List[int] = []
     for j in range(max_looks):
-        need = {g: max(required_samples(j, lim.max_bad_rate, confidence=per_look) for lim in ls)
+        need = {g: max(required_samples(j, lim.max_bad_rate, confidence=per_test) for lim in ls)
                 for g, ls in groups.items()}
         if requirements:  # strictly increasing per group
             need = {g: max(v, requirements[-1][g] + 1) for g, v in need.items()}
@@ -153,7 +156,7 @@ def plan_looks(limits: List[RateLimit], *, confidence: float, max_looks: int, ma
         n = max(math.ceil(need[g] / groups[g][0].share) for g in need)
         schedule.append(max(n, schedule[-1] + 1) if schedule else n)
     return ConfirmationPlan(
-        confidence=confidence, max_looks=max_looks, per_look_confidence=per_look, look_schedule=schedule,
+        confidence=confidence, max_looks=max_looks, per_test_confidence=per_test, look_schedule=schedule,
         max_repetitions=max_repetitions, max_requests=max_requests, max_duration_s=max_duration_s,
         look_requirements=requirements, candidates=max(1, candidates),
     )
@@ -169,7 +172,7 @@ class ConfirmationResult:
     n: int = 0
     looks_used: int = 0
     next_look_n: Optional[int] = None  # the look it was working toward when it stopped
-    detail: Optional[Verdict] = None   # checks at the last evaluation (per-look confidence)
+    detail: Optional[Verdict] = None   # checks at the last evaluation (per-test confidence)
     point: Optional[SweepPoint] = None # ALL confirmation data collected -- never discovery (descriptive)
     # The exact fixed-count sample the last LOOK was decided on (first N_j).
     decision_n: Optional[int] = None
@@ -201,7 +204,7 @@ def step(verdict: Verdict, n: int, looks_used: int, plan: ConfirmationPlan,
          look_verdict: Optional[Callable[[int], Verdict]] = None) -> Optional[tuple]:
     """Decide after one confirmation repetition. `verdict` (all data so
     far) must come from metrics whose bounds were computed at
-    plan.per_look_confidence; it decides FAIL, at any time. A look is
+    plan.per_test_confidence; it decides FAIL, at any time. A look is
     taken only when every group's count (n, and in a mix each class's
     `class_n`) reaches the next scheduled requirement, and is decided by
     `look_verdict(j)` -- the verdict on EXACTLY the first N_j requests
