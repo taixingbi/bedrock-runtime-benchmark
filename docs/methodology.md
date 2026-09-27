@@ -9,7 +9,7 @@ How a sweep turns requests into metrics: core abstractions, the capacity definit
 - **`WorkloadProfile`** (`workload.py`) -- a named input/output token
   shape (e.g. `short_chat` = 512 in / 64 out), defined once in the
   catalog `catalog/workloads.yaml`. Capacity depends heavily on
-  this; see `token-sweep.yaml` (admission calibration). Input padding is calibrated per model
+  this; see `workload-shape-calibration.yaml` (admission calibration). Input padding is calibrated per model
   from the provider's own token count (`calibration.py`).
 - **`WorkloadMix`** (`workload.py`) -- weighted classes for a mixed-
   workload sweep; each request draws its class independently.
@@ -139,7 +139,8 @@ nova-micro it produced only 42-50% of the target on every workload, all
 ending `end_turn`. The prompt therefore asks for ~2x the budget and
 forbids wrapping up, so generation ends on `max_tokens` -- measured
 after the fix: 100% of requests hit exactly 64 / 64 / 256 / 1024 output
-tokens across the four shapes then in token-sweep. Every result records
+tokens across the four shapes then in token-sweep (now
+workload-shape-calibration). Every result records
 Bedrock's `stop_reason` (`max_tokens` vs `end_turn`) in the raw JSONL.
 
 Each class's `workload_validation` still checks BOTH sides against what
@@ -233,6 +234,22 @@ temporal_validation:
   conservative_admission: {sustained_rps: 4.0}
   envelope: unstable_operating_envelope
   criteria: {min_runs: 3, min_days: 2, max_spread_pct: 20.0}
+```
+
+`production_capacity_input` is the conservative (minimum) admission
+value once `--min-runs` / `--min-days` are met, and null otherwise --
+the only value meant for production capacity:
+
+```text
+single run                         -> single_run_operating_envelope (every profile)
+    ↓
+repeated runs across times / days
+    ↓
+temporal validation                -> scripts/drift.py: temporal_validation
+    ↓
+conservative / stable envelope     -> the minimum confirmed admission value
+    ↓
+production capacity input          -> temporal_validation.production_capacity_input
 ```
 
 `envelope` is `single_run_operating_envelope` (one run),

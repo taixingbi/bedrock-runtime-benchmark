@@ -18,8 +18,8 @@
 # tested rate envelope (that's rate-capacity's sustained_rps). A gateway
 # derives its admission classes / weights from these points:
 #
-#   concurrency-sweep -> 3 reference production points  ┐
-#   token-sweep       -> additional shape calibration   ┘
+#   concurrency-sweep          -> 3 reference production points  ┐
+#   workload-shape-calibration -> additional shape calibration   ┘
 #          -> gateway derives a workload-aware admission policy
 #          -> bedrock-platform-eval validates the DEPLOYED policy
 #
@@ -41,7 +41,7 @@
 # each shape two points past its saturation and refinement bisects the
 # bracket. Slow: run it for a capacity re-baseline, not on every change.
 purpose: admission_calibration
-name: token-sweep
+name: workload-shape-calibration
 description: |
   Concurrency 1..48 (until two consecutive FAILs, then integer
   refinement and fixed-count confirmation) across the four non-reference

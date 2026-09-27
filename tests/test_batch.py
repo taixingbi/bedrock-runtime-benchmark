@@ -164,7 +164,7 @@ class SloProfileFilterBatchTests(unittest.TestCase):
 class PlanTests(unittest.TestCase):
     def test_estimate_counts_subjects_points_repetitions_warmup_and_window(self):
         micro = load_models(names=["nova-micro"])[0]
-        spec = load_experiment("experiments/token-sweep.yaml", micro)  # 4 workloads x (10 + 4 refinement) points
+        spec = load_experiment("experiments/workload-shape-calibration.yaml", micro)  # 4 workloads x (10 + 4 refinement) points
         spec.confirmation = None
         self.assertEqual(estimated_duration_s(spec), 4 * (10 + 4) * 1 * (10 + 90))
         mixed = load_experiment("experiments/mixed-capacity.yaml", micro)  # a mix is ONE subject
@@ -176,7 +176,7 @@ class PlanTests(unittest.TestCase):
         it's assumed to run at the 6.67 rps ceiling (~600 req per 90s rep):
         gold 3,688 -> 7 reps, silver 736 -> 2 (x2 workloads), bronze 368 -> 1."""
         micro = load_models(names=["nova-micro"])[0]
-        spec = load_experiment("experiments/token-sweep.yaml", micro)
+        spec = load_experiment("experiments/workload-shape-calibration.yaml", micro)
         self.assertEqual(estimated_duration_s(spec), 4 * (10 + 4) * 100 + (7 + 2 + 2 + 1) * 100)
 
     def test_mix_confirmation_estimate_scales_each_class_by_its_share(self):

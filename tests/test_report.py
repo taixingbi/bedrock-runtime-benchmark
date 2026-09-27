@@ -52,11 +52,11 @@ class BuildCapacityProfileTests(unittest.TestCase):
         defaults.update(overrides)
         return ExperimentSpec(**defaults)
 
-    def test_schema_version_is_16(self):
+    def test_schema_version_is_17(self):
         spec = self._spec()
         report = ExperimentReport(spec=spec, profiles=[ProfileReport(workload_name="short", recommendation=None)])
         profile = build_capacity_profile(report)
-        self.assertEqual(profile["schema_version"], 16)
+        self.assertEqual(profile["schema_version"], 17)
 
     def test_concurrency_sweep_writes_a_concurrency_block_not_rate(self):
         spec = self._spec(sweep_type="concurrency")
@@ -340,12 +340,12 @@ class BuildCapacityProfileTests(unittest.TestCase):
 
 
     def test_admission_calibration_emits_a_confirmed_calibration_point_not_an_envelope(self):
-        """token-sweep: C_safe per workload shape under its own SLO (and the
+        """workload-shape-calibration: C_safe per workload shape under its own SLO (and the
         measured provider environment), for
         a gateway to derive admission classes from -- no envelope, no
         headroom."""
         from bedrock_benchmark.models import load_models
-        spec = load_experiment("experiments/token-sweep.yaml", load_models(names=["nova-micro"])[0])
+        spec = load_experiment("experiments/workload-shape-calibration.yaml", load_models(names=["nova-micro"])[0])
         self.assertEqual(spec.purpose, "admission_calibration")
         rec = _rec(point=SweepPoint(concurrency=4, rps=None, metrics=_metrics(request_throughput_rps=6.2)),
                    saturation_point=SweepPoint(concurrency=6, rps=None, metrics=_metrics(throttle_rate=0.05)))
@@ -368,7 +368,7 @@ class BuildCapacityProfileTests(unittest.TestCase):
 
     def test_characterization_experiment_never_recommends(self):
         from bedrock_benchmark.models import load_models
-        spec = load_experiment("experiments/token-sweep.yaml", load_models(names=["nova-micro"])[0])
+        spec = load_experiment("experiments/workload-shape-calibration.yaml", load_models(names=["nova-micro"])[0])
         spec.purpose = "characterization"
         rec = _rec(point=SweepPoint(concurrency=2, rps=None, metrics=_metrics()), saturation_point=None)
         report = ExperimentReport(spec=spec, profiles=[ProfileReport(workload_name="tiny_request", recommendation=rec)])
@@ -412,6 +412,9 @@ class BuildCapacityProfileTests(unittest.TestCase):
         self.assertEqual(d["failed_checks"], ["success_rate", "throttle_rate"])
         self.assertEqual((d["non_throttle_error_rate_at_saturation"], d["provider_ceiling_rps"]), (0.0, 6.6667))
         self.assertIsNone(d["latency_healthy_at_observed_nonfailing"])  # no latency gate in this fixture
+        envelope = entry["recommendation"]["admission_envelope"]
+        self.assertEqual(envelope["evidence"], "single_run_operating_envelope")  # never production-ready alone
+        self.assertIn("drift.py", envelope["production_use"])
 
 
     def test_load_generator_lag_is_a_validity_check(self):

@@ -112,13 +112,13 @@ def plan(
 
 def format_plan(planned: List[PlannedRun]) -> str:
     runs = [p for p in planned if p.skip_reason is None]
-    lines = [f"{'#':<3} {'model':<14} {'experiment':<20} {'est.':>7}  sweep"]
+    lines = [f"{'#':<3} {'model':<14} {'experiment':<26} {'est.':>7}  sweep"]
     for i, p in enumerate(runs, 1):
         mark = "<=" if p.early_stop else "  "
-        lines.append(f"{i:<3} {p.model.name:<14} {p.experiment:<20} {mark}{p.estimated_s / 60:>4.0f}m  {p.sweep}")
+        lines.append(f"{i:<3} {p.model.name:<14} {p.experiment:<26} {mark}{p.estimated_s / 60:>4.0f}m  {p.sweep}")
     for p in planned:
         if p.skip_reason is not None:
-            lines.append(f"--  {p.model.name:<14} {p.experiment:<20} skip  {p.skip_reason}")
+            lines.append(f"--  {p.model.name:<14} {p.experiment:<26} skip  {p.skip_reason}")
     total = sum(p.estimated_s for p in runs)
     n_models = len({p.model.name for p in runs})
     lines.append(
@@ -172,7 +172,7 @@ def run_batch(
 
 
 def format_summary(batch: BatchResult) -> str:
-    lines = [f"{'model':<14} {'experiment':<20} {'status':<8} {'time':>6}  recommendation"]
+    lines = [f"{'model':<14} {'experiment':<26} {'status':<8} {'time':>6}  recommendation"]
     for r in batch.results:
         first, *rest = r.recommendations or [r.error or ""]
         lines.append(f"{r.model:<14} {r.experiment:<20} {r.status:<8} {r.elapsed_s / 60:>5.1f}m  {first}")

@@ -13,6 +13,9 @@ per (model, experiment, workload/mix, sweep kind) and states, as a
   confirmed_<unit>                             min / median / max / spread_pct
   conservative_<unit>                          the MINIMUM confirmed value
   conservative_admission                       the MINIMUM admission-envelope value
+  production_capacity_input                    conservative_admission once min_runs /
+                                               min_days are met -- else None: a single
+                                               run is never a production-safe config
   envelope                                     what the evidence supports:
       single_run_operating_envelope      one run -- a snapshot, nothing about time
       insufficient_temporal_evidence     fewer than min_runs runs or min_days days
@@ -115,6 +118,13 @@ def summarize(paths: Iterable[str], *, stability_threshold_pct: float = 20.0, mi
             tv["conservative_admission"] = {admission_key: min(admission)}
         tv["envelope"] = _envelope_type(len(runs), len(days), len(confirmed) == len(runs), spread,
                                         threshold=stability_threshold_pct, min_runs=min_runs, min_days=min_days)
+        # The ONLY value to feed production capacity: the conservative
+        # (minimum) admission value, once there is enough temporal
+        # evidence -- stable, or unstable (then the minimum is exactly the
+        # point). None for a single run or insufficient evidence.
+        tv["production_capacity_input"] = (
+            tv.get("conservative_admission")
+            if tv["envelope"] in ("stable_operating_envelope", "unstable_operating_envelope") else None)
         tv["criteria"] = {"min_runs": min_runs, "min_days": min_days, "max_spread_pct": stability_threshold_pct}
         report.append({
             "model": model, "experiment": experiment, scope: name, "kind": kind,

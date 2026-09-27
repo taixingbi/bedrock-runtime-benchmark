@@ -71,17 +71,17 @@ there is no gateway config schema in this repo.
 | `rate-capacity` | reference | 0.25x-2.5x of the provider ceiling, one reference workload per tier (`short_chat` gold, `rag_answer` silver, `long_generation` bronze) -- the canonical envelope run | ~57 min |
 | `concurrency-sweep` | reference | each reference workload alone, concurrency 1..48 until 2 consecutive FAILs; confirms the top 2 non-failing concurrencies | ~1.5 h |
 | `mixed-capacity` | reference | mixed-rate calibration: 0.25x-2.5x ceiling for ONE mix, 60% `short_chat` / 30% `rag_answer` / 10% `long_generation` | ~32 min |
-| `token-sweep` | admission_calibration | the 4 non-reference shapes x concurrency 1..48 until 2 consecutive FAILs, each under its own SLO | ~1-2 h |
+| `workload-shape-calibration` | admission_calibration | the 4 non-reference shapes x concurrency 1..48 until 2 consecutive FAILs, each under its own SLO | ~1-2 h |
 
 Only **reference** experiments, on the three **reference** workloads (one
 per SLO tier), produce an admission-envelope recommendation.
-`token-sweep` is **admission calibration**: for the other four catalog
+`workload-shape-calibration` is **admission calibration**: for the other four catalog
 shapes it produces statistically confirmed `calibration_point`s --
 C_safe = f(input/output tokens, SLO, quota, provider conditions) -- from which a gateway
 derives its admission classes or weights:
 
 ```
-token-sweep -> confirmed calibration points -> gateway policy derivation -> admission config
+workload-shape-calibration -> confirmed calibration points -> gateway policy derivation -> admission config
 ```
 
 A calibration point is an input to that derivation, not a config value:
@@ -107,7 +107,7 @@ What each experiment gives a gateway:
 |---|---|---|
 | `concurrency-sweep` | per-class isolated `max_inflight` for the three reference workloads | reference workload `C_admission` |
 | `rate-capacity` | per-class isolated `sustained_rps` for the same three | reference workload `R_admission` |
-| `token-sweep` | confirmed `calibration_point` per non-reference workload shape (no envelope, no headroom) | extra workload-shape admission calibration points |
+| `workload-shape-calibration` | confirmed `calibration_point` per non-reference workload shape (no envelope, no headroom) | extra workload-shape admission calibration points |
 | `mixed-capacity` | `sustained_rps` for ONE explicit mix (`scope: workload_mix`) | mix-scoped total-rate `R_admission(mix)` |
 
 None of these validates gateway policy: every call goes straight to
@@ -131,7 +131,13 @@ dimension: the concurrency sweep controls C and lets the rate emerge;
 the rate sweep controls R and lets concurrency emerge. Enforcing both
 (C <= max_inflight and R <= sustained_rps) is conservative, but it is
 not a statistically confirmed 2-D (C, R) capacity surface -- no joint
-(C, R) point near the recommendation has been validated.
+(C, R) point near the recommendation has been validated (planned:
+`joint-capacity`).
+
+**A single run is not a production config.** Every profile is a
+`single_run_operating_envelope`; repeat across times and days, and take
+`scripts/drift.py`'s `temporal_validation.production_capacity_input` --
+the conservative value, set only once the temporal evidence suffices.
 
 Every experiment is discovery followed by adaptive confirmation at the
 candidate -- the only way a point becomes statistically confirmed.
@@ -220,6 +226,8 @@ enforces it, and reads nothing from a gateway's tables or config.
 | [quota model](docs/quota-model.md) | provider ceiling, TPM reservation vs consumption, quota-relative sweeps, `fetch_quota.py` |
 | [capacity-profile schema](docs/capacity-profile-schema.md) | the deliverable and its consumer contract, measurement vs recommendation |
 | [experiment design](docs/experiment-design.md) | models, workload catalog, experiments, constraints, running, pilot |
+| [admission control](docs/admission-control.md) | minimum gateway admission config, two guardrails (not a 2-D region), production capacity input |
+| [benchmark outputs](docs/benchmark-outputs.md) | every output, from admission values to evidence and temporal validation |
 | [correctness history](docs/correctness-history.md) | every measurement bug found in review, by schema version |
 
 ## Testing

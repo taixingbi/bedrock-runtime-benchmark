@@ -1,7 +1,7 @@
 """WorkloadProfile -- a named input/output token shape (e.g. "short" =
 512 input / 64 output, "long" = 4096 input / 512 output). Capacity
 depends heavily on this: an inference profile's safe concurrency for short-short
-traffic can be very different from long-long (see token-sweep.yaml) --
+traffic can be very different from long-long (see workload-shape-calibration.yaml) --
 this repo never assumes one workload shape represents "the" capacity
 of a model.
 

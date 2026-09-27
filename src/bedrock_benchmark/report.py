@@ -511,6 +511,13 @@ def _envelope(entry: dict, profile_report, spec, report_results: List[RequestRes
         provider_ceiling_rps=ceiling_rps, scope=scope,
         unconfirmed_reason=None if confirmed is not None else _unconfirmed_reason(profile_report, spec),
     )
+    envelope = entry["recommendation"].get("admission_envelope")
+    if envelope is not None:
+        # One run is one snapshot of provider conditions -- never by itself
+        # a production-safe config (see scripts/drift.py).
+        envelope["evidence"] = "single_run_operating_envelope"
+        envelope["production_use"] = ("not production-ready alone: repeat across times / days and use "
+                                      "scripts/drift.py's temporal_validation.production_capacity_input")
     # evidence = the observed point; confirmed_evidence = the point the
     # recommendation is derived from, when it's a different point.
     entry["evidence"] = _evidence(rec.point)
@@ -615,7 +622,7 @@ def build_capacity_profile(report: ExperimentReport) -> dict:
 
     confidence = spec.slo.confidence or DEFAULT_CONFIDENCE
     return {
-        "schema_version": 16,
+        "schema_version": 17,
         "experiment": spec.name,
         # reference: carries production admission envelopes;
         # admission_calibration: confirmed calibration_point per workload

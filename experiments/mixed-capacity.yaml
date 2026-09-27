@@ -1,5 +1,5 @@
 # Mixed-workload rate calibration. Isolated workload envelopes from
-# rate-capacity and calibration points from token-sweep cannot be
+# rate-capacity and calibration points from workload-shape-calibration cannot be
 # combined mathematically into one global cross-class rate -- a real mix
 # of short and long traffic can exceed safe capacity before any class's
 # isolated measurement would predict.

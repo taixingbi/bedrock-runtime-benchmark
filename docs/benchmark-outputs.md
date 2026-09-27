@@ -29,7 +29,8 @@ R_admission
 sustained_rps
 ```
 
-A gateway can consume them directly:
+A gateway consumes them -- after temporal validation (below), not from
+a single run:
 
 ```yaml id="hfp5s3"
 admission_control:
@@ -97,6 +98,22 @@ These outputs help distinguish backend saturation from provider-quota saturation
 | `capacity_max` | Maximum confirmed capacity |
 | `capacity_spread` | Variation across repeated measurements |
 | `temporal_status` | Whether the measured envelope is stable, unstable, or lacks enough temporal evidence |
+| `production_capacity_input` | The conservative (minimum) admission value, set only once there is enough temporal evidence |
+
+A single run is a `single_run_operating_envelope`, not a production-safe
+config:
+
+```text
+single run                         -> single_run_operating_envelope (every profile)
+    ↓
+repeated runs across times / days
+    ↓
+temporal validation                -> scripts/drift.py: temporal_validation
+    ↓
+conservative / stable envelope     -> the minimum confirmed admission value
+    ↓
+production capacity input          -> temporal_validation.production_capacity_input
+```
 
 The overall output can therefore be viewed as:
 
@@ -132,4 +149,7 @@ Benchmark
 
 The primary production contract is:
 
-> **`C_admission` and `R_admission` configure admission control; the remaining benchmark outputs provide the evidence, scope, constraints, and validity of those limits.**
+> **`C_admission` and `R_admission` configure admission control -- once temporally validated; the remaining benchmark outputs provide the evidence, scope, constraints, and validity of those limits.**
+
+They are two independently confirmed guardrails, not a jointly validated
+2-D (C, R) safe region -- see [admission control](admission-control.md#two-guardrails-not-a-2-d-safe-region).

@@ -59,7 +59,7 @@ class EvaluateTests(unittest.TestCase):
 
 class PilotRunTests(unittest.TestCase):
     def test_union_of_planned_workloads_respects_the_slo_filter(self):
-        paths = ["experiments/rate-capacity.yaml", "experiments/token-sweep.yaml", "experiments/mixed-capacity.yaml"]
+        paths = ["experiments/rate-capacity.yaml", "experiments/workload-shape-calibration.yaml", "experiments/mixed-capacity.yaml"]
         all_ = pilot_workloads(paths, MICRO)
         self.assertEqual([w.name for w in all_.workloads],
                          ["short_chat", "rag_answer", "long_generation", "tiny_request", "medium_context",

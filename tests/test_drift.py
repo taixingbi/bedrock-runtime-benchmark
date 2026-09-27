@@ -35,6 +35,7 @@ class DriftTests(unittest.TestCase):
         self.assertEqual(tv["conservative_rps"], 4.2)
         self.assertEqual(tv["conservative_admission"], {"sustained_rps": 3.36})
         self.assertEqual(tv["envelope"], "unstable_operating_envelope")  # 32% spread > 20%
+        self.assertEqual(tv["production_capacity_input"], {"sustained_rps": 3.36})  # the conservative value
         self.assertEqual([r["confirmed"] for r in g["runs"]], [5.0, 4.2, 5.8])  # oldest first
 
     def test_consistent_runs_are_a_stable_envelope(self):
@@ -61,6 +62,7 @@ class DriftTests(unittest.TestCase):
             self._write(d, "b", _profile("2026-09-26T15:00:00+00:00", 5.0, 4.0))
             [g] = summarize([d])
         self.assertEqual(g["temporal_validation"]["envelope"], "insufficient_temporal_evidence")
+        self.assertIsNone(g["temporal_validation"]["production_capacity_input"])
 
     def test_one_run_is_a_single_run_envelope(self):
         with tempfile.TemporaryDirectory() as d:
@@ -68,6 +70,7 @@ class DriftTests(unittest.TestCase):
             [g] = summarize([d])
         tv = g["temporal_validation"]
         self.assertEqual((tv["runs"], tv["days_observed"], tv["envelope"]), (1, 0, "single_run_operating_envelope"))
+        self.assertIsNone(tv["production_capacity_input"])  # one run is never production input
 
 
 if __name__ == "__main__":

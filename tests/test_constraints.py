@@ -90,7 +90,7 @@ class SloFileTests(unittest.TestCase):
     def test_custom_slo_file_is_used_by_experiments(self):
         path = _write("profiles:\n  gold: {tpot_p95_ms: 5}\n  silver: {tpot_p95_ms: 6}\n  bronze: {tpot_p95_ms: 7}\n")
         try:
-            self.assertEqual(load_experiment("experiments/token-sweep.yaml", MICRO, slo_file=path)
+            self.assertEqual(load_experiment("experiments/workload-shape-calibration.yaml", MICRO, slo_file=path)
                              .slo_for("long_context_short_answer").tpot_p95_ms, 6)
             spec = load_experiment("experiments/concurrency-sweep.yaml", MICRO, slo_file=path)
             self.assertEqual(spec.slo_for("short_chat").tpot_p95_ms, 5)
@@ -103,7 +103,7 @@ class SloFileTests(unittest.TestCase):
         path = _write("profiles: {gold: {tpot_p95_ms: 1}}\n")
         try:
             with self.assertRaisesRegex(ValueError, "bronze"):
-                load_experiment("experiments/token-sweep.yaml", MICRO, slo_file=path)
+                load_experiment("experiments/workload-shape-calibration.yaml", MICRO, slo_file=path)
         finally:
             Path(path).unlink()
 

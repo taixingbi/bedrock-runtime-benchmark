@@ -369,3 +369,21 @@ artifact was ever used to actually inform a gateway config:
     recommendation headroom -> R_admission(mix). Docs now say so; R_safe
     alone is never gateway config, and other mixes are separate
     experiment files. No field changed.
+
+## Schema v17 fixes
+
+60. **token-sweep's name undersold what it measures.** Renamed to
+    `workload-shape-calibration`: C_safe depends on input and output
+    tokens, SLO, quota and provider conditions, not token count alone.
+    Profiles carry the new experiment name, so drift.py groups new runs
+    separately from old `token-sweep` ones.
+61. **A single run's envelope could be read as production-safe.** Every
+    admission envelope now states `evidence:
+    single_run_operating_envelope` and `production_use`, and drift.py's
+    `temporal_validation.production_capacity_input` is the conservative
+    admission value -- set only once `--min-runs` / `--min-days` are
+    met. Docs (admission-control, benchmark-outputs) state the flow
+    single run -> repeated runs -> temporal validation -> conservative
+    envelope -> production capacity input, and that max_inflight and
+    sustained_rps are two independent guardrails, not a jointly
+    validated (C, R) region (planned: `joint-capacity`).

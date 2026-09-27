@@ -55,10 +55,10 @@ class ShippedExperimentTests(unittest.TestCase):
                 self.assertFalse(any(w in spec.name for w in model_words), spec.name)
                 self.assertFalse(any(w in path.stem for w in model_words), path.stem)
 
-    def test_token_sweep_covers_only_characterization_shapes(self):
+    def test_workload_shape_calibration_covers_only_non_reference_shapes(self):
         """Reference workloads get their concurrency from concurrency-sweep;
-        token-sweep never repeats them."""
-        spec = load_experiment("experiments/token-sweep.yaml", MICRO)
+        workload-shape-calibration never repeats them."""
+        spec = load_experiment("experiments/workload-shape-calibration.yaml", MICRO)
         self.assertEqual([w.name for w in spec.workloads],
                          ["tiny_request", "medium_context", "long_context_short_answer", "very_large_context"])
         self.assertTrue(all(w.role == "characterization" for w in spec.workloads))
@@ -115,7 +115,7 @@ class SloProfileTests(unittest.TestCase):
 
 class WorkloadE2ECapTests(unittest.TestCase):
     def test_workload_latency_cap_is_applied_over_its_profile(self):
-        spec = load_experiment("experiments/token-sweep.yaml", MICRO)
+        spec = load_experiment("experiments/workload-shape-calibration.yaml", MICRO)
         for w in spec.workloads:
             with self.subTest(workload=w.name):
                 slo = spec.slo_for(w.name)
@@ -142,7 +142,7 @@ class SloProfileFilterTests(unittest.TestCase):
         self.assertEqual([w.name for w in spec.workloads], ["short_chat", "long_generation"])
 
     def test_silver_selects_both_silver_shapes(self):
-        spec = load_experiment("experiments/token-sweep.yaml", MICRO, only_slo_profiles={"silver"})
+        spec = load_experiment("experiments/workload-shape-calibration.yaml", MICRO, only_slo_profiles={"silver"})
         self.assertEqual([w.name for w in spec.workloads], ["medium_context", "long_context_short_answer"])
 
     def test_nothing_matching_is_a_skip_not_an_error(self):

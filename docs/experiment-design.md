@@ -58,7 +58,7 @@ every experiment x every model -> capacity-profile.yaml (judged against the cons
 | `rate-capacity.yaml` | reference | 0.25x-2.5x ceiling, one reference workload per tier (`short_chat` gold, `rag_answer` silver, `long_generation` bronze) -- the canonical production-envelope run | ~57 min |
 | `concurrency-sweep.yaml` | reference | each of `short_chat` / `rag_answer` / `long_generation` alone, concurrency 1..48 until 2 consecutive FAILs; confirms the top 2 non-failing concurrencies (e.g. C=2 then C=4) | ~1.5 h |
 | `mixed-capacity.yaml` | reference | mixed-rate calibration: 0.25x-2.5x ceiling for ONE mix, 60% `short_chat` / 30% `rag_answer` / 10% `long_generation` | ~32 min |
-| `token-sweep.yaml` | admission_calibration | the 4 non-reference shapes x concurrency 1..48 until 2 consecutive FAILs, each under its own SLO | ~1-2 h |
+| `workload-shape-calibration.yaml` | admission_calibration | the 4 non-reference shapes x concurrency 1..48 until 2 consecutive FAILs, each under its own SLO | ~1-2 h |
 
 Every experiment runs adaptive confirmation at its candidate after
 discovery (see [SLO statistics](slo-statistics.md)) -- without it one
@@ -91,7 +91,7 @@ workloads:
   long_context_short_answer: {input_tokens: 8192,  output_tokens: 64,   slo_profile: silver, latency_p95_ms: 8000,  role: characterization}
   very_large_context:        {input_tokens: 16384, output_tokens: 256,  slo_profile: bronze, latency_p95_ms: 20000, role: characterization}
 
-# experiments/token-sweep.yaml -- the four non-reference shapes
+# experiments/workload-shape-calibration.yaml -- the four non-reference shapes
 workloads: [tiny_request, medium_context, long_context_short_answer, very_large_context]
 ```
 
@@ -112,7 +112,7 @@ four), and every experiment declares a `purpose`:
 | `purpose` | Experiments | Workloads | Profile carries | Needs `confirmation:` |
 |---|---|---|---|---|
 | **reference** | `rate-capacity`, `concurrency-sweep`, `mixed-capacity` | reference only (enforced) | measurement **and** `recommendation.admission_envelope` | yes |
-| **admission_calibration** | `token-sweep` | any | measurement **and** a confirmed `calibration_point` per shape; `admission_envelope: null` | yes |
+| **admission_calibration** | `workload-shape-calibration` | any | measurement **and** a confirmed `calibration_point` per shape; `admission_envelope: null` | yes |
 | **characterization** | (none shipped) | any | measurement only | no |
 
 **admission_calibration** answers the gateway question "what safe
@@ -129,10 +129,10 @@ derivation -- admission classes or weights -- never a config value:
 
 ```
 bedrock-runtime-benchmark (Benchmark -> Bedrock, no gateway in the path)
-  concurrency-sweep  ->  C_admission per reference workload       ┐
-  rate-capacity      ->  R_admission per reference workload       │  backend admission
-  token-sweep        ->  extra workload-shape calibration points  │  evidence
-  mixed-capacity     ->  R_safe for one explicit workload mix     ┘
+  concurrency-sweep           ->  C_admission per reference workload       ┐
+  rate-capacity               ->  R_admission per reference workload       │  backend admission
+  workload-shape-calibration  ->  extra workload-shape calibration points  │  evidence
+  mixed-capacity              ->  R_safe for one explicit workload mix     ┘
           |
 gateway derives its policy / config from that evidence
           |
@@ -154,7 +154,7 @@ Responsibilities, without overlap:
 |---|---|---|
 | `concurrency-sweep` | per-class isolated `max_inflight` for the three reference workloads | reference workload `C_admission` |
 | `rate-capacity` | per-class isolated `sustained_rps` for the same three | reference workload `R_admission` |
-| `token-sweep` | confirmed `calibration_point` per non-reference workload shape (no envelope, no headroom) | extra workload-shape admission calibration points |
+| `workload-shape-calibration` | confirmed `calibration_point` per non-reference workload shape (no envelope, no headroom) | extra workload-shape admission calibration points |
 | `mixed-capacity` | `sustained_rps` for ONE explicit mix (`scope: workload_mix`) | mix-scoped total-rate `R_admission(mix)` |
 
 None of these validates gateway policy: every call goes straight to
@@ -200,10 +200,18 @@ is the real edge rather than the coarse grid point below it (confirmed
 (`rate-capacity`) are two independently confirmed guardrails -- each
 experiment controls one dimension and lets the other emerge. A consumer
 enforces both, which is conservative; it is not a jointly validated 2-D
-(C, R) surface. A future `joint-envelope-validation` experiment
-(open-loop arrivals at R with an admission cap C) could confirm a few
-points around the recommendation -- (C, 0.8R), (C, R), (0.8C, R) --
-plus slightly-over controls (1.2C, R), (C, 1.2R); not built.
+(C, R) surface.
+
+### Planned: joint-capacity
+
+Not built. Today `concurrency-sweep` yields C_safe and `rate-capacity`
+yields R_safe, each with the other dimension left free. `joint-capacity`
+would validate (concurrency, offered_rps) combinations together --
+open-loop arrivals at rate R with at most C in flight -- to get a real
+2-D safe operating region, starting with points around the
+recommendation, (C, 0.8R), (C, R), (0.8C, R), plus slightly-over
+controls (1.2C, R), (C, 1.2R), each confirmed like any other point. It
+needs a new runner (rate-driven arrivals with a concurrency cap).
 
 ## Running experiments
 
