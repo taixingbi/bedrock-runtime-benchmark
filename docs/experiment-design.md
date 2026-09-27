@@ -23,7 +23,7 @@ every experiment x every model -> capacity-profile.yaml (judged against the cons
 ```
 
 - **Models** -- `catalog/models.yaml`: the five models
-  `bedrock-runtime-gateway` certifies (nova-micro, nova-lite, nova-pro,
+  `eval-bedrock-gateway` certifies (nova-micro, nova-lite, nova-pro,
   llama3-3-70b, qwen3-32b). `enabled: false` skips one by default.
 - **Experiments** -- `experiments/*.yaml`: model-agnostic workload +
   sweep definitions, each with an explicit `purpose` (see
@@ -128,7 +128,7 @@ saturation, bottleneck) is an input to gateway policy
 derivation -- admission classes or weights -- never a config value:
 
 ```
-bedrock-runtime-benchmark (Benchmark -> Bedrock, no gateway in the path)
+eval-bedrock-runtime-benchmark (Benchmark -> Bedrock, no gateway in the path)
   concurrency-sweep           ->  C_admission per reference workload       ┐
   rate-capacity               ->  R_admission per reference workload       │  backend admission
   workload-shape-calibration  ->  extra workload-shape calibration points  │  evidence
@@ -136,13 +136,13 @@ bedrock-runtime-benchmark (Benchmark -> Bedrock, no gateway in the path)
           |
 gateway derives its policy / config from that evidence
           |
-bedrock-platform-eval (-> gateway -> Bedrock)
+eval-bedrock-platform (-> gateway -> Bedrock)
   validates the deployed gateway policy under production-like mixed traffic
 ```
 
 `achieved_rps` is an observation -- in a closed-loop sweep the rate is
 what concurrency and latency produce -- not a tested rate envelope; that
-is `rate-capacity`'s `sustained_rps`. Calibration points are isolated-workload measurements; per-shape C_safe values don't combine mathematically into a global policy. Any admission classes or weights derived from them must be validated under representative mixed traffic through the deployed gateway (`bedrock-platform-eval`) before production use -- this repo calls Bedrock directly and never validates gateway policy.
+is `rate-capacity`'s `sustained_rps`. Calibration points are isolated-workload measurements; per-shape C_safe values don't combine mathematically into a global policy. Any admission classes or weights derived from them must be validated under representative mixed traffic through the deployed gateway (`eval-bedrock-platform`) before production use -- this repo calls Bedrock directly and never validates gateway policy.
 
 Because it feeds configuration, it needs independent confirmation like
 a reference experiment. Both `role` and `purpose` are recorded in the
@@ -159,7 +159,7 @@ Responsibilities, without overlap:
 
 None of these validates gateway policy: every call goes straight to
 Bedrock. The benchmark produces backend admission evidence; the gateway
-derives its config from it; `bedrock-platform-eval` validates the
+derives its config from it; `eval-bedrock-platform` validates the
 deployed gateway under production-like mixed traffic.
 
 **One mix is one number.** `mixed-capacity`'s 60/30/10 gives

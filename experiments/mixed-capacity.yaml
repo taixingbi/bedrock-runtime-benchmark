@@ -18,7 +18,7 @@
 #
 # R_safe itself is not gateway config. And this experiment does NOT
 # validate that gateway policy: requests go directly to Bedrock.
-# End-to-end validation belongs to bedrock-platform-eval.
+# End-to-end validation belongs to eval-bedrock-platform.
 #
 # One sweep of the total offered rate; every arrival independently draws
 # its class by weight, and a point PASSes only if EACH class meets its

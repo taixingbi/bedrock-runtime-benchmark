@@ -5,7 +5,7 @@ never to enforce anything at runtime.
 One source: AWS Service Quotas (service-quotas:ListServiceQuotas), the
 provider's own source of truth. The benchmark reads nothing from any
 gateway's infrastructure -- no tables, no config: it depends only on
-Bedrock and AWS, and a consumer (e.g. bedrock-runtime-gateway) is never
+Bedrock and AWS, and a consumer (e.g. eval-bedrock-gateway) is never
 a dependency. If Service Quotas can't answer (no permission, unmapped
 model), the result is `unknown` rather than an error -- a missing quota
 number should make the gap visible, not block experiment design.

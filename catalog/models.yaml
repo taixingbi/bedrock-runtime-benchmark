@@ -14,7 +14,7 @@
 #             CountTokens ("The provided model doesn't support counting
 #             tokens"), so auto resolves to converse_usage for all of them.
 #
-# The five models bedrock-runtime-gateway certifies (certified_models.yaml).
+# The five models eval-bedrock-gateway certifies (certified_models.yaml).
 
 models:
   - name: nova-micro

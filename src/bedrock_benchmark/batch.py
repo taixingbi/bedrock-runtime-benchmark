@@ -18,7 +18,7 @@ failed run (bad credentials, no model access, a crash) doesn't stop the
 batch unless fail_fast is set; the summary records it and the batch
 exits non-zero. The benchmark knows nothing about any gateway: mapping
 the profiles' admission envelopes onto gateway limits is the consumer's
-job (bedrock-runtime-gateway's scripts/capacity_review.py).
+job (eval-bedrock-gateway's scripts/capacity_review.py).
 """
 from __future__ import annotations
 

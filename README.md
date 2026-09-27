@@ -1,4 +1,4 @@
-# bedrock-runtime-benchmark
+# eval-bedrock-runtime-benchmark
 
 Empirically characterizes the **SLO-qualified operating envelope of a
 Bedrock inference profile** under controlled token workloads and
@@ -49,7 +49,7 @@ constraints/recommendation-policy.yaml   headroom (policy)              ─┤
                                                                           |
                                           ───────────── contract ─────────┼──────────────
                                                                           v
-                         bedrock-runtime-gateway  (scripts/capacity_review.py maps the
+                         eval-bedrock-gateway  (scripts/capacity_review.py maps the
                          envelope onto its own global / tenant / quota knobs)
 ```
 
@@ -60,9 +60,9 @@ there is no gateway config schema in this repo.
 
 | Repo | Question |
 |---|---|
-| `bedrock-runtime-gateway` | Is the gateway's own implementation correct? How does it map an envelope onto its limits? |
-| `bedrock-platform-eval` | Does the *deployed platform* (gateway + Bedrock) behave correctly under real workload? |
-| `bedrock-runtime-benchmark` | What is the Bedrock inference-profile operating envelope, independent of any gateway? |
+| `eval-bedrock-gateway` | Is the gateway's own implementation correct? How does it map an envelope onto its limits? |
+| `eval-bedrock-platform` | Does the *deployed platform* (gateway + Bedrock) behave correctly under real workload? |
+| `eval-bedrock-runtime-benchmark` | What is the Bedrock inference-profile operating envelope, independent of any gateway? |
 
 ## Experiments
 
@@ -87,7 +87,7 @@ workload-shape-calibration -> confirmed calibration points -> gateway policy der
 A calibration point is an input to that derivation, not a config value:
 no admission envelope, no headroom; its `achieved_rps` is what
 concurrency and latency produced (an observation), not a tested rate
-like `rate-capacity`'s `sustained_rps`. Calibration points are isolated-workload measurements; per-shape C_safe values don't combine mathematically into a global policy. Any admission classes or weights derived from them must be validated under representative mixed traffic through the deployed gateway (`bedrock-platform-eval`) before production use -- this repo calls Bedrock directly and never validates gateway policy.
+like `rate-capacity`'s `sustained_rps`. Calibration points are isolated-workload measurements; per-shape C_safe values don't combine mathematically into a global policy. Any admission classes or weights derived from them must be validated under representative mixed traffic through the deployed gateway (`eval-bedrock-platform`) before production use -- this repo calls Bedrock directly and never validates gateway policy.
 
 Each reference workload ends up with both an isolated concurrency and an
 isolated rate envelope:
@@ -112,7 +112,7 @@ What each experiment gives a gateway:
 
 None of these validates gateway policy: every call goes straight to
 Bedrock. The benchmark produces backend admission evidence; the gateway
-derives its config from it; `bedrock-platform-eval` validates the
+derives its config from it; `eval-bedrock-platform` validates the
 deployed gateway under production-like mixed traffic.
 
 **One mix is one number.** `mixed-capacity`'s 60/30/10 gives
@@ -211,7 +211,7 @@ point, and `reason` says why (e.g. `confirmation at 6.6667: FAIL
 ## Not in scope
 
 Tenant quotas, fairness, queue policy, AIMD, adaptive global
-concurrency, auth and gateway config -- all `bedrock-runtime-gateway`'s
+concurrency, auth and gateway config -- all `eval-bedrock-gateway`'s
 job. This repo outputs only a safe backend operating envelope (measured,
 statistically confirmed, plus an admission-envelope recommendation); it
 never implements, applies or pre-decides the runtime policy that

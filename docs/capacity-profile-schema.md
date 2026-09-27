@@ -171,7 +171,7 @@ recorded in `recommendation_policy`.
 
 It deliberately emits nothing gateway-specific -- no global or tenant
 concurrency, tenant RPM limits, queue waits, AIMD parameters or tenant
-allocation. Mapping the envelope onto those is `bedrock-runtime-gateway`'s
+allocation. Mapping the envelope onto those is `eval-bedrock-gateway`'s
 decision, which can apply its own margins on top (e.g. more for a
 critical tenant).
 
@@ -181,7 +181,7 @@ critical tenant).
 The benchmark knows nothing about any gateway's configuration schema.
 A consumer maps `recommendation.admission_envelope` (and, if it wants,
 the raw measurement) onto its own knobs and margins. For
-`bedrock-runtime-gateway` that is `app/scripts/capacity_review.py`
+`eval-bedrock-gateway` that is `app/scripts/capacity_review.py`
 (`services/gateway/capacity_review.py`), which compares profiles against
 a snapshot of the gateway's limits -- it moved there from this repo so
 that the producer doesn't depend on the consumer.
@@ -198,7 +198,7 @@ Contract rules a consumer can rely on:
   achieved_rps, confirmed_slo_goodput_rps, saturation, bottleneck,
   scope, use}` -- statistically confirmed, no headroom. `achieved_rps` is
   observed (closed-loop C + latency produced it), never a tested rate
-  like `sustained_rps`. Calibration points are isolated-workload measurements; per-shape C_safe values don't combine mathematically into a global policy. Any admission classes or weights derived from them must be validated under representative mixed traffic through the deployed gateway (`bedrock-platform-eval`) before production use -- this repo calls Bedrock directly and never validates gateway policy. It is an
+  like `sustained_rps`. Calibration points are isolated-workload measurements; per-shape C_safe values don't combine mathematically into a global policy. Any admission classes or weights derived from them must be validated under representative mixed traffic through the deployed gateway (`eval-bedrock-platform`) before production use -- this repo calls Bedrock directly and never validates gateway policy. It is an
   input for deriving admission classes or weights, not a limit to
   compare a config against (the gateway's review skips these profiles).
 - `max_inflight` is set for concurrency sweeps, `sustained_rps` for rate

@@ -4,7 +4,7 @@
 # here; .python-version pins the default dev interpreter, and CI's
 # matrix covers every minor version in requires-python.
 [project]
-name = "bedrock-runtime-benchmark"
+name = "eval-bedrock-runtime-benchmark"
 version = "0.1.0"
 description = "Characterizes Bedrock model capacity under controlled workloads and derives SLO-aware operating envelopes for runtime admission/concurrency configuration."
 readme = "README.md"

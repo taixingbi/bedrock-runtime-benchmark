@@ -7,7 +7,7 @@ of a model.
 
 `prompt()` generates a real input string of approximately
 input_tokens length using the same ~4-chars-per-token estimate
-bedrock-runtime-gateway's own usage/token_estimate.py uses -- it only
+eval-bedrock-gateway's own usage/token_estimate.py uses -- it only
 needs to be CLOSE, not exact: the real input_tokens actually consumed
 comes back from Bedrock's own response usage block and is what's
 recorded on RequestResult. calibration.py replaces the estimate with

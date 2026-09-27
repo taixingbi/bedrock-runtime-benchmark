@@ -254,7 +254,7 @@ artifact was ever used to actually inform a gateway config:
     measurement module -- policy is applied only in
     `recommendation.py`.
 40. **The benchmark read gateway infrastructure.** `fetch_quota.py`
-    tried `bedrock-runtime-gateway`'s DynamoDB quota table before AWS
+    tried `eval-bedrock-gateway`'s DynamoDB quota table before AWS
     Service Quotas. Removed: the producer depends only on Bedrock / AWS.
 
 ## Schema v13 fixes
@@ -361,7 +361,7 @@ artifact was ever used to actually inform a gateway config:
     calls Bedrock directly -- no gateway in the path -- so it calibrates
     R_safe for one explicit mix (backend evidence for a mixed-rate
     guardrail); validating the deployed gateway policy belongs to
-    `bedrock-platform-eval`. Docs, `token-sweep.yaml` and
+    `eval-bedrock-platform`. Docs, `token-sweep.yaml` and
     `calibration_point.use` corrected; the YAML and docs state that one
     mix gives R_safe(that mix), not a global R_safe. No field changed.
 59. **"global" mixed-rate wording.** mixed-capacity's output is a

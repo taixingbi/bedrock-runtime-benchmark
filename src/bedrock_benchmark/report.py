@@ -1,6 +1,6 @@
 """Builds the capacity-profile.yaml artifact (schema_version 5) -- the
 one machine-readable thing this repo exists to hand to
-bedrock-runtime-gateway's own control-plane config review, not a
+eval-bedrock-gateway's own control-plane config review, not a
 human-facing HTML report.
 
 schema_version 2 fixes two real bugs schema_version 1 had:
@@ -337,7 +337,7 @@ def _calibration_point(spec, subject: str, rec: Optional[Recommendation], ceilin
         "scope": "isolated_workload_class",
         "use": "input to gateway admission-class / weight derivation; not a config value, no headroom applied; "
                "derived classes / weights must be validated under representative mixed traffic through the "
-               "deployed gateway (bedrock-platform-eval) before production",
+               "deployed gateway (eval-bedrock-platform) before production",
     }
     if confirmed is None:
         point["reason"] = "nothing statistically confirmed for this shape -- see confirmation.candidates"
@@ -569,7 +569,7 @@ def _environment(report: ExperimentReport) -> dict:
         "account": spec.quota_account,
         "region": spec.target.region,
         "inference_profile": spec.target.model_id,
-        "benchmark_version": _version("bedrock-runtime-benchmark"),
+        "benchmark_version": _version("eval-bedrock-runtime-benchmark"),
         "git_commit": commit,
         "git_dirty": None if status is None else bool(status),
         "runtime": {"python": platform.python_version(), "boto3": _version("boto3"),
