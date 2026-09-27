@@ -211,3 +211,21 @@ artifact was ever used to actually inform a gateway config:
     cause: the confirmation candidate's `stop_reason`, or -- discovery
     only -- the point the test stopped at and its `n < required_n`.
     Field set unchanged.
+34. **Mix looks were timed on expected class counts.** A mix's look was
+    at total >= class requirement / share (6,147 for a 60% gold class),
+    but random class draws can leave that total with only 3,600
+    `short_chat` requests -- below the 3,688 its look needs. Looks are
+    now taken only when each class's ACTUAL n (and the blend's total)
+    meets its own requirement (`plan.look_requirements`).
+35. **The canonical concurrency sweep paused after 429s.** 81f95ae set
+    `throttle_pause_s: 1.0` in `concurrency-sweep`, which lowers offered
+    load and flatters the throttle rate `max_inflight` comes from.
+    Removed: the canonical benchmark measures pure closed-loop
+    concurrency; backoff belongs in its own experiment. Profiles
+    measured at 81f95ae (`measurement.throttle_pause_s: 1.0`) aren't
+    comparable with later ones at the throttling points.
+36. **Drift was an auxiliary report.** `scripts/drift.py` now emits a
+    formal `temporal_validation` block (runs, days / UTC hours observed,
+    confirmed min/median/max, conservative values, and an `envelope`
+    verdict), and each profile's `validity.envelope` says
+    `single_run_operating_envelope`.

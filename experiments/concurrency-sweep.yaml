@@ -54,11 +54,11 @@ confirmation:
   candidates: 2
   cooldown_s: 120
 
-# A worker that gets a 429 waits 1s before its next request: a 429
-# returns in milliseconds, so re-firing at once turns one throttled
-# worker into a retry storm that dominates the throttle count. Every 429
-# is still recorded and gated; the pause only stops the storm.
-throttle_pause_s: 1.0
+# No throttle_pause_s: this is the canonical capacity benchmark, so it
+# measures pure closed-loop concurrency -- a worker re-fires as soon as
+# any response (429 included) returns. Client backoff after a 429 would
+# lower the offered load and flatter the throttle rate that
+# max_inflight is derived from; study backoff in its own experiment.
 
 transport:
   max_connections: 64

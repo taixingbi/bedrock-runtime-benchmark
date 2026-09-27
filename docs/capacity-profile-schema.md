@@ -17,7 +17,7 @@ rate-capacity result:
 ```yaml
 schema_version: 11
 experiment: rate-capacity
-environment:                                       # provenance -- see methodology.md, "Provenance and drift"
+environment:                                       # provenance -- see methodology.md, "Provenance and temporal validation"
   measured_at: {start: 2026-09-26T19:06:40+00:00, end: ...}
   account: "646821141010"
   region: us-east-1
@@ -26,7 +26,7 @@ environment:                                       # provenance -- see methodolo
   git_commit: ...
   git_dirty: false
   runtime: {python: 3.11.16, boto3: ..., botocore: ...}
-validity: {repeated_runs: 1, days_observed: 1, scope: "single run -- ..."}
+validity: {envelope: single_run_operating_envelope, repeated_runs: 1, days_observed: 1, scope: "single run -- ..."}
 model: {name: nova-micro, provider: bedrock, model_id: ..., region: ...}
 constraints:                                       # what every number was judged against
   quota: {account: "646821141010", region: us-east-1, rpm: 400, tpm: 8000000, output_burndown: 1.0}  # constraints/quota.yaml

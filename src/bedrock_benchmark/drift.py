@@ -1,20 +1,28 @@
-"""Drift across repeated runs -- one capacity profile is ONE snapshot of
+"""Temporal validation -- turning single-run snapshots into a stable,
+conservative operating envelope.
+
+One capacity profile is a SINGLE-RUN OPERATING ENVELOPE: one snapshot of
 provider conditions (model + Bedrock serving + routing + quota + the
-conditions at measured_at). The same envelope measured today, tomorrow
-and tonight can differ; this module lines repeated profiles up per
-(model, experiment, workload/mix, sweep kind) and reports how stable the
-statistically confirmed envelope actually is:
+conditions at measured_at). The same envelope measured this morning,
+tonight and next week can differ. This module lines repeated profiles up
+per (model, experiment, workload/mix, sweep kind) and states, as a
+`temporal_validation` block, what the runs support together:
 
-  repeated_runs / days_observed   how much evidence there is over time
-  confirmed_runs                  runs that confirmed any point at all
-  confirmed / production values   per run, oldest first, with min/median/max
-  spread_pct                      (max - min) / median of confirmed values
-  stable                          spread_pct <= the threshold (default 20%)
-  conservative_production         the MINIMUM production value across runs
-                                  (v11+: recommendation.admission_envelope)
+  runs / days_observed / utc_hours_observed    how much evidence, over what time
+  confirmed_runs / unconfirmed_runs            runs that did / didn't confirm a point
+  confirmed_<unit>                             min / median / max / spread_pct
+  conservative_<unit>                          the MINIMUM confirmed value
+  conservative_admission                       the MINIMUM admission-envelope value
+  envelope                                     what the evidence supports:
+      single_run_operating_envelope      one run -- a snapshot, nothing about time
+      insufficient_temporal_evidence     fewer than min_runs runs or min_days days
+      stable_operating_envelope          every run confirmed, spread <= threshold
+      unstable_operating_envelope        otherwise -- use the conservative value
 
-A profile without `environment.measured_at` (schema < 10) still counts as
-a run, but not toward days_observed.
+This needs several INDEPENDENT runs at different times, so it is never
+produced by a single run_all.py invocation; scripts/drift.py computes it
+over whatever profiles exist. A profile without `environment.measured_at`
+(schema < 10) still counts as a run, but not toward days/hours observed.
 """
 from __future__ import annotations
 
@@ -47,7 +55,22 @@ def _envelope(kind: str, block: dict) -> Tuple[Optional[float], Optional[float]]
     return confirmed, production
 
 
-def summarize(paths: Iterable[str], *, stability_threshold_pct: float = 20.0) -> List[dict]:
+_UNITS = {"rate": ("rps", "sustained_rps"), "concurrency": ("concurrency", "max_inflight")}
+
+
+def _envelope_type(n_runs: int, n_days: int, all_confirmed: bool, spread: Optional[float], *,
+                   threshold: float, min_runs: int, min_days: int) -> str:
+    if n_runs <= 1:
+        return "single_run_operating_envelope"
+    if n_runs < min_runs or n_days < min_days:
+        return "insufficient_temporal_evidence"
+    if all_confirmed and spread is not None and spread <= threshold:
+        return "stable_operating_envelope"
+    return "unstable_operating_envelope"
+
+
+def summarize(paths: Iterable[str], *, stability_threshold_pct: float = 20.0, min_runs: int = 3,
+              min_days: int = 2) -> List[dict]:
     groups: Dict[tuple, List[dict]] = {}
     for path, profile in _profiles(paths):
         env = profile.get("environment") or {}
@@ -62,33 +85,40 @@ def summarize(paths: Iterable[str], *, stability_threshold_pct: float = 20.0) ->
                 confirmed, production = _envelope(kind, entry[kind])
                 if "recommendation" in entry:  # v11+: policy lives in the recommendation block
                     envelope = (entry["recommendation"] or {}).get("admission_envelope")
-                    production = None if envelope is None else envelope.get(
-                        "sustained_rps" if kind == "rate" else "max_inflight")
+                    production = None if envelope is None else envelope.get(_UNITS[kind][1])
                 groups.setdefault((model, profile.get("experiment"), scope, name, kind), []).append({
-                    "measured_at": measured, "confirmed": confirmed, "production": production,
+                    "measured_at": measured, "confirmed": confirmed, "admission": production,
                     "git_commit": env.get("git_commit"), "profile": path,
                 })
 
     report = []
     for (model, experiment, scope, name, kind), runs in sorted(groups.items(), key=lambda kv: tuple(map(str, kv[0]))):
         runs.sort(key=lambda r: r["measured_at"] or "")
+        unit, admission_key = _UNITS[kind]
         confirmed = [r["confirmed"] for r in runs if r["confirmed"] is not None]
-        production = [r["production"] for r in runs if r["production"] is not None]
-        days = {r["measured_at"][:10] for r in runs if r["measured_at"]}
-        entry = {
-            "model": model, "experiment": experiment, scope: name, "kind": kind,
-            "repeated_runs": len(runs), "days_observed": len(days),
-            "confirmed_runs": len(confirmed),
-            "runs": [{k: v for k, v in r.items() if v is not None} for r in runs],
+        admission = [r["admission"] for r in runs if r["admission"] is not None]
+        stamps = [r["measured_at"] for r in runs if r["measured_at"]]
+        days = {t[:10] for t in stamps}
+        tv: dict = {
+            "runs": len(runs), "days_observed": len(days),
+            "utc_hours_observed": sorted({int(t[11:13]) for t in stamps}),
+            "confirmed_runs": len(confirmed), "unconfirmed_runs": len(runs) - len(confirmed),
         }
+        spread = None
         if confirmed:
             med = statistics.median(confirmed)
             spread = round((max(confirmed) - min(confirmed)) / med * 100, 1) if med else None
-            entry["confirmed"] = {"min": min(confirmed), "median": med, "max": max(confirmed), "spread_pct": spread}
-            entry["stable"] = (len(confirmed) >= 2 and spread is not None and spread <= stability_threshold_pct)
-        if production:
-            entry["conservative_production"] = min(production)
-        if len(runs) < 2 or len(days) < 2:
-            entry["note"] = "fewer than 2 runs / days -- no evidence about stability over time yet"
-        report.append(entry)
+            tv[f"confirmed_{unit}"] = {"min": min(confirmed), "median": med, "max": max(confirmed),
+                                       "spread_pct": spread}
+            tv[f"conservative_{unit}"] = min(confirmed)
+        if admission:
+            tv["conservative_admission"] = {admission_key: min(admission)}
+        tv["envelope"] = _envelope_type(len(runs), len(days), len(confirmed) == len(runs), spread,
+                                        threshold=stability_threshold_pct, min_runs=min_runs, min_days=min_days)
+        tv["criteria"] = {"min_runs": min_runs, "min_days": min_days, "max_spread_pct": stability_threshold_pct}
+        report.append({
+            "model": model, "experiment": experiment, scope: name, "kind": kind,
+            "temporal_validation": tv,
+            "runs": [{k: v for k, v in r.items() if v is not None} for r in runs],
+        })
     return report

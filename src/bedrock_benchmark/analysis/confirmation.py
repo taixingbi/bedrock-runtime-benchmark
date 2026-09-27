@@ -26,6 +26,14 @@ Two rules keep the false-PASS rate at or below alpha = 1 - confidence:
    events would still clear the limit -- so later looks exist to absorb
    a stray throttle, not to retry until lucky.
 
+   In a mix each class's checks see only that class's requests, and the
+   class of each arrival is random, so look j is taken when EVERY group
+   has its own required count -- blend total and each class's ACTUAL n
+   -- not when the total reaches required / expected share (6,147 total
+   requests can hold only 3,600 short_chat ones). The class counts
+   depend only on the class draws, never on outcomes, so the look times
+   stay outcome-independent and the Bonferroni bound holds.
+
    FAIL may be declared at any time (an observed violation): stopping
    to fail can never create a false PASS.
 
@@ -65,34 +73,64 @@ class ConfirmationPlan:
     confidence: float           # the SLO's (family-wise) confidence, e.g. 0.95
     max_looks: int              # L
     per_look_confidence: float  # 1 - (1 - confidence) / L
-    look_schedule: List[int]    # N_1 < ... < N_L total confirmation requests
+    look_schedule: List[int]    # N_1 < ... < N_L total confirmation requests (expected, for a mix)
     max_repetitions: int
     max_requests: int
     max_duration_s: float
+    # Per look, the ACTUAL count each group needs: "total" (the blend's
+    # checks) and, in a mix, each class name. A look is taken only when
+    # every group has reached its count.
+    look_requirements: List[Dict[str, int]] = field(default_factory=list)
+
+    def look_reached(self, j: int, n: int, class_n: Optional[Dict[str, int]] = None) -> bool:
+        if not self.look_requirements:
+            return n >= self.look_schedule[j]
+        return all((n if group == TOTAL else (class_n or {}).get(group, 0)) >= need
+                   for group, need in self.look_requirements[j].items())
 
     def to_dict(self) -> dict:
-        return {
+        out = {
             "confidence": self.confidence, "max_looks": self.max_looks,
             "per_look_confidence": round(self.per_look_confidence, 6),
             "look_schedule_requests": self.look_schedule,
             "caps": {"max_repetitions": self.max_repetitions, "max_requests": self.max_requests,
                      "max_duration_s": self.max_duration_s},
         }
+        if any(len(r) > 1 for r in self.look_requirements):
+            out["look_requirements"] = self.look_requirements  # per class: actual n, not total x share
+        return out
+
+
+TOTAL = "total"  # the look-requirement group of blend (non-class) checks
 
 
 def plan_looks(limits: List[RateLimit], *, confidence: float, max_looks: int, max_repetitions: int,
                max_requests: int, max_duration_s: float) -> ConfirmationPlan:
-    """Look j (1-based) is at the total request count where every rate
-    check could still PASS with j - 1 bad events of its own -- fixed
-    before any confirmation data exists."""
+    """Look j (1-based) is where every rate check could still PASS with
+    j - 1 bad events of its own -- fixed before any confirmation data
+    exists. Requirements are per group (the blend's total, and each
+    class's own n); look_schedule is the total request count at which
+    they're EXPECTED to be met (class requirement / share), used for
+    caps and time estimates only."""
     per_look = 1.0 - (1.0 - confidence) / max_looks
-    schedule = []
+    groups: Dict[str, List[RateLimit]] = {}
+    for lim in limits:
+        group = lim.name.split(".", 1)[0] if "." in lim.name else TOTAL
+        groups.setdefault(group, []).append(lim)
+    requirements: List[Dict[str, int]] = []
+    schedule: List[int] = []
     for j in range(max_looks):
-        n = max(math.ceil(required_samples(j, lim.max_bad_rate, confidence=per_look) / lim.share) for lim in limits)
+        need = {g: max(required_samples(j, lim.max_bad_rate, confidence=per_look) for lim in ls)
+                for g, ls in groups.items()}
+        if requirements:  # strictly increasing per group
+            need = {g: max(v, requirements[-1][g] + 1) for g, v in need.items()}
+        requirements.append(need)
+        n = max(math.ceil(need[g] / groups[g][0].share) for g in need)
         schedule.append(max(n, schedule[-1] + 1) if schedule else n)
     return ConfirmationPlan(
         confidence=confidence, max_looks=max_looks, per_look_confidence=per_look, look_schedule=schedule,
         max_repetitions=max_repetitions, max_requests=max_requests, max_duration_s=max_duration_s,
+        look_requirements=requirements,
     )
 
 
@@ -125,15 +163,17 @@ class ConfirmationResult:
         return out
 
 
-def step(verdict: Verdict, n: int, looks_used: int, plan: ConfirmationPlan) -> Optional[tuple]:
+def step(verdict: Verdict, n: int, looks_used: int, plan: ConfirmationPlan,
+         class_n: Optional[Dict[str, int]] = None) -> Optional[tuple]:
     """Decide after one confirmation repetition. `verdict` must come from
     metrics whose bounds were computed at plan.per_look_confidence.
     Returns (verdict, stop_reason, looks_used) to stop, or None to keep
-    measuring. Looks are taken only when n crosses the next scheduled
-    sample size; FAIL is honored at any time."""
+    measuring. Looks are taken only when every group's count (n, and in
+    a mix each class's `class_n`) crosses the next scheduled requirement;
+    FAIL is honored at any time."""
     if verdict.verdict == FAIL:
         return FAIL, "observed_violation", looks_used
-    while looks_used < plan.max_looks and n >= plan.look_schedule[looks_used]:
+    while looks_used < plan.max_looks and plan.look_reached(looks_used, n, class_n):
         looks_used += 1  # this scheduled look is spent whether or not it passes
         if verdict.verdict == PASS:
             return PASS, "confirmed", looks_used

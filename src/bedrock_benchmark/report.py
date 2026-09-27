@@ -447,10 +447,13 @@ def build_capacity_profile(report: ExperimentReport) -> dict:
         # across time comes from comparing repeated runs (scripts/drift.py),
         # which reports runs / days_observed / spread per envelope.
         "validity": {
+            # One run is never more than this; a stable / conservative
+            # envelope needs repeated independent runs (scripts/drift.py).
+            "envelope": "single_run_operating_envelope",
             "repeated_runs": 1,
             "days_observed": 1,
-            "scope": "single run -- a snapshot of the provider conditions at measured_at; re-measure and "
-                     "compare with scripts/drift.py before treating it as stable",
+            "scope": "single run -- a snapshot of the provider conditions at measured_at; re-measure on "
+                     "other days and times and run scripts/drift.py for a temporal_validation",
         },
         "model": {
             "name": spec.model_name,

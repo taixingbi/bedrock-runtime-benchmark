@@ -304,7 +304,8 @@ async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress:
                         on_progress(subject.name, value, point)
                     verdict = point_verdict(point, class_look, **gate_look)
                     n, reps = point.metrics.n, len(state["windows"])
-                    decision = step(verdict, n, looks_used, plan)
+                    class_n = {name: m.n for name, m in point.class_metrics.items()} if is_mix else None
+                    decision = step(verdict, n, looks_used, plan, class_n)
                     if decision is not None:
                         v, reason, looks_used = decision
                     else:

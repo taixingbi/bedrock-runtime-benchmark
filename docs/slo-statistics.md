@@ -153,11 +153,17 @@ exactly at gold's limit (`tests/test_confirmation.py`):
 
 For gold (`max_looks: 2`, per-look 97.5%) the looks are at 3,688 and
 5,570 requests: 7 and 10 repetitions at the 6.67 rps ceiling (~600
-requests each) -- inside the default caps. In a mix each class sees
-only its share, so the plan scales its limits up: `mixed-capacity`'s
-gold class is 60% of requests, putting the looks at 6,147 and 9,284
-(11 and 16 repetitions) -- that experiment's caps are raised to match.
-More samples, never a looser SLO.
+requests each) -- inside the default caps. In a mix each class's checks
+see only that class's requests, so a look is taken when EVERY class has
+its own required count -- actual per-class n, not total x expected
+share: 6,147 random mix arrivals can hold only 3,600 `short_chat` ones.
+The plan records these as `look_requirements` (e.g. look 1: total
+3,688, short_chat 3,688, rag_answer 736, long_generation 368). Class
+counts depend only on the random class draws, never on outcomes, so the
+look times stay outcome-independent and the Bonferroni bound holds.
+`look_schedule_requests` (6,147 / 9,284 here) is only the expected total,
+used for caps and time estimates -- `mixed-capacity`'s caps are raised
+to fit it. More samples, never a looser SLO.
 
 **Caps -> INCONCLUSIVE, never a looser SLO.** `max_repetitions`
 (default 10) and `max_requests` (8,000) per candidate, `max_duration_s`

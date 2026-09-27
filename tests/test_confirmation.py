@@ -90,6 +90,29 @@ class StepTests(unittest.TestCase):
         self.assertFalse(reachable(_plan(max_requests=3000), **ok))
 
 
+class MixedLookTests(unittest.TestCase):
+    """A mix's look waits for each class's ACTUAL n, not total x share."""
+    def _plan(self):
+        limits = limits_for({"throttle_rate_max": 0.001, "success_rate_min": 0.995},
+                            {"chat": {"throttle_rate_max": 0.001, "success_rate_min": 0.995},
+                             "gen": {"throttle_rate_max": 0.01, "success_rate_min": 0.99}},
+                            {"chat": 0.6, "gen": 0.4})
+        return plan_looks(limits, confidence=0.95, max_looks=2, max_repetitions=20, max_requests=10**5,
+                          max_duration_s=1e6)
+
+    def test_requirements_are_per_class_counts(self):
+        plan = self._plan()
+        self.assertEqual(plan.look_requirements[0], {"total": 3688, "chat": 3688, "gen": 368})
+        self.assertEqual(plan.look_schedule[0], math.ceil(3688 / 0.6))  # expected total, for caps only
+
+    def test_total_at_the_expected_count_is_not_enough_if_a_class_is_short(self):
+        plan = self._plan()
+        n = plan.look_schedule[0]
+        self.assertIsNone(step(Verdict(PASS), n, 0, plan, {"chat": 3600, "gen": n - 3600}))
+        self.assertEqual(step(Verdict(PASS), n + 100, 0, plan, {"chat": 3688, "gen": n - 3588})[:2],
+                         (PASS, "confirmed"))
+
+
 class FixedSequenceTests(unittest.TestCase):
     def test_highest_of_the_leading_pass_run(self):
         r = lambda v, verdict: ConfirmationResult(v, verdict, "x")

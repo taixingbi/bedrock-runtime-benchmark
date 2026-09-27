@@ -96,8 +96,10 @@ caffeinate -i .venv/bin/python scripts/run_all.py --model nova-micro
 Useful variants: `--dry-run` (plan and time estimate, no AWS calls),
 `--slo-profile gold` (only workloads bound to a profile), one experiment
 path instead of all, `scripts/run.py <experiment>` for a single run.
-Results go to `results/run-all-<timestamp>/<model>/`. Compare repeated
-runs over time with:
+Results go to `results/run-all-<timestamp>/<model>/`. Each profile is a
+**single-run operating envelope**. Repeated runs on different days and
+times of day combine into a stable / conservative envelope
+(`temporal_validation`) with:
 
 ```bash
 .venv/bin/python scripts/drift.py results/
@@ -147,7 +149,7 @@ pre-decides the runtime policy that enforces it.
 
 | Doc | Covers |
 |---|---|
-| [methodology](docs/methodology.md) | core abstractions, SLO goodput, measurement window, input calibration and workload validation, mixed workloads, provenance and drift |
+| [methodology](docs/methodology.md) | core abstractions, SLO goodput, measurement window, input calibration and workload validation, mixed workloads, provenance and temporal validation |
 | [SLO statistics](docs/slo-statistics.md) | SLO profiles, PASS / FAIL / INCONCLUSIVE, exact bounds for latency / success / throttle, adaptive confirmation and false-PASS control |
 | [quota model](docs/quota-model.md) | provider ceiling, TPM reservation vs consumption, quota-relative sweeps, `fetch_quota.py` |
 | [capacity-profile schema](docs/capacity-profile-schema.md) | the deliverable and its consumer contract, measurement vs recommendation |

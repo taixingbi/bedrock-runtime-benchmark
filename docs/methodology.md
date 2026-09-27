@@ -2,7 +2,7 @@
 
 > Docs: [methodology](methodology.md) · [SLO statistics](slo-statistics.md) · [quota model](quota-model.md) · [capacity-profile schema](capacity-profile-schema.md) · [experiment design](experiment-design.md) · [correctness history](correctness-history.md) · [README](../README.md)
 
-How a sweep turns requests into metrics: core abstractions, the SLO-goodput headline metric, the measurement window, workload calibration and validation, mixed workloads, and provenance/drift across runs.
+How a sweep turns requests into metrics: core abstractions, the SLO-goodput headline metric, the measurement window, workload calibration and validation, mixed workloads, provenance, and temporal validation across runs.
 
 ## Core abstractions
 
@@ -63,12 +63,13 @@ Two populations, each unbiased for what it measures:
 - throughput, token throughput and SLO goodput use successes
   **completed** in the window, divided by the window length.
 
-In a concurrency sweep a 429 comes back in milliseconds, so a
-closed-loop worker that re-fires at once turns one throttle into a
-retry storm that dominates the throttle count. `throttle_pause_s`
-(1s in `concurrency-sweep`, 0 by default) makes a throttled worker wait
-before its next request; every 429 is still recorded and gated. Rate
-sweeps are open-loop and never pause.
+Concurrency sweeps measure pure closed-loop concurrency: a worker
+re-fires as soon as any response, a 429 included, returns. A client
+backoff after 429s (`throttle_pause_s`, 0 in every shipped experiment)
+lowers the offered load and flatters exactly the throttle rate
+`max_inflight` is derived from -- it belongs in a separate backoff
+experiment, never in the canonical capacity benchmark. Rate sweeps are
+open-loop and never pause.
 
 `repetitions: R` runs each point R times back to back (rate sweeps use
 seed+rep, so repetitions are independent Poisson samples). The SLO gate
@@ -154,7 +155,7 @@ It's valid for that mix's shares only -- a different traffic mix
 needs its own run. Classes measured only inside a mix get
 `observed`/`workload_validation`, never an isolated envelope.
 
-## Provenance and drift
+## Provenance and temporal validation
 
 A profile is ONE snapshot of the Bedrock inference-profile operating
 envelope under the provider conditions at measurement time. The safe
@@ -173,21 +174,49 @@ environment:
   git_dirty: false
   runtime: {python: 3.11.16, boto3: ..., botocore: ...}
 validity:
+  envelope: single_run_operating_envelope
   repeated_runs: 1
   days_observed: 1
-  scope: "single run -- ... compare with scripts/drift.py"
+  scope: "single run -- ... run scripts/drift.py for a temporal_validation"
 ```
 
-`scripts/drift.py` lines repeated profiles up per (model, experiment,
-workload/mix, sweep kind) and reports runs, days observed, the confirmed
-and production values over time (oldest first), min / median / max,
-their spread, whether the envelope is `stable` (spread <= `--threshold`,
-default 20%), and a `conservative_production` (the minimum across runs):
+The benchmark therefore produces two kinds of envelope:
+
+| Envelope | From | Says |
+|---|---|---|
+| **single-run operating envelope** | one `run_all.py` run (every profile) | what was confirmed under the conditions at `measured_at` |
+| **stable / conservative operating envelope** | `scripts/drift.py` over repeated, independent runs | what holds across days and times of day |
+
+The second needs data from several independent points in time, so a
+single run never produces it. `scripts/drift.py` lines repeated profiles
+up per (model, experiment, workload/mix, sweep kind) and emits a
+`temporal_validation` block:
+
+```yaml
+temporal_validation:
+  runs: 6
+  days_observed: 3
+  utc_hours_observed: [3, 9, 15, 22]      # morning / evening coverage
+  confirmed_runs: 6
+  unconfirmed_runs: 0
+  confirmed_rps: {min: 5.0, median: 6.67, max: 6.67, spread_pct: 25.0}
+  conservative_rps: 5.0                   # the minimum confirmed value
+  conservative_admission: {sustained_rps: 4.0}
+  envelope: unstable_operating_envelope
+  criteria: {min_runs: 3, min_days: 2, max_spread_pct: 20.0}
+```
+
+`envelope` is `single_run_operating_envelope` (one run),
+`insufficient_temporal_evidence` (fewer than `--min-runs` runs or
+`--min-days` days), `stable_operating_envelope` (every run confirmed
+and the spread is within `--threshold`), or
+`unstable_operating_envelope` -- then plan from the conservative value.
+A run that confirmed nothing is never stable. Compare only runs of the
+same methodology: each run lists its `git_commit`.
 
 ```bash
 .venv/bin/python scripts/drift.py results/
 ```
 
-Re-measuring on different days and times of day turns a snapshot into
-evidence about temporal stability -- and into a basis for choosing how
-often an envelope must be re-certified.
+The research workflow: fix a model and workloads, run every experiment,
+repeat mornings and evenings on different days, and study the drift.
