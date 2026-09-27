@@ -166,6 +166,20 @@ class RunExperimentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(entry["concurrency"]["statistically_confirmed"], 4)
         self.assertEqual(entry["recommendation"]["admission_envelope"]["max_inflight"], 3)  # floor(4 x 0.8)
 
+    async def test_cooldown_separates_discovery_from_confirmation(self):
+        from bedrock_benchmark.experiments.schema import ConfirmationConfig
+        target = BedrockConverseTarget(model_id="m", client=FakeBedrockRuntimeClient())
+        spec = _spec(sweep=SweepConfig(type="concurrency", values=[2]), repetitions=1, slo=self.LOOSE,
+                     confirmation=ConfirmationConfig(max_repetitions=20, max_requests=10**6, cooldown_s=0.3))
+
+        report = await run_experiment(spec, target=target)
+
+        results = sorted(report.all_results, key=lambda r: r.tags["window_start"])
+        discovery_end = max(r.tags["window_start"] for r in results if r.tags["phase"] == "discovery")
+        confirmation_start = min(r.tags["window_start"] for r in results if r.tags["phase"] == "confirmation")
+        # window_start = rep start + warmup: the gap spans one window, the cooldown and a warmup.
+        self.assertGreaterEqual(confirmation_start - discovery_end, spec.duration_s + 0.3 + spec.warmup_s - 0.02)
+
     async def test_without_confirmation_discovery_is_a_fixed_sequence_test(self):
         target = BedrockConverseTarget(model_id="m", client=FakeBedrockRuntimeClient())
         report = await run_experiment(_spec(slo=self.LOOSE), target=target)

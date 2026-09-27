@@ -24,7 +24,7 @@ from ..workload import WorkloadMix, WorkloadProfile
 class ConcurrencyRunner:
     def __init__(self, target: BedrockConverseTarget, profile: Union[WorkloadProfile, WorkloadMix], *,
                  concurrency: int, duration_s: float, stream: bool = True, warmup_s: float = 0.0,
-                 seed: Optional[int] = None):
+                 seed: Optional[int] = None, throttle_pause_s: float = 0.0):
         self._target = target
         self._profile = profile
         self._concurrency = concurrency
@@ -32,6 +32,9 @@ class ConcurrencyRunner:
         self._warmup_s = warmup_s
         self._stream = stream
         self._rng = random.Random(seed)  # only used to draw classes from a WorkloadMix
+        # After a 429 the worker waits this long before re-firing (never
+        # past the end of the window) -- see ExperimentSpec.throttle_pause_s.
+        self._throttle_pause_s = throttle_pause_s
         # Set by run(): the wall-clock span compute_run_metrics counts.
         # Workers keep firing only until the window closes; requests
         # still in flight then finish (drain) and are recorded, but a
@@ -58,6 +61,8 @@ class ConcurrencyRunner:
                 result.tags["workload"] = chosen.name
                 async with lock:
                     results.append(result)
+                if result.throttled and self._throttle_pause_s > 0:
+                    await asyncio.sleep(max(0.0, min(self._throttle_pause_s, end_at - time.perf_counter())))
 
         await asyncio.gather(*(worker() for _ in range(self._concurrency)))
         return results

@@ -8,6 +8,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import time
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Union
@@ -190,6 +191,7 @@ async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress:
                     runner = ConcurrencyRunner(
                         target, subject, concurrency=int(value), duration_s=spec.duration_s,
                         warmup_s=spec.warmup_s, stream=spec.stream, seed=seed,
+                        throttle_pause_s=spec.throttle_pause_s,
                     )
                 else:
                     runner = RateRunner(
@@ -278,6 +280,8 @@ async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress:
                 n: {**kw, "confidence": plan.per_look_confidence} for n, kw in class_gate.items()
             }
             candidates = _candidates(points, recommendation, spec, subject.name, cfg.candidates)
+            if candidates and cfg.cooldown_s > 0:
+                await asyncio.sleep(cfg.cooldown_s)  # let discovery's overload (e.g. saturation) clear
             per_rep_s = spec.warmup_s + spec.duration_s
             started = time.perf_counter()
             stopped = False

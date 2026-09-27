@@ -161,6 +161,9 @@ class ValidationTests(unittest.TestCase):
             MINIMAL + "quota_headroom: 1.0\n",
             MINIMAL + "confirmation: {max_looks: 0}\n",
             MINIMAL + "confirmation: {max_duration_s: 0}\n",
+            MINIMAL + "confirmation: {cooldown_s: -1}\n",
+            MINIMAL + "throttle_pause_s: -1\n",
+            MINIMAL.replace("{type: concurrency, values: [1]}", "{type: rate, values: [1]}") + "throttle_pause_s: 1\n",  # open-loop
         ]
         for text in bad:
             with self.subTest(text=text), self.assertRaises(ValueError):

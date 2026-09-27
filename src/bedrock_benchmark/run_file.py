@@ -55,7 +55,7 @@ def estimated_duration_s(spec: ExperimentSpec) -> float:
     candidates are assumed to run at the ceiling (a non-failing point
     can't sustain much more). Capped at min(max_duration_s, candidates
     x max_repetitions x (warmup + window)); without a known ceiling,
-    the cap itself.
+    the cap itself. Plus `cooldown_s` once per subject that confirms.
 
     Real runs take longer when a look is spent on a stray bad event
     (up to the caps) and shorter on an early FAIL. Drain time on top
@@ -64,7 +64,8 @@ def estimated_duration_s(spec: ExperimentSpec) -> float:
     discovery = spec.sweep.point_count * spec.repetitions * per_run
     total = 0.0
     for subject in spec.subject_names:
-        total += discovery + _confirmation_estimate_s(spec, subject, per_run)
+        confirm = _confirmation_estimate_s(spec, subject, per_run)
+        total += discovery + confirm + (spec.confirmation.cooldown_s if confirm > 0 else 0.0)
     return total
 
 

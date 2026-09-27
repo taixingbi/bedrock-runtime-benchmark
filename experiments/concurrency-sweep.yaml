@@ -41,12 +41,24 @@ provider_headroom: 0.20
 # INCONCLUSIVE against 0.1% (needs 2,995). Gold's looks are at 3,688 and
 # 5,570 requests: ~5 and 7 repetitions at the 6.67 rps ceiling. Caps end
 # in INCONCLUSIVE, never a looser SLO.
+#
+# candidates: 2 -- the two highest non-failing concurrencies (e.g. C=4
+# and C=6 when C=8 FAILs), tested lowest-first: C=6 is tried only if C=4
+# confirms, so a FAIL at C=6 still leaves C=4 confirmed. cooldown_s lets
+# the saturation point's overload clear before fresh data is collected.
 confirmation:
   max_looks: 2
   max_repetitions: 10
   max_requests: 8000
   max_duration_s: 1800
-  candidates: 1
+  candidates: 2
+  cooldown_s: 120
+
+# A worker that gets a 429 waits 1s before its next request: a 429
+# returns in milliseconds, so re-firing at once turns one throttled
+# worker into a retry storm that dominates the throttle count. Every 429
+# is still recorded and gated; the pause only stops the storm.
+throttle_pause_s: 1.0
 
 transport:
   max_connections: 64

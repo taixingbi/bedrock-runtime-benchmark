@@ -63,6 +63,13 @@ Two populations, each unbiased for what it measures:
 - throughput, token throughput and SLO goodput use successes
   **completed** in the window, divided by the window length.
 
+In a concurrency sweep a 429 comes back in milliseconds, so a
+closed-loop worker that re-fires at once turns one throttle into a
+retry storm that dominates the throttle count. `throttle_pause_s`
+(1s in `concurrency-sweep`, 0 by default) makes a throttled worker wait
+before its next request; every 429 is still recorded and gated. Rate
+sweeps are open-loop and never pause.
+
 `repetitions: R` runs each point R times back to back (rate sweeps use
 seed+rep, so repetitions are independent Poisson samples). The SLO gate
 reads the pooled windows; per-repetition goodput is kept in `evidence`

@@ -87,6 +87,11 @@ class ConfirmationConfig:
     # How many of the highest non-failing discovery points to confirm,
     # tested lowest-first (fixed sequence).
     candidates: int = 1
+    # Idle seconds between discovery and confirmation, so a discovery
+    # point that overran quota (e.g. the saturation point) doesn't leave
+    # the provider's token bucket drained for the first confirmation rep.
+    # Not counted against max_duration_s.
+    cooldown_s: float = 0.0
 
 
 @dataclass
@@ -126,6 +131,12 @@ class ExperimentSpec:
     # min(statistically_confirmed x (1 - provider_headroom), ceiling x (1 - quota_headroom)).
     quota_headroom: float = 0.10
     confirmation: Optional[ConfirmationConfig] = None
+    # Concurrency sweeps only: a closed-loop worker that gets a 429 waits
+    # this long before its next request instead of re-firing at once (a
+    # 429 returns in milliseconds, so without it one throttled worker
+    # becomes a retry storm that dominates the throttle count). The
+    # throttle is still recorded; 0 = re-fire immediately.
+    throttle_pause_s: float = 0.0
     seed: Optional[int] = None
     transport: TransportConfig = field(default_factory=TransportConfig)
     mix: Optional[MixConfig] = None
@@ -234,6 +245,7 @@ def load_experiment(
         provider_headroom=raw.get("provider_headroom", 0.20),
         quota_headroom=raw.get("quota_headroom", 0.10),
         confirmation=ConfirmationConfig(**raw["confirmation"]) if raw.get("confirmation") else None,
+        throttle_pause_s=raw.get("throttle_pause_s", 0.0),
         seed=raw.get("seed"),
         transport=TransportConfig(**transport),
         mix=MixConfig(**raw["mix"]) if raw.get("mix") else None,
@@ -339,9 +351,14 @@ def _validate(spec: ExperimentSpec) -> None:
             raise ValueError(f"{name} must be in [0, 1)")
     c = spec.confirmation
     if c is not None and (c.max_looks < 1 or c.max_repetitions < 1 or c.max_requests < 1
-                          or c.max_duration_s <= 0 or c.candidates < 1):
-        raise ValueError("confirmation: max_looks, max_repetitions, max_requests, candidates must be >= 1 "
-                         "and max_duration_s > 0")
+                          or c.max_duration_s <= 0 or c.candidates < 1 or c.cooldown_s < 0):
+        raise ValueError("confirmation: max_looks, max_repetitions, max_requests, candidates must be >= 1, "
+                         "max_duration_s > 0 and cooldown_s >= 0")
+    if spec.throttle_pause_s < 0:
+        raise ValueError(f"throttle_pause_s must be >= 0, got {spec.throttle_pause_s}")
+    if spec.throttle_pause_s > 0 and spec.sweep.type != "concurrency":
+        raise ValueError("throttle_pause_s applies to concurrency sweeps only -- a rate sweep's arrivals are "
+                         "open-loop and never wait on a response")
     if spec.repetitions < 1:
         raise ValueError(f"repetitions must be >= 1, got {spec.repetitions}")
     if spec.warmup_s < 0 or spec.duration_s <= 0:

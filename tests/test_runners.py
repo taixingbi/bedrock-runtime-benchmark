@@ -34,6 +34,22 @@ class ConcurrencyRunnerTests(unittest.IsolatedAsyncioTestCase):
         results = await runner.run()
         self.assertEqual(results, [])
 
+    async def test_throttled_worker_pauses_before_re_firing(self):
+        """A 429 returns at once: without a pause one worker fires
+        hundreds of requests in 0.3s; with a 0.1s pause, ~3."""
+        from .fakes import ThrottlingError
+        profile = WorkloadProfile(name="short", input_tokens=100, output_tokens=16)
+
+        async def run(pause: float) -> list:
+            target = BedrockConverseTarget(model_id="m", client=FakeBedrockRuntimeClient(error=ThrottlingError()))
+            return await ConcurrencyRunner(target, profile, concurrency=1, duration_s=0.3, stream=False,
+                                           throttle_pause_s=pause).run()
+
+        storm, paused = await run(0.0), await run(0.1)
+
+        self.assertTrue(all(r.throttled for r in storm + paused))  # every 429 still recorded
+        self.assertGreater(len(storm), 20)
+        self.assertLessEqual(len(paused), 4)
 
     async def test_window_excludes_warmup_and_drain_is_recorded(self):
         class SlowFakeTarget(BedrockConverseTarget):

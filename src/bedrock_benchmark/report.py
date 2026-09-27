@@ -493,6 +493,7 @@ def build_capacity_profile(report: ExperimentReport) -> dict:
         "measurement": {
             "warmup_s": spec.warmup_s,
             "window_s": spec.duration_s,
+            "throttle_pause_s": spec.throttle_pause_s,  # concurrency sweeps: a worker's wait after a 429
             "repetitions": spec.repetitions,
             # rates/percentiles over requests scheduled in the window
             # (drain included); throughput over completions in it.
@@ -506,7 +507,7 @@ def build_capacity_profile(report: ExperimentReport) -> dict:
             "confirmation": (
                 {"max_looks": spec.confirmation.max_looks, "max_repetitions": spec.confirmation.max_repetitions,
                  "max_requests": spec.confirmation.max_requests, "max_duration_s": spec.confirmation.max_duration_s,
-                 "candidates": spec.confirmation.candidates}
+                 "candidates": spec.confirmation.candidates, "cooldown_s": spec.confirmation.cooldown_s}
                 if spec.confirmation is not None else None
             ),
             "min_requests_to_resolve_throttle_slo": min_samples_to_resolve_rate(

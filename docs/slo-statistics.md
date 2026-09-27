@@ -131,6 +131,11 @@ allowance at best); for a concurrency sweep, the highest non-failing
 concurrency. With `candidates: N > 1` they're tested
 lowest-first and stop at the first one not confirmed (a fixed-sequence
 test, which keeps the family-wise error at alpha without splitting it).
+`concurrency-sweep` uses 2: with C=8 failing, C=4 is confirmed first and
+C=6 only if C=4 passes -- a FAIL at C=6 still leaves C=4 confirmed.
+`cooldown_s` idles between the phases so discovery's overload (the
+saturation point is the last one swept) doesn't bleed into the first
+confirmation repetition; it isn't counted against `max_duration_s`.
 
 **Adaptive, but no peeking.** Repetitions are added one at a time, but
 a PASS can only be declared at `max_looks` sample sizes fixed before any

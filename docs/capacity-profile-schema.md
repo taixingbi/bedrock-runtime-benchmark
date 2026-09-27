@@ -39,12 +39,13 @@ constraints:                                       # what every number was judge
 measurement:
   warmup_s: 10
   window_s: 90
+  throttle_pause_s: 0.0                     # concurrency sweeps: a worker's wait after a 429
   repetitions: 1
   window_policy: scheduled_in_window_for_rates__completed_in_window_for_throughput
   clock: monotonic_durations__wall_clock_timestamps
   gate: pass_fail_inconclusive              # every check is PASS / FAIL / INCONCLUSIVE
   confidence: 0.95
-  confirmation: {max_looks: 2, max_repetitions: 10, max_requests: 8000, max_duration_s: 1800, candidates: 1}
+  confirmation: {max_looks: 2, max_repetitions: 10, max_requests: 8000, max_duration_s: 1800, candidates: 1, cooldown_s: 0.0}
   min_requests_to_resolve_throttle_slo: 2995
 sweep: {type: rate, quota_fractions: [0.25, ...], relative_to: provider_ceiling}
 workload_classes:

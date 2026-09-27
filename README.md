@@ -63,7 +63,7 @@ there is no gateway config schema in this repo.
 
 | Experiment | Sweep | Per model |
 |---|---|---|
-| `concurrency-sweep` | concurrency 1/2/4/6/8, `short_chat` | ~22 min |
+| `concurrency-sweep` | concurrency 1/2/4/6/8, `short_chat`; confirms the top 2 non-failing concurrencies | ~34 min |
 | `rate-capacity` | 0.25x-2.5x of the provider ceiling, one workload per tier (`short_chat` gold, `rag_answer` silver, `long_generation` bronze) -- the canonical envelope run | ~57 min |
 | `mixed-capacity` | 0.25x-2.5x ceiling, 60% `short_chat` / 30% `rag_answer` / 10% `long_generation` | ~32 min |
 | `token-sweep` | the 4 most distinct catalog shapes x concurrency 1/2/4/6 | ~47 min |

@@ -46,7 +46,7 @@ every experiment x every model -> capacity-profile.yaml (judged against the cons
 
 | Experiment | Sweep | Per model |
 |---|---|---|
-| `concurrency-sweep.yaml` | concurrency 1/2/4/6/8, `short_chat` | ~22 min |
+| `concurrency-sweep.yaml` | concurrency 1/2/4/6/8, `short_chat`; confirms the top 2 non-failing concurrencies (e.g. C=4 then C=6), 1s pause after a 429 | ~34 min |
 | `rate-capacity.yaml` | 0.25x-2.5x ceiling, one workload per tier (`short_chat` gold, `rag_answer` silver, `long_generation` bronze) -- the canonical production-envelope run | ~57 min |
 | `mixed-capacity.yaml` | 0.25x-2.5x ceiling, 60% `short_chat` / 30% `rag_answer` / 10% `long_generation` | ~32 min |
 | `token-sweep.yaml` | 4 most distinct catalog shapes x concurrency 1/2/4/6 | ~47 min |
