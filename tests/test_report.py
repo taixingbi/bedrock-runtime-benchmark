@@ -52,11 +52,11 @@ class BuildCapacityProfileTests(unittest.TestCase):
         defaults.update(overrides)
         return ExperimentSpec(**defaults)
 
-    def test_schema_version_is_12(self):
+    def test_schema_version_is_13(self):
         spec = self._spec()
         report = ExperimentReport(spec=spec, profiles=[ProfileReport(workload_name="short", recommendation=None)])
         profile = build_capacity_profile(report)
-        self.assertEqual(profile["schema_version"], 12)
+        self.assertEqual(profile["schema_version"], 13)
 
     def test_concurrency_sweep_writes_a_concurrency_block_not_rate(self):
         spec = self._spec(sweep_type="concurrency")
@@ -355,6 +355,40 @@ class BuildCapacityProfileTests(unittest.TestCase):
         self.assertEqual(entry["concurrency"]["statistically_confirmed"], 2)  # the measurement is kept
         self.assertIsNone(entry["recommendation"]["admission_envelope"])
         self.assertIn("characterization experiment", entry["recommendation"]["reason"])
+
+
+    def test_summary_and_quota_bottleneck_diagnosis(self):
+        """The review's case: C=2 confirmed, C=4 clean but INCONCLUSIVE,
+        C=6 FAILs on throttling alone with latency still healthy ->
+        capacity 2, C=4 'not shown unsafe', bottleneck rpm_quota."""
+        from bedrock_benchmark.analysis.capacity import point_verdict, recommend
+        from bedrock_benchmark.ceiling import ProviderCeiling
+        spec = self._spec()
+        spec.provider_ceilings = {"short": ProviderCeiling(tokens_per_request=576, rpm_rps=6.6667, tpm_rps=231.48)}
+        gate = dict(throttle_rate_max=0.001, success_rate_min=0.995)
+        resolved = dict(throttle_rate_upper=0.0005, success_rate_lower=0.999)
+        c2 = SweepPoint(concurrency=2, rps=None, metrics=_metrics(n=4000, **resolved))
+        c4 = SweepPoint(concurrency=4, rps=None, metrics=_metrics(n=800, throttle_rate_upper=0.0037,
+                                                                     success_rate_lower=0.996))
+        c6 = SweepPoint(concurrency=6, rps=None, metrics=_metrics(
+            n=1185, success_rate=0.9536, throttle_rate=0.0464, measured_duration_s=120.0,
+            request_throughput_rps=6.6, throttle_rate_upper=0.06, success_rate_lower=0.94))
+        points = [c2, c4, c6]
+        rec = recommend(points, **gate)
+        report = ExperimentReport(spec=spec, profiles=[ProfileReport(
+            workload_name="short", points=points, recommendation=rec,
+            verdicts=[point_verdict(p, None, **gate) for p in points])])
+
+        entry = build_capacity_profile(report)["workload_classes"]["short"]
+
+        self.assertEqual(entry["concurrency"]["summary"],
+                         "statistically_confirmed=2 (the capacity) | observed_nonfailing=4 (INCONCLUSIVE -- no "
+                         "violation seen, too few requests to prove the SLO; not shown unsafe) | saturation=6 (first FAIL)")
+        d = entry["diagnosis"]
+        self.assertEqual((d["bottleneck"], d["saturation_at"]), ("rpm_quota", 6))
+        self.assertEqual(d["failed_checks"], ["success_rate", "throttle_rate"])
+        self.assertEqual((d["non_throttle_error_rate_at_saturation"], d["provider_ceiling_rps"]), (0.0, 6.6667))
+        self.assertIsNone(d["latency_healthy_at_observed_nonfailing"])  # no latency gate in this fixture
 
 
 if __name__ == "__main__":

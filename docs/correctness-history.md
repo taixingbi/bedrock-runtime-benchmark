@@ -256,3 +256,26 @@ artifact was ever used to actually inform a gateway config:
 40. **The benchmark read gateway infrastructure.** `fetch_quota.py`
     tried `bedrock-runtime-gateway`'s DynamoDB quota table before AWS
     Service Quotas. Removed: the producer depends only on Bedrock / AWS.
+
+## Schema v13 fixes
+
+41. **concurrency-sweep's confirmation budget couldn't fit both
+    candidates.** With C=6 failing, the fixed sequence confirms C=2
+    (~388 requests/rep -> 10 reps to gold's first look, ~1,300 s) before
+    C=4 (~5 reps, ~650 s): ~1,950 s against a 1,800 s cap, so C=4 always
+    ended INCONCLUSIVE (`max_duration`), and C=2's 10 reps were at the
+    10-rep cap. Now `max_duration_s: 3000`, `max_repetitions: 12`; the
+    candidate order is unchanged.
+42. **Rounding hid the real margin.** Confirmed C=2 at 20% headroom
+    floors to max_inflight 1 -- a 50% margin. Every admission envelope
+    now states `effective_headroom_fraction` next to the target
+    `headroom_fraction` (and `rounding_policy: floor`).
+43. **One number invited misreading.** Each rate/concurrency block has a
+    `summary` stating confirmed / observed / saturation together, so an
+    INCONCLUSIVE point in between reads as "not proven", not "unsafe".
+44. **No bottleneck stated.** Each class/mix has a `diagnosis`: the
+    bottleneck (`rpm_quota` / `tpm_quota` / `latency` /
+    `quota_and_latency` / `errors`) read from the saturation point's
+    failed checks, with throttle vs other error rates, attempted vs
+    served rate against the provider ceiling, and latency health at the
+    observed point.

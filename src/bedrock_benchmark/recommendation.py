@@ -28,6 +28,12 @@ recommendation; an INCONCLUSIVE point is never used):
 A max_inflight that floors to 0 (confirmed concurrency too small for the
 headroom, e.g. 1 x 0.8) is no recommendation either: 0 would admit
 nothing, and rounding up would silently drop the headroom.
+
+Rounding and the quota cap change the margin actually applied, so every
+envelope states both: headroom_fraction (the policy target) and
+effective_headroom_fraction (1 - recommended / confirmed). At small
+concurrency they differ a lot: confirmed C=2 -> floor(1.6) = 1 is a 50%
+margin, not 20%.
 """
 from __future__ import annotations
 
@@ -42,6 +48,10 @@ _NO_CONFIRMED = ("no statistically confirmed point -- nothing is recommended fro
 
 def _headroom(value: float, fraction: float) -> float:
     return round(value * (1.0 - fraction), 4)
+
+
+def _effective(recommended: float, confirmed: float) -> float:
+    return round(1.0 - recommended / confirmed, 4)
 
 
 def admission_envelope(
@@ -66,7 +76,9 @@ def admission_envelope(
             "max_inflight": max_inflight,
             "sustained_rps": None,
             "source": SOURCE,
-            "headroom_fraction": headroom,
+            "headroom_fraction": headroom,                               # policy target
+            "effective_headroom_fraction": _effective(max_inflight, confirmed),  # after rounding
+            "rounding_policy": "floor",
             "basis": {"statistically_confirmed_concurrency": confirmed},
         }}
 
@@ -83,6 +95,7 @@ def admission_envelope(
             "source": SOURCE,
             "headroom_fraction": headroom,
             "quota_headroom_fraction": quota_headroom,
+            "effective_headroom_fraction": _effective(sustained, confirmed),  # off the confirmed rate
             "binding": binding,  # measurement | provider_quota
             "basis": {
                 "statistically_confirmed_offered_rps": confirmed,

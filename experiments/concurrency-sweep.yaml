@@ -43,15 +43,23 @@ sweep:
 # 5,570 requests: ~5 and 7 repetitions at the 6.67 rps ceiling. Caps end
 # in INCONCLUSIVE, never a looser SLO.
 #
-# candidates: 2 -- the two highest non-failing concurrencies (e.g. C=4
-# and C=6 when C=8 FAILs), tested lowest-first: C=6 is tried only if C=4
-# confirms, so a FAIL at C=6 still leaves C=4 confirmed. cooldown_s lets
-# the saturation point's overload clear before fresh data is collected.
+# candidates: 2 -- the two highest non-failing concurrencies (e.g. C=2
+# and C=4 when C=6 FAILs), tested lowest-first (fixed sequence -- keep
+# this order; don't skip to the higher one to save time): C=4 is tried
+# only if C=2 confirms, so a FAIL at C=4 still leaves C=2 confirmed.
+# cooldown_s lets the saturation point's overload clear first.
+#
+# Budget for BOTH candidates (gold, 120s window + 10s warmup per rep):
+#   C=2  ~388 req/rep -> 3,688 at the first look = 10 reps  ~1,300s
+#   C=4  ~796 req/rep -> 3,688 = 5 reps (5,570 = 7 after a stray event) ~650-910s
+# = ~1,950-2,210s: 1,800 left C=4 INCONCLUSIVE (max_duration) every
+# time. 3,000s resolves both; max_repetitions 12 keeps C=2 reachable
+# when a rep comes in under 369 requests. More SAMPLES, same SLO.
 confirmation:
   max_looks: 2
-  max_repetitions: 10
+  max_repetitions: 12
   max_requests: 8000
-  max_duration_s: 1800
+  max_duration_s: 3000
   candidates: 2
   cooldown_s: 120
 

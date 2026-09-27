@@ -75,7 +75,7 @@ from importlib import metadata
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from .analysis.capacity import INCONCLUSIVE, PASS, Recommendation
+from .analysis.capacity import FAIL, INCONCLUSIVE, PASS, Recommendation
 from .analysis.metrics import DEFAULT_CONFIDENCE, RunMetrics, min_samples_to_resolve_rate, percentile
 from .experiments.executor import ExperimentReport
 from .recommendation import admission_envelope
@@ -197,6 +197,76 @@ _STOP_HINTS = {
     "max_duration": "raise the confirmation caps to collect more samples",
     "unreachable_within_caps": "its next look can't be reached within the confirmation caps -- raise them",
 }
+
+
+_LATENCY_CHECKS = ("ttft_p95", "tpot_p95", "latency_p95")
+
+
+def _summary(rec: Recommendation) -> str:
+    """The three numbers side by side, so an INCONCLUSIVE observed point
+    between capacity and saturation reads as 'not proven' -- never as
+    'unsafe', and never as the capacity."""
+    confirmed = _value(rec.confirmed_point) if rec.confirmed_point is not None else None
+    observed = _value(rec.point)
+    parts = [f"statistically_confirmed={confirmed if confirmed is not None else 'none'} (the capacity)"]
+    if confirmed is None or observed != confirmed:
+        note = {"INCONCLUSIVE": "INCONCLUSIVE -- no violation seen, too few requests to prove the SLO; not shown unsafe",
+                "PASS": "PASS in discovery, not confirmed on independent data"}.get(rec.verdict.verdict, rec.verdict.verdict)
+        parts.append(f"observed_nonfailing={observed} ({note})")
+    sat = _value(rec.saturation_point) if rec.saturation_point is not None else None
+    parts.append(f"saturation={sat} (first FAIL)" if sat is not None else f"saturation={rec.analysis.status}")
+    return " | ".join(parts)
+
+
+def _diagnosis(rec: Recommendation, profile_report, ceiling) -> dict:
+    """What limits capacity -- read from the saturation point's FAILED
+    checks, not guessed from one number:
+
+      rpm_quota / tpm_quota   throttling (and only throttle-caused
+                              failures), latency still within SLO
+      latency                 a latency check failed, no throttling
+      quota_and_latency       both
+      errors                  non-throttle failures
+      not_reached / unresolved  no clean saturation point to read
+    """
+    latency_at_observed = {
+        c.name: {"observed": c.observed, "threshold": c.threshold, "verdict": c.verdict}
+        for c in rec.verdict.checks if c.name in _LATENCY_CHECKS
+    }
+    out: dict = {"latency_at_observed_nonfailing": latency_at_observed,
+                 # None when no latency check is configured -- not vacuously healthy.
+                 "latency_healthy_at_observed_nonfailing": (
+                     all(c["verdict"] != FAIL for c in latency_at_observed.values()) if latency_at_observed else None)}
+    sat = rec.saturation_point
+    if sat is None:
+        out["bottleneck"] = rec.analysis.status  # not_reached | unresolved
+        return out
+    verdict = next((v for p, v in zip(profile_report.points, profile_report.verdicts) if p is sat), None)
+    failed = sorted({c.name.split(".")[-1] for c in (verdict.checks if verdict else []) if c.verdict == FAIL})
+    m = sat.metrics
+    other_errors = max(0.0, round(1.0 - m.success_rate - m.throttle_rate, 4))
+    throttled = "throttle_rate" in failed or ("success_rate" in failed and m.throttle_rate > 0 and other_errors == 0)
+    slow = any(name in _LATENCY_CHECKS for name in failed)
+    if throttled and slow:
+        bottleneck = "quota_and_latency"
+    elif throttled:
+        bottleneck = f"{ceiling.binding}_quota" if ceiling is not None else "provider_throttling"
+    elif slow:
+        bottleneck = "latency"
+    else:
+        bottleneck = "errors"
+    attempted = round(m.n / m.measured_duration_s, 4) if m.measured_duration_s else None
+    out.update({
+        "bottleneck": bottleneck,
+        "saturation_at": _value(sat),
+        "failed_checks": failed,
+        "throttle_rate_at_saturation": m.throttle_rate,
+        "non_throttle_error_rate_at_saturation": other_errors,
+        "attempted_rps_at_saturation": attempted,       # requests sent per second
+        "served_rps_at_saturation": m.request_throughput_rps,  # successes completed per second
+        "provider_ceiling_rps": round(ceiling.rps, 4) if ceiling is not None and ceiling.rps else None,
+    })
+    return out
 
 
 def _characterization() -> dict:
@@ -343,6 +413,10 @@ def _envelope(entry: dict, profile_report, spec) -> None:
     else:
         entry["rate"] = _rate_block(rec, ceiling_rps=ceiling_rps)
         confirmed = rec.confirmed_point.rps if rec.confirmed_point is not None else None
+    block = entry["concurrency" if spec.sweep.type == "concurrency" else "rate"]
+    block["summary"] = _summary(rec)
+    # MEASUREMENT interpretation: what limits this envelope.
+    entry["diagnosis"] = _diagnosis(rec, profile_report, ceiling)
     # POLICY, kept apart from the measurement above: the confirmed point
     # after this benchmark's safety headroom (recommendation.py) -- only
     # from a reference experiment.
@@ -450,7 +524,7 @@ def build_capacity_profile(report: ExperimentReport) -> dict:
 
     confidence = spec.slo.confidence or DEFAULT_CONFIDENCE
     return {
-        "schema_version": 12,
+        "schema_version": 13,
         "experiment": spec.name,
         # reference: carries production admission envelopes;
         # characterization: measurement only (recommendation always null).

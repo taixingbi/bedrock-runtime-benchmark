@@ -2,20 +2,20 @@
 
 > Docs: [methodology](methodology.md) · [SLO statistics](slo-statistics.md) · [quota model](quota-model.md) · [capacity-profile schema](capacity-profile-schema.md) · [experiment design](experiment-design.md) · [correctness history](correctness-history.md) · [README](../README.md)
 
-The benchmark's one deliverable and its contract with consumers. Schema version 12.
+The benchmark's one deliverable and its contract with consumers. Schema version 13.
 
 ## The profile
 
 Each run writes raw per-request JSONL and a `capacity-profile.yaml`
 artifact under `results/` (gitignored -- these are real measurement outputs, not
-checked-in fixtures). The `capacity-profile.yaml` schema (v12 -- see
+checked-in fixtures). The `capacity-profile.yaml` schema (v13 -- see
 [correctness history](correctness-history.md) for why `rate` and `concurrency` are always
 kept in separate blocks, why the rate block separates offered load
 from goodput, and why there's no `global_max_concurrency`). A
 rate-capacity result:
 
 ```yaml
-schema_version: 12
+schema_version: 13
 experiment: rate-capacity
 purpose: reference                                 # or characterization -- then recommendation is always null
 environment:                                       # provenance -- see methodology.md, "Provenance and temporal validation"
@@ -68,13 +68,26 @@ workload_classes:
       provider_ceiling_rps: 6.6667          # from the quota
       saturation_offered_rps: 13.3333
       saturation_status: resolved           # or not_reached / unresolved (+ unstable_region)
+      summary: "statistically_confirmed=5.0 (the capacity) | observed_nonfailing=8.3333 (INCONCLUSIVE -- ...; not shown unsafe) | saturation=13.3333 (first FAIL)"
+    diagnosis:                              # MEASUREMENT interpretation: what limits the envelope
+      bottleneck: rpm_quota                 # tpm_quota | latency | quota_and_latency | errors | not_reached | unresolved
+      saturation_at: 13.3333
+      failed_checks: [success_rate, throttle_rate]
+      throttle_rate_at_saturation: 0.0464
+      non_throttle_error_rate_at_saturation: 0.0
+      attempted_rps_at_saturation: 9.9
+      served_rps_at_saturation: 6.6
+      provider_ceiling_rps: 6.6667
+      latency_healthy_at_observed_nonfailing: true
+      latency_at_observed_nonfailing: {ttft_p95: {observed: 488, threshold: 800, verdict: PASS}, ...}
     recommendation:                         # POLICY, kept apart from the measurement above
       admission_envelope:                   # null (+ reason) when nothing is statistically confirmed
         max_inflight: null                  # set by concurrency sweeps
         sustained_rps: 4.0                  # min(CONFIRMED x 0.8, ceiling x 0.9)
         source: statistically_confirmed_measurement
-        headroom_fraction: 0.2
+        headroom_fraction: 0.2              # policy target
         quota_headroom_fraction: 0.1
+        effective_headroom_fraction: 0.2    # 1 - sustained_rps / confirmed, after the quota cap
         binding: measurement                # or provider_quota
         basis: {statistically_confirmed_offered_rps: 5.0, provider_ceiling_rps: 6.6667}
     sweep_points: [{value: 1.6667, verdict: INCONCLUSIVE, phase: discovery, n: 150, inconclusive: [...]}, ...]
@@ -129,7 +142,11 @@ test and its `n < required_n`); an observed or INCONCLUSIVE point is
 never used.
 A `max_inflight` that floors to 0 (e.g. confirmed C=1 with 20% headroom)
 is also null -- 0 would admit nothing, and rounding up would drop the
-headroom. The quota term matters because a rate sweep deliberately goes
+headroom. Because rounding (and the quota cap) change the margin, every
+envelope states `headroom_fraction` (the policy target) AND
+`effective_headroom_fraction` (1 - recommended / confirmed), plus
+`rounding_policy: floor` for concurrency: confirmed C=2 -> max_inflight
+1 is a 50% effective margin, C=4 -> 3 is 25%. The quota term matters because a rate sweep deliberately goes
 above quota and a short window can pass there on burst allowance --
 observed serving, not a sustainable rate; `binding` says which term won.
 Headroom defaults (20% off the measurement, 10% off the quota) are

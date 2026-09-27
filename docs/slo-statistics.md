@@ -131,8 +131,12 @@ allowance at best); for a concurrency sweep, the highest non-failing
 concurrency. With `candidates: N > 1` they're tested
 lowest-first and stop at the first one not confirmed (a fixed-sequence
 test, which keeps the family-wise error at alpha without splitting it).
-`concurrency-sweep` uses 2: with C=8 failing, C=4 is confirmed first and
-C=6 only if C=4 passes -- a FAIL at C=6 still leaves C=4 confirmed.
+`concurrency-sweep` uses 2: with C=6 failing, C=2 is confirmed first and
+C=4 only if C=2 passes -- a FAIL at C=4 still leaves C=2 confirmed. Keep
+that order even though the lower candidate is the slow one (C=2 needs
+~10 repetitions to reach gold's 3,688, C=4 ~5): the budget must fit
+both, so `concurrency-sweep` has `max_duration_s: 3000` and
+`max_repetitions: 12` -- at 1,800 s C=4 always ran out of time.
 `cooldown_s` idles between the phases so discovery's overload (the
 saturation point is the last one swept) doesn't bleed into the first
 confirmation repetition; it isn't counted against `max_duration_s`.

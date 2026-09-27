@@ -30,7 +30,20 @@ class AdmissionEnvelopeTests(unittest.TestCase):
     def test_confirmed_concurrency(self):
         env = admission_envelope("concurrency", 5, headroom=0.2)["admission_envelope"]
         self.assertEqual(env, {"max_inflight": 4, "sustained_rps": None, "source": SOURCE,
-                               "headroom_fraction": 0.2, "basis": {"statistically_confirmed_concurrency": 5}})
+                               "headroom_fraction": 0.2, "effective_headroom_fraction": 0.2,
+                               "rounding_policy": "floor", "basis": {"statistically_confirmed_concurrency": 5}})
+
+    def test_small_concurrency_reports_the_effective_headroom_after_rounding(self):
+        """Confirmed C=2 at a 20% target floors to 1: a 50% margin."""
+        env = admission_envelope("concurrency", 2, headroom=0.2)["admission_envelope"]
+        self.assertEqual((env["max_inflight"], env["headroom_fraction"], env["effective_headroom_fraction"]),
+                         (1, 0.2, 0.5))
+
+    def test_rate_effective_headroom_includes_the_quota_cap(self):
+        """Confirmed 9 rps above a 6.67 ceiling: quota binds at 6.0, a 33% margin off 9."""
+        env = admission_envelope("rate", 9.0, headroom=0.2, quota_headroom=0.1,
+                                 provider_ceiling_rps=6.6667)["admission_envelope"]
+        self.assertEqual((env["binding"], env["effective_headroom_fraction"]), ("provider_quota", 0.3333))
 
     def test_max_inflight_is_floored_to_an_integer(self):
         self.assertEqual(admission_envelope("concurrency", 6, headroom=0.2)["admission_envelope"]["max_inflight"], 4)
