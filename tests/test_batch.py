@@ -24,7 +24,9 @@ OTHER = ModelConfig(name="other", model_id="m.other-v1:0", quota_rpm=1200, quota
 def _experiment(name: str, **extra) -> dict:
     spec = {
         "name": name,
-        "purpose": "reference",
+        # characterization: these tests exercise batch orchestration, and a
+        # reference experiment would require a confirmation phase.
+        "purpose": "characterization",
         "workloads": ["short"],
         "sweep": {"type": "rate", "quota_fractions": [1.0]},
         "warmup_s": 0.02, "duration_s": 0.1, "stream": False, "seed": 1,
@@ -162,9 +164,9 @@ class SloProfileFilterBatchTests(unittest.TestCase):
 class PlanTests(unittest.TestCase):
     def test_estimate_counts_subjects_points_repetitions_warmup_and_window(self):
         micro = load_models(names=["nova-micro"])[0]
-        spec = load_experiment("experiments/token-sweep.yaml", micro)  # 4 workloads x 8 points (upper bound)
+        spec = load_experiment("experiments/token-sweep.yaml", micro)  # 4 workloads x (8 + 3 refinement) points
         spec.confirmation = None
-        self.assertEqual(estimated_duration_s(spec), 4 * 8 * 1 * (10 + 90))
+        self.assertEqual(estimated_duration_s(spec), 4 * (8 + 3) * 1 * (10 + 90))
         mixed = load_experiment("experiments/mixed-capacity.yaml", micro)  # a mix is ONE subject
         mixed.confirmation = None
         self.assertEqual(estimated_duration_s(mixed), 1 * 8 * 1 * (10 + 90))
@@ -175,7 +177,7 @@ class PlanTests(unittest.TestCase):
         gold 3,688 -> 7 reps, silver 736 -> 2 (x2 workloads), bronze 368 -> 1."""
         micro = load_models(names=["nova-micro"])[0]
         spec = load_experiment("experiments/token-sweep.yaml", micro)
-        self.assertEqual(estimated_duration_s(spec), 4 * 8 * 100 + (7 + 2 + 2 + 1) * 100)
+        self.assertEqual(estimated_duration_s(spec), 4 * (8 + 3) * 100 + (7 + 2 + 2 + 1) * 100)
 
     def test_mix_confirmation_estimate_scales_each_class_by_its_share(self):
         """short_chat (gold) is 60% of the mix, so the first look is at

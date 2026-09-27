@@ -62,7 +62,7 @@ def estimated_duration_s(spec: ExperimentSpec) -> float:
     (up to the caps) and shorter on an early FAIL. Drain time on top
     depends on real latency, so it isn't counted."""
     per_run = spec.warmup_s + spec.duration_s
-    discovery = spec.sweep.point_count * spec.repetitions * per_run
+    discovery = (spec.sweep.point_count + (spec.sweep.refine_max_points or 0)) * spec.repetitions * per_run
     total = 0.0
     for subject in spec.subject_names:
         confirm = _confirmation_estimate_s(spec, subject, per_run)
@@ -267,6 +267,11 @@ def run_file(
             print(f"\nwarning: {subject} points {entry['client_limited_points']} queued for client threads "
                   f"(peak outstanding > executor_workers={capacity_profile['transport']['executor_workers']}) "
                   f"-- excluded from the recommendation; raise transport.max_connections")
+        generator = entry.get("load_generator")
+        if generator and not generator["valid"]:
+            print(f"\nwarning: {subject} load generator lagged (p99 {generator['worst_point']['lag_p99_ms']} ms at "
+                  f"{generator['worst_point']['value']} > {generator['limit_p99_ms']} ms) -- arrivals started late, "
+                  f"so the offered load wasn't what was scheduled; this run measured the client too")
 
     print(f"\nraw results:      {jsonl_path}")
     print(f"capacity profile: {profile_path}")

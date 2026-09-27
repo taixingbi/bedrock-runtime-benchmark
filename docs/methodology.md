@@ -91,6 +91,14 @@ lowers the offered load and flatters exactly the throttle rate
 experiment, never in the canonical capacity benchmark. Rate sweeps are
 open-loop and never pause.
 
+**Load-generator validity.** An open-loop sweep assumes an arrival
+scheduled at t actually starts at ~t. `started_at - scheduled_at` is the
+client's own delay (event-loop lag + thread-pool queueing); every class
+and mix reports it as `load_generator` (p50 / p95 / p99 / max, and the
+worst point's p99) with `valid: false` when any point's p99 exceeds
+50 ms -- then that run measured the client, not only Bedrock. It sits
+next to `client_limited_points` (the thread-pool check).
+
 `repetitions: R` runs each point R times back to back (rate sweeps use
 seed+rep, so repetitions are independent Poisson samples). The SLO gate
 reads the pooled windows; per-repetition goodput is kept in `evidence`

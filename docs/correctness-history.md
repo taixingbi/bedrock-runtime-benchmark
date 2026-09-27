@@ -289,3 +289,16 @@ artifact was ever used to actually inform a gateway config:
 46. **git_commit was read when the report was written**, so a commit
     made during a long run was attributed to it (a run started at
     67fb23b recorded b10099f). It's now captured once at process start.
+47. **The capacity module still described goodput selection.**
+    `analysis/capacity.py`'s docstring said "pick max SLO-goodput ->
+    apply headroom"; it now states capacity = highest statistically
+    confirmed SLO-compliant point, measurement only.
+48. **"Confirmation is the only source of capacity" was a convention.**
+    A reference experiment without `confirmation:` would have produced
+    a discovery-only confirmed point. The loader now rejects it.
+49. **Capacity was quantized to the coarse grid.** Concurrency sweeps
+    can bisect the bracket around saturation (`sweep.refine_max_points`,
+    `phase: refinement`) before confirmation.
+50. **Arrival-scheduler lag was unchecked.** Each class/mix reports
+    `load_generator` scheduling lag with a `valid` flag (worst point's
+    p99 <= 50 ms). Additive to v13 -- no consumer field changed.

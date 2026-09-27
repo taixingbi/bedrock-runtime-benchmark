@@ -269,6 +269,38 @@ def _diagnosis(rec: Recommendation, profile_report, ceiling) -> dict:
     return out
 
 
+# Open-loop validity: an arrival scheduled at t must actually start at
+# ~t. If the client's event loop or thread pool falls behind, the offered
+# load isn't what was intended and the sweep measures the client, not
+# Bedrock. p99 of (started_at - scheduled_at) above this -> invalid.
+LOAD_GENERATOR_LAG_P99_LIMIT_MS = 50.0
+
+
+def _load_generator(results: List[RequestResult]) -> Optional[dict]:
+    lags = sorted(max(0.0, (r.started_at - r.scheduled_at) * 1000.0)
+                  for r in results if r.tags.get("measured") and r.scheduled_at and r.started_at)
+    if not lags:
+        return None
+    by_point: Dict[tuple, List[float]] = {}
+    for r in results:
+        if r.tags.get("measured") and r.scheduled_at and r.started_at:
+            by_point.setdefault((r.tags.get("phase"), r.tags.get("sweep_value")), []).append(
+                max(0.0, (r.started_at - r.scheduled_at) * 1000.0))
+    (phase, value), worst = max(by_point.items(), key=lambda kv: percentile(sorted(kv[1]), 99))
+    p99 = percentile(lags, 99)
+    return {
+        "scheduling_lag_p50_ms": round(percentile(lags, 50), 2),
+        "scheduling_lag_p95_ms": round(percentile(lags, 95), 2),
+        "scheduling_lag_p99_ms": round(p99, 2),
+        "max_lag_ms": round(lags[-1], 2),
+        "worst_point": {"phase": phase, "value": value, "lag_p99_ms": round(percentile(sorted(worst), 99), 2)},
+        "limit_p99_ms": LOAD_GENERATOR_LAG_P99_LIMIT_MS,
+        # Every point's p99, not just the pooled one: one lagging point
+        # is enough to make that point's offered load untrustworthy.
+        "valid": percentile(sorted(worst), 99) <= LOAD_GENERATOR_LAG_P99_LIMIT_MS,
+    }
+
+
 def _characterization() -> dict:
     return {"admission_envelope": None,
             "reason": "characterization experiment -- measures how token shape / context move the envelope; "
@@ -371,7 +403,7 @@ def _slo_dict(slo) -> dict:
     }
 
 
-def _envelope(entry: dict, profile_report, spec) -> None:
+def _envelope(entry: dict, profile_report, spec, report_results: List[RequestResult]) -> None:
     subject = profile_report.workload_name
     if subject in spec.provider_ceilings:
         entry["provider_constraints"] = spec.provider_ceilings[subject].to_dict()
@@ -381,6 +413,11 @@ def _envelope(entry: dict, profile_report, spec) -> None:
     limited = [p.concurrency if p.concurrency is not None else p.rps for p in points if p.client_limited]
     if limited:
         entry["client_limited_points"] = limited
+    # Did the client deliver the arrivals it scheduled? (started_at -
+    # scheduled_at: event-loop lag + thread-pool queueing.)
+    generator = _load_generator([r for r in report_results if r.tags.get("subject") == subject])
+    if generator is not None:
+        entry["load_generator"] = generator
     if profile_report.verdicts:
         # Discovery only: picks candidates and shows the transition region.
         entry["sweep_points"] = _sweep_points(profile_report)
@@ -513,7 +550,7 @@ def build_capacity_profile(report: ExperimentReport) -> dict:
         }
         profile_report = by_name.get(workload.name)
         if profile_report is not None and profile_report.mix_shares is None:
-            _envelope(entry, profile_report, spec)
+            _envelope(entry, profile_report, spec, report.all_results)
         workload_classes[workload.name] = entry
 
     mixed: Dict[str, dict] = {}
@@ -521,7 +558,7 @@ def build_capacity_profile(report: ExperimentReport) -> dict:
         if profile_report.mix_shares is None:
             continue
         entry = {"shares": {k: round(v, 4) for k, v in profile_report.mix_shares.items()}}
-        _envelope(entry, profile_report, spec)
+        _envelope(entry, profile_report, spec, report.all_results)
         rec = profile_report.recommendation
         if rec is not None and rec.confirmed_point is not None:
             # Per class at the CONFIRMED point -- the capacity -- not the

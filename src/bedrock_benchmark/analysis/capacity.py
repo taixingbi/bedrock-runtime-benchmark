@@ -1,10 +1,21 @@
-"""Recommendation engine, deliberately rule-based, not a "black box"
-score: a config recommendation this repo hands to a gateway's own
-control-plane config MUST be able to say exactly why it picked what it
-picked. The pipeline is always:
+"""Measurement analysis -- deliberately rule-based, not a "black box"
+score: every number must say exactly why it is what it is.
 
-    measurements -> SLO filtering -> pick max SLO-goodput among the
-    survivors -> apply headroom -> recommended operating envelope
+    capacity = the highest STATISTICALLY CONFIRMED SLO-compliant
+               operating point
+
+The pipeline:
+
+    discovery sweep  -> PASS / FAIL / INCONCLUSIVE per point (evaluate)
+                     -> observed_nonfailing (highest point before the
+                        first FAIL), saturation (first FAIL), candidates
+    confirmation     -> statistically_confirmed = the capacity, from
+                        fresh independent data (confirmation.py)
+
+SLO goodput is reported at every point as an OBSERVED metric; it never
+selects anything. No headroom is applied here -- this module is
+measurement only; policy (headroom -> admission envelope) lives in
+recommendation.py.
 
 Never: fit a curve, guess a knee, or otherwise infer a number no single
 measured point actually produced.

@@ -91,7 +91,15 @@ workload_classes:
         effective_headroom_fraction: 0.2    # 1 - sustained_rps / confirmed, after the quota cap
         binding: measurement                # or provider_quota
         basis: {statistically_confirmed_offered_rps: 5.0, provider_ceiling_rps: 6.6667}
-    sweep_points: [{value: 1.6667, verdict: INCONCLUSIVE, phase: discovery, n: 150, inconclusive: [...]}, ...]
+    sweep_points: [{value: 1.6667, verdict: INCONCLUSIVE, phase: discovery, n: 150, inconclusive: [...]}, ...]  # phase: discovery | refinement
+    load_generator:                         # open-loop validity: did arrivals start when scheduled?
+      scheduling_lag_p50_ms: 0.4
+      scheduling_lag_p95_ms: 1.1
+      scheduling_lag_p99_ms: 2.3
+      max_lag_ms: 9.8
+      worst_point: {phase: discovery, value: 16.6667, lag_p99_ms: 3.1}
+      limit_p99_ms: 50.0
+      valid: true                           # false: the client lagged -- the run measured the client too
     evidence: {n: 1740, n_throttled: 0, throttle_rate_upper: 0.0017, verdict: {...}, peak_outstanding: 9, ...}
 recommendation_policy: {headroom_fraction: 0.20, quota_headroom_fraction: 0.10}   # constraints/recommendation-policy.yaml
 transport: {max_connections: 64, executor_workers: 64, total_max_attempts: 1, connect_timeout_s: 5, read_timeout_s: 60}

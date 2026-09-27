@@ -69,6 +69,13 @@ class SweepConfig:
     # non-monotonic check -- without spending windows on a throttle storm
     # far past it. Values not reached are reported as skipped.
     stop_after_fails: Optional[int] = None
+    # Concurrency sweeps only: after the coarse sweep brackets saturation
+    # (last non-failing L, first FAIL F), bisect between them with up to
+    # this many extra points (None = no refinement). 8 PASS / 12 FAIL
+    # tests 10, then 11 or 9 -- so the candidate is the real edge, not
+    # the coarse grid point below it. Refinement is still DISCOVERY data:
+    # it only selects candidates, never confirms.
+    refine_max_points: Optional[int] = None
 
     @property
     def point_count(self) -> int:
@@ -312,6 +319,10 @@ def _purpose(raw: dict, workloads: List[WorkloadProfile], path: str, workloads_f
         raise ValueError(f"{path}: needs `purpose:` one of {list(EXPERIMENT_PURPOSES)} -- reference experiments "
                          f"produce the production admission envelope; characterization ones only measure")
     if purpose == "reference":
+        if not raw.get("confirmation"):
+            raise ValueError(f"{path}: reference experiments require independent confirmation -- add a "
+                             f"`confirmation:` block (discovery only picks candidates; confirmation is the "
+                             f"only source of a capacity that feeds a recommendation)")
         other = [w.name for w in workloads if w.role != "reference"]
         if other:
             raise ValueError(f"{path}: a reference experiment may only list reference workloads; {other} are "
@@ -395,6 +406,11 @@ def _validate(spec: ExperimentSpec) -> None:
     if spec.throttle_pause_s > 0 and spec.sweep.type != "concurrency":
         raise ValueError("throttle_pause_s applies to concurrency sweeps only -- a rate sweep's arrivals are "
                          "open-loop and never wait on a response")
+    if spec.sweep.refine_max_points is not None:
+        if spec.sweep.type != "concurrency":
+            raise ValueError("sweep.refine_max_points applies to concurrency sweeps only")
+        if spec.sweep.refine_max_points < 1:
+            raise ValueError(f"sweep.refine_max_points must be >= 1, got {spec.sweep.refine_max_points}")
     if spec.sweep.stop_after_fails is not None and spec.sweep.stop_after_fails < 1:
         raise ValueError(f"sweep.stop_after_fails must be >= 1, got {spec.sweep.stop_after_fails}")
     if spec.repetitions < 1:

@@ -138,6 +138,10 @@ class's discovery after two consecutive FAILs (saturation seen twice,
 enough for the non-monotonic check) instead of sweeping a throttle storm
 far past it; the profile lists `sweep_stopped_early.skipped_values`. The
 dry-run marks those estimates `<=`: they assume every value runs.
+`sweep.refine_max_points: 3` then bisects the bracket around saturation
+(e.g. 8 PASS / 12 FAIL -> 10 -> 11 or 9), so the confirmed candidate is
+the real edge rather than the coarse grid point below it; refinement
+points appear in `sweep_points` with `phase: refinement`.
 
 ## Running experiments
 

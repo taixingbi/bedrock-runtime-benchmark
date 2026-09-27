@@ -191,6 +191,26 @@ class RunExperimentTests(unittest.IsolatedAsyncioTestCase):
         entry = build_capacity_profile(report)["workload_classes"]["short"]
         self.assertEqual(entry["sweep_stopped_early"], {"after_consecutive_fails": 2, "skipped_values": [3, 4]})
 
+    async def test_refinement_bisects_the_bracket_to_the_real_edge(self):
+        """Backend edge is exactly C=5. Coarse 1/2/4/8: 4 non-failing, 8
+        FAILs; refinement tests 6 (FAIL) then 5 (non-failing) -> the
+        observed edge is 5, not the coarse 4, and saturation is 6."""
+        from .fakes import ConcurrencyLimitedClient
+        target = BedrockConverseTarget(model_id="m", client=ConcurrencyLimitedClient(limit=5))
+        spec = _spec(sweep=SweepConfig(type="concurrency", values=[1, 2, 4, 8], refine_max_points=3),
+                     repetitions=1, slo=self.LOOSE)
+
+        report = await run_experiment(spec, target=target)
+
+        profile = report.profiles[0]
+        self.assertEqual([(p.concurrency, p.phase) for p in profile.points],
+                         [(1, "discovery"), (2, "discovery"), (4, "discovery"), (5, "refinement"),
+                          (6, "refinement"), (8, "discovery")])
+        rec = profile.recommendation
+        self.assertEqual((rec.point.concurrency, rec.saturation_point.concurrency), (5, 6))
+        refined = [r for r in report.all_results if r.tags["phase"] == "refinement"]
+        self.assertTrue(refined and {r.tags["sweep_value"] for r in refined} == {5, 6})
+
     async def test_without_confirmation_discovery_is_a_fixed_sequence_test(self):
         target = BedrockConverseTarget(model_id="m", client=FakeBedrockRuntimeClient())
         report = await run_experiment(_spec(slo=self.LOOSE), target=target)

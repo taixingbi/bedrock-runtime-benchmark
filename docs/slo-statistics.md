@@ -109,16 +109,31 @@ with zero bad events takes 2,995 requests for gold's 0.1% throttle,
 occurs (4,742 for gold with one throttle). The confirmation phase below
 exists to collect exactly that, and only that, at the boundary.
 
-### Two phases, two jobs: discovery -> adaptive confirmation
+### Discovery -> refinement -> adaptive confirmation
 
-One 90s window per point is a capacity snapshot. With `confirmation:`
-(on in every shipped experiment) the sweep has two phases whose data is
-never mixed (`analysis/confirmation.py`):
+One 90s window per point is a capacity snapshot. The sweep runs in
+phases whose data is never mixed (`analysis/confirmation.py`):
+
+```
+coarse discovery  ->  bracket saturation  ->  local refinement  ->  independent confirmation
+1 2 4 6 8 12(FAIL)     L=8, F=12              10, then 11 or 9       fresh reps at the candidates
+```
 
 | Phase | Data | Used for | Never used for |
 |---|---|---|---|
 | **discovery** | every sweep value, `repetitions` each | observed verdicts, saturation, transition region, **choosing candidates** | confirming anything |
+| **refinement** (concurrency, `sweep.refine_max_points`) | bisection between the last non-failing point L and the first FAIL F | moving the bracket to the real edge, so candidates aren't stuck at the coarse grid point below it | confirming anything |
 | **confirmation** | fresh repetitions at the candidates only | **the only source of `statistically_confirmed`** (and so of production values) | -- |
+
+Refinement matters for the recommendation: with 8 PASS / 12 FAIL and a
+real edge at 11, the coarse grid can only confirm 8 -> max_inflight
+floor(6.4) = 6; after refinement it can confirm 11 -> 8. It is still
+discovery-class data -- it only moves the candidates.
+
+**A reference experiment must have `confirmation:`** -- the loader
+rejects one without it, so "discovery picks, confirmation decides" is an
+invariant of every profile that carries a recommendation, not a
+convention.
 
 Reusing discovery data to confirm the point it selected would be
 double-dipping: the point was picked *because* its discovery sample
@@ -182,8 +197,9 @@ Each candidate reports `verdict`, `stop_reason` (`confirmed`,
 `confirmation` block, next to the `plan` (confidence, per-look
 confidence, look schedule, caps).
 
-Without a confirmation phase, `statistically_confirmed` comes from
-discovery as a fixed-sequence test over the sweep's own ascending order
+Only a characterization experiment can run without a confirmation
+phase. Then `statistically_confirmed` comes from discovery as a
+fixed-sequence test over the sweep's own ascending order
 (the top of the leading run of strict PASSes);
 `confirmation_source` says which (`confirmation` |
 `discovery_fixed_sequence`). That test stops at the first non-PASS

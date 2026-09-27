@@ -391,5 +391,31 @@ class BuildCapacityProfileTests(unittest.TestCase):
         self.assertIsNone(d["latency_healthy_at_observed_nonfailing"])  # no latency gate in this fixture
 
 
+    def test_load_generator_lag_is_a_validity_check(self):
+        """Open-loop assumes scheduled arrivals start on time. One point
+        whose arrivals start 200 ms late makes the profile invalid even
+        if the pooled lag looks fine."""
+        spec = self._spec(sweep_type="rate", sweep_values=[1.0, 2.0])
+
+        def results(late_ms):
+            out = []
+            for i in range(200):
+                value = 2.0 if i < 20 else 1.0
+                lag = late_ms if value == 2.0 else 1.0
+                out.append(_result(scheduled_at=1000.0 + i, started_at=1000.0 + i + lag / 1000.0,
+                                   tags={"workload": "short", "subject": "short", "measured": True,
+                                         "phase": "discovery", "sweep_value": value}))
+            return out
+
+        for late_ms, valid in ((2.0, True), (200.0, False)):
+            report = ExperimentReport(spec=spec, all_results=results(late_ms),
+                                      profiles=[ProfileReport(workload_name="short", recommendation=None)])
+            gen = build_capacity_profile(report)["workload_classes"]["short"]["load_generator"]
+            with self.subTest(late_ms=late_ms):
+                self.assertEqual(gen["valid"], valid)
+                self.assertEqual(gen["worst_point"]["value"], 2.0)
+                self.assertLessEqual(gen["scheduling_lag_p50_ms"], 2.0)  # pooled median hides the bad point
+
+
 if __name__ == "__main__":
     unittest.main()

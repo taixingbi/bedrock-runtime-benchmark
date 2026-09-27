@@ -106,6 +106,10 @@ def _candidates(points: List[SweepPoint], rec: Recommendation, spec: ExperimentS
     return eligible[-how_many:]
 
 
+# Distinct seeds per phase, so no phase replays another's arrival pattern.
+_SEED_OFFSET = {"discovery": 0, "refinement": 20_000, "confirmation": 10_000}
+
+
 def _slo_kwargs(slo, *, latency: bool = True) -> dict:
     # Rate gates are always judged three-way at `confidence` (default 95%):
     # observed violation -> FAIL, bound clears -> PASS, else INCONCLUSIVE.
@@ -175,7 +179,7 @@ async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress:
         # Per sweep value, per phase: every repetition's results + window.
         # Discovery and confirmation data are kept strictly apart -- see
         # analysis/confirmation.py on why they're never pooled.
-        acc: Dict[str, Dict[float, dict]] = {"discovery": {}, "confirmation": {}}
+        acc: Dict[str, Dict[float, dict]] = {"discovery": {}, "refinement": {}, "confirmation": {}}
 
         async def measure(value: float, reps: int, phase: str) -> dict:
             state = acc[phase].setdefault(value, {"results": [], "windows": [], "per_rep": [], "peak": 0})
@@ -186,7 +190,7 @@ async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress:
                 # replay one identical arrival pattern R times, which
                 # isn't R independent samples. Confirmation seeds are
                 # offset so they never replay a discovery pattern.
-                seed = None if spec.seed is None else spec.seed + rep + (10_000 if phase == "confirmation" else 0)
+                seed = None if spec.seed is None else spec.seed + rep + _SEED_OFFSET[phase]
                 if spec.sweep.type == "concurrency":
                     runner = ConcurrencyRunner(
                         target, subject, concurrency=int(value), duration_s=spec.duration_s,
@@ -264,6 +268,32 @@ async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress:
             consecutive_fails = consecutive_fails + 1 if point_verdict(point, class_gate, **gate_kwargs).verdict == FAIL else 0
             if spec.sweep.stop_after_fails is not None and consecutive_fails >= spec.sweep.stop_after_fails:
                 break  # saturation seen stop_after_fails times in a row -- the rest is past it
+
+        # Phase 1b -- boundary refinement (concurrency only): bisect
+        # between the last non-failing point L and the first FAIL F, so
+        # the candidate is the real edge rather than the coarse grid
+        # point below it. Still discovery-class data: selects, never confirms.
+        if spec.sweep.refine_max_points:
+            lo = hi = None
+            for p in sorted(points, key=_value):
+                if point_verdict(p, class_gate, **gate_kwargs).verdict == FAIL:
+                    hi = _value(p)
+                    break
+                lo = _value(p)
+            for _ in range(spec.sweep.refine_max_points):
+                if lo is None or hi is None or hi - lo <= 1:
+                    break
+                mid = (int(lo) + int(hi)) // 2
+                await measure(mid, spec.repetitions, "refinement")
+                point = build(mid, "refinement")
+                points.append(point)
+                if on_progress is not None:
+                    on_progress(subject.name, mid, point)
+                if point_verdict(point, class_gate, **gate_kwargs).verdict == FAIL:
+                    hi = mid
+                else:
+                    lo = mid
+            points.sort(key=_value)
 
         # Phase 2 -- confirmation (analysis/confirmation.py): fresh,
         # independent repetitions at candidates chosen from discovery,

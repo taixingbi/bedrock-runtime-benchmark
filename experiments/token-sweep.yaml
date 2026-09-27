@@ -38,6 +38,7 @@ sweep:
   type: concurrency
   values: [1, 2, 4, 6, 8, 12, 16, 24]
   stop_after_fails: 2
+  refine_max_points: 3   # bisect the bracket around saturation (see concurrency-sweep.yaml)
 
 
 # Confirmation at each workload's candidate (fresh data, never pooled

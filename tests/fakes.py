@@ -74,3 +74,26 @@ class FakeBedrockRuntimeClient:
             {"metadata": {"usage": {"inputTokens": 10, "outputTokens": 5}}},
         ]
         return {"stream": iter(events)}
+
+
+class ConcurrencyLimitedClient(FakeBedrockRuntimeClient):
+    """Throttles any call that arrives while `limit` calls are already
+    running -- a backend whose true concurrency edge is exactly `limit`."""
+    def __init__(self, limit: int, call_s: float = 0.005, **kwargs):
+        super().__init__(**kwargs)
+        import threading
+        self._limit, self._call_s = limit, call_s
+        self._active, self._lock = 0, threading.Lock()
+
+    def converse(self, **kwargs) -> dict:
+        import time
+        with self._lock:
+            if self._active >= self._limit:
+                raise ThrottlingError()
+            self._active += 1
+        try:
+            time.sleep(self._call_s)
+            return super().converse(**kwargs)
+        finally:
+            with self._lock:
+                self._active -= 1
