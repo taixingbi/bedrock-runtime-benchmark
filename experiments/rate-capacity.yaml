@@ -36,9 +36,9 @@ sweep:
 #                 transition region; its data never confirms anything.
 #   confirmation  fresh data at the candidate (the highest non-failing
 #                 point at or below the provider ceiling) until a
-#                 pre-planned look PASSes it, an observed violation
-#                 FAILs it, or max_requests / max_duration_s is hit
-#                 -> INCONCLUSIVE.
+#                 pre-planned look PASSes or FAILs it (exact bounds),
+#                 severe throttling stops it early, or max_requests /
+#                 max_duration_s is hit -> INCONCLUSIVE.
 # PASS only at max_looks pre-planned sample SIZES, each decided on
 # exactly the first N requests at confidence 1 - 0.05 / max_looks, so
 # repeated checking can't inflate false PASSes. For gold (throttle <=

@@ -80,8 +80,21 @@ class StepTests(unittest.TestCase):
         self.assertIsNone(step(Verdict(INCONCLUSIVE), 3700, 0, _plan()))
         self.assertEqual(step(Verdict(INCONCLUSIVE), 5600, 1, _plan()), (INCONCLUSIVE, "looks_exhausted", 2))
 
-    def test_fail_stops_at_any_time(self):
-        self.assertEqual(step(Verdict(FAIL), 100, 0, _plan()), (FAIL, "observed_violation", 0))
+    def test_fail_is_declared_only_at_a_scheduled_look(self):
+        """Symmetric with PASS: an all-data FAIL before the first look is
+        not a verdict (optional stopping would inflate false FAILs)."""
+        self.assertIsNone(step(Verdict(FAIL), 100, 0, _plan()))
+        self.assertEqual(step(Verdict(FAIL), 3700, 0, _plan()), (FAIL, "violation_demonstrated", 1))
+
+    def test_severe_throttling_is_an_early_stop_condition_not_a_verdict(self):
+        from bedrock_benchmark.analysis.confirmation import SEVERE_MIN_N, severe_throttling
+        from bedrock_benchmark.analysis.metrics import RunMetrics
+        m = lambda n, t: RunMetrics(n=n, success_rate=1 - t, throttle_rate=t, timeout_rate=0.0,  # noqa: E731
+                                    request_throughput_rps=1.0, token_throughput_tps=1.0, latency_p50_ms=1.0,
+                                    latency_p95_ms=1.0, latency_p99_ms=1.0, slo_goodput_rps=1.0, slo_efficiency=1.0)
+        self.assertTrue(severe_throttling(m(SEVERE_MIN_N, 0.10)))
+        self.assertFalse(severe_throttling(m(SEVERE_MIN_N - 1, 1.0)))  # too few requests to call it
+        self.assertFalse(severe_throttling(m(1000, 0.05)))
 
     def test_reachable_respects_every_cap(self):
         plan = _plan()  # first look at 3,688
@@ -146,7 +159,8 @@ class HighestFirstTests(unittest.TestCase):
                 n += per_rep
                 k += _poisson(rng, per_rep * limit)
                 conf = plan.per_test_confidence
-                v = FAIL if k / n > limit else (PASS if rate_upper(k, n, confidence=conf) <= limit else INCONCLUSIVE)
+                v = FAIL if rate_lower(k, n, confidence=conf) > limit else (
+                    PASS if rate_upper(k, n, confidence=conf) <= limit else INCONCLUSIVE)
                 d = step(Verdict(v), n, looks, plan)
                 if d:
                     return d[0]
@@ -184,13 +198,50 @@ class ErrorControlSimulationTests(unittest.TestCase):
     LIMIT, PER_REP, TRIALS = 0.001, 600, 2000
 
     def _verdict(self, k, n, conf):
-        if k / n > self.LIMIT:
+        """The production rule (one check, so no split over checks)."""
+        if rate_lower(k, n, confidence=conf) > self.LIMIT:
             return Verdict(FAIL)
         return Verdict(PASS if rate_upper(k, n, confidence=conf) <= self.LIMIT else INCONCLUSIVE)
 
     def _false_pass_rate(self, run) -> float:
         rng = random.Random(0)
         return sum(run(rng) == PASS for _ in range(self.TRIALS)) / self.TRIALS
+
+    def test_planned_looks_control_false_fail(self):
+        """The mirror image: at a true rate exactly AT the limit (compliant
+        -- the worst case for a false FAIL), FAIL on the lower bound at
+        planned looks stays <= 5%. The old rule -- FAIL whenever the
+        point estimate is over the limit, at any time -- fails a
+        compliant point most of the time."""
+        plan = plan_looks([RateLimit("t", self.LIMIT)], confidence=0.95, max_looks=2, max_repetitions=10,
+                          max_requests=8000, max_duration_s=1e9)
+
+        def planned(rng):
+            k = n = looks = 0
+            for _ in range(10):
+                n += self.PER_REP
+                k += _poisson(rng, self.PER_REP * self.LIMIT)
+                d = step(self._verdict(k, n, plan.per_test_confidence), n, looks, plan)
+                if d:
+                    return d[0]
+                looks = sum(1 for N in plan.look_schedule if N <= n)
+            return INCONCLUSIVE
+
+        def old_rule(rng):
+            k = n = 0
+            for _ in range(10):
+                n += self.PER_REP
+                k += _poisson(rng, self.PER_REP * self.LIMIT)
+                if k / n > self.LIMIT:
+                    return FAIL
+            return INCONCLUSIVE
+
+        def false_fail_rate(run):
+            rng = random.Random(3)
+            return sum(run(rng) == FAIL for _ in range(self.TRIALS)) / self.TRIALS
+
+        self.assertLessEqual(false_fail_rate(planned), 0.05)
+        self.assertGreater(false_fail_rate(old_rule), 0.5)
 
     def test_planned_looks_control_false_pass(self):
         plan = plan_looks([RateLimit("t", self.LIMIT)], confidence=0.95, max_looks=2, max_repetitions=10,

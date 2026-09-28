@@ -218,8 +218,11 @@ def _sweep_points(profile_report, ceiling_rps: Optional[float] = None) -> List[d
 
 
 _STOP_HINTS = {
-    "observed_violation": "the SLO was violated in fresh data there -- a lower candidate may confirm (candidates > 1)",
-    "looks_exhausted": "bad events used up every planned look",
+    "violation_demonstrated": "fresh data at a planned look demonstrated an SLO violation there (lower bound "
+                              "over the limit) -- a lower candidate may confirm (candidates > 1)",
+    "looks_exhausted": "every planned look was neither a demonstrated PASS nor a demonstrated FAIL",
+    "stopped_severe_throttling": "stopped early: severely throttled (an operational guard -- not a statistical "
+                                 "FAIL, not a saturation edge)",
     "max_repetitions": "raise the confirmation caps to collect more samples",
     "max_requests": "raise the confirmation caps to collect more samples",
     "max_duration": "raise the confirmation caps to collect more samples",
@@ -780,10 +783,12 @@ def build_capacity_profile(report: ExperimentReport, run_metadata: Optional[dict
             # (drain included); throughput over completions in it.
             "window_policy": "scheduled_in_window_for_rates__completed_in_window_for_throughput",
             "clock": "monotonic_durations__wall_clock_timestamps",
-            # Every check is PASS / FAIL / INCONCLUSIVE; success & throttle
-            # use exact Clopper-Pearson bounds at this confidence (observed violation ->
-            # FAIL, bound clears -> PASS, otherwise INCONCLUSIVE).
+            # Every check is PASS / FAIL / INCONCLUSIVE on exact
+            # Clopper-Pearson bounds at this confidence: upper bound within
+            # the limit -> PASS, lower bound beyond it -> FAIL (split over
+            # the point's checks), otherwise INCONCLUSIVE.
             "gate": "pass_fail_inconclusive",
+            "fail_rule": "exact_lower_bound_beyond_limit",
             "confidence": confidence,
             "confirmation": (
                 {"max_looks": spec.confirmation.max_looks, "max_repetitions": spec.confirmation.max_repetitions,

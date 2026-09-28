@@ -113,7 +113,46 @@ class RunExperimentTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("raise them", recommendation["reason"])
         self.assertEqual(rate["confirmation_source"], "confirmation")
 
-    async def test_violation_during_confirmation_fails_the_candidate(self):
+    async def test_a_violation_in_confirmation_fails_the_candidate_only_at_a_planned_look(self):
+        """Every 3rd request errors after discovery: a demonstrated
+        violation of the 90% success SLO -- but FAIL is declared only at
+        the first planned look, on exactly its first N_1 requests."""
+        from bedrock_benchmark.experiments.schema import ConfirmationConfig
+
+        class ErrorsAfterDiscovery(BedrockConverseTarget):
+            failing, calls = False, 0
+
+            async def invoke(self, request):
+                result = await super().invoke(request)
+                if self.failing:
+                    self.calls += 1
+                    if self.calls % 3 == 0:
+                        result.success, result.error_code = False, "ModelErrorException"
+                return result
+
+        target = ErrorsAfterDiscovery(model_id="m", client=FakeBedrockRuntimeClient())
+        spec = _spec(sweep=SweepConfig(type="rate", values=[200.0]), repetitions=1, slo=self.LOOSE,
+                     confirmation=ConfirmationConfig(max_repetitions=20, max_requests=10**6))
+
+        def after_discovery(subject, value, point):
+            target.failing = True
+
+        report = await run_experiment(spec, target=target, on_progress=after_discovery)
+
+        [result] = report.profiles[0].confirmations
+        plan = report.profiles[0].confirmation_plan
+        self.assertEqual((result.verdict, result.stop_reason, result.looks_used), ("FAIL", "violation_demonstrated", 1))
+        self.assertEqual(result.decision_n, plan.look_schedule[0])
+        self.assertGreaterEqual(result.n, plan.look_schedule[0])  # not before the look
+        self.assertIsNone(report.profiles[0].recommendation.confirmed_point)
+        self.assertNotEqual(report.profiles[0].verdicts[0].verdict, "FAIL")  # discovery was clean
+
+    async def test_severe_throttling_stops_early_but_is_not_a_fail(self):
+        """Fully throttled in confirmation, long before the first look
+        (gold-strict throttle limit -> a look in the thousands): stop to
+        spare the provider, recorded as INCONCLUSIVE /
+        stopped_severe_throttling -- never FAIL, never a saturation edge."""
+        from bedrock_benchmark.analysis.confirmation import SEVERE_MIN_N
         from bedrock_benchmark.experiments.schema import ConfirmationConfig
 
         class ThrottlesAfterDiscovery(BedrockConverseTarget):
@@ -126,20 +165,23 @@ class RunExperimentTests(unittest.IsolatedAsyncioTestCase):
                 return result
 
         target = ThrottlesAfterDiscovery(model_id="m", client=FakeBedrockRuntimeClient())
-        spec = _spec(sweep=SweepConfig(type="rate", values=[200.0]), repetitions=1, slo=self.LOOSE,
-                     confirmation=ConfirmationConfig(max_repetitions=20, max_requests=10**6))
+        strict = SloConfig(latency_p95_ms=3000, throttle_rate_max=0.001, success_rate_min=0.9)
+        spec = _spec(sweep=SweepConfig(type="rate", values=[200.0]), repetitions=1, slo=strict,
+                     confirmation=ConfirmationConfig(max_repetitions=500, max_requests=10**6))
 
         def after_discovery(subject, value, point):
             target.throttle = True
 
         report = await run_experiment(spec, target=target, on_progress=after_discovery)
 
-        [result] = report.profiles[0].confirmations
-        self.assertEqual((result.verdict, result.stop_reason, result.repetitions), ("FAIL", "observed_violation", 1))
-        self.assertIsNone(report.profiles[0].recommendation.confirmed_point)
-        # Discovery itself saw no violation (not FAIL -- ~40 requests are too
-        # few to PASS even the loose limit): only confirmation data failed it.
-        self.assertNotEqual(report.profiles[0].verdicts[0].verdict, "FAIL")
+        profile = report.profiles[0]
+        [result] = profile.confirmations
+        self.assertEqual((result.verdict, result.stop_reason, result.looks_used),
+                         ("INCONCLUSIVE", "stopped_severe_throttling", 0))
+        self.assertGreaterEqual(result.n, SEVERE_MIN_N)
+        self.assertLess(result.n, profile.confirmation_plan.look_schedule[0])
+        self.assertIsNone(profile.recommendation.confirmed_point)
+        self.assertIsNone(profile.recommendation.saturation_point)  # not a saturation edge
 
     async def test_several_candidates_are_tested_highest_first_and_stop_at_the_first_pass(self):
         from bedrock_benchmark.experiments.schema import ConfirmationConfig

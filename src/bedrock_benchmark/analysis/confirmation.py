@@ -6,7 +6,8 @@ Why a separate module: the statistics here are what make a PASS mean
 something, so they live apart from the Bedrock I/O loop (executor.py)
 and are testable on their own.
 
-Two rules keep the false-PASS rate at or below alpha = 1 - confidence:
+Two rules keep the false-PASS rate -- and, symmetrically, the false-FAIL
+rate -- at or below alpha = 1 - confidence:
 
 1. No double-dipping. The candidate is chosen because its DISCOVERY data
    looked good; confirming it with that same data would be biased. So
@@ -15,11 +16,18 @@ Two rules keep the false-PASS rate at or below alpha = 1 - confidence:
 
 2. No unplanned looks. Re-checking a confidence bound after every repetition
    and stopping the first time it clears is optional stopping: given
-   enough looks, noise alone eventually produces a PASS. So PASS can be
-   declared only at L sample sizes fixed BEFORE any confirmation data
-   exists (the look schedule). With K candidates (see below) there are
-   L x K tests in all, each at the per-test confidence 1 - alpha / (L x K)
-   (Bonferroni): P(any false PASS) <= L x K x alpha / (L x K) = alpha.
+   enough looks, noise alone eventually produces a PASS -- or a FAIL. So
+   BOTH are declared only at L sample sizes fixed BEFORE any confirmation
+   data exists (the look schedule). With K candidates (see below) there
+   are L x K tests in all, each at the per-test confidence
+   1 - alpha / (L x K) (Bonferroni): P(any false PASS) <= alpha, and
+   likewise P(any false FAIL) <= alpha. At a look:
+
+       every check's exact upper bound within its limit -> PASS
+       any check's exact lower bound beyond its limit   -> FAIL
+       (the FAIL side is also split over the point's m checks --
+        capacity.fail_confidence -- since ANY check can fail it)
+       otherwise                                         -> next look
    Each test is the EXACT Clopper-Pearson bound, so its error really is
    <= alpha / (L x K) (Wilson would not guarantee that at the 0-2 events
    gold operates at).
@@ -44,8 +52,12 @@ Two rules keep the false-PASS rate at or below alpha = 1 - confidence:
    sample size outcome-dependent; truncating to N_j keeps each look an
    exact test at a pre-declared n.
 
-   FAIL may be declared at any time (an observed violation, on all data
-   so far): stopping to fail can never create a false PASS.
+   EARLY STOP is separate from FAIL: a candidate whose confirmation data
+   is severely throttled (throttle_rate >= SEVERE_THROTTLE_RATE over at
+   least SEVERE_MIN_N requests) stops at once to spare the provider --
+   recorded as INCONCLUSIVE with stop_reason `stopped_severe_throttling`,
+   never as a statistical FAIL and never as a saturation edge (it tested
+   nothing at a planned look).
 
 Caps (repetitions / requests per candidate, wall time for the phase)
 bound the cost. Reaching a cap without a PASS is INCONCLUSIVE -- the
@@ -166,8 +178,9 @@ def plan_looks(limits: List[RateLimit], *, confidence: float, max_looks: int, ma
 class ConfirmationResult:
     value: float                 # the candidate's concurrency or rps
     verdict: str                 # PASS | FAIL | INCONCLUSIVE
-    stop_reason: str             # confirmed | observed_violation | looks_exhausted | max_repetitions |
-                                 # max_requests | max_duration | unreachable_within_caps | not_tested
+    stop_reason: str             # confirmed | violation_demonstrated (both at a look) | looks_exhausted |
+                                 # stopped_severe_throttling | max_repetitions | max_requests | max_duration |
+                                 # unreachable_within_caps | provider_state_invalid | not_tested
     repetitions: int = 0
     n: int = 0
     looks_used: int = 0
@@ -192,32 +205,42 @@ class ConfirmationResult:
             out["checks"] = [c.to_dict() for c in self.detail.checks if c.verdict != PASS] or "all PASS"
         if self.point is not None:
             m = self.point.metrics
-            out["metrics"] = {"n_throttled": m.n_throttled, "throttle_rate_upper": m.throttle_rate_upper,
+            out["metrics"] = {"n_throttled": m.n_throttled, "throttle_rate": m.throttle_rate,
+                              "throttle_rate_upper": m.throttle_rate_upper,
                               "success_rate_lower": m.success_rate_lower, "ttft_p95_ms": m.ttft_p95_ms,
                               "tpot_p95_ms": m.tpot_p95_ms, "latency_p95_ms": m.latency_p95_ms,
                               "slo_goodput_rps": m.slo_goodput_rps}
         return out
 
 
+SEVERE_THROTTLE_RATE = 0.10  # early stop: >= 10% of confirmation requests throttled ...
+SEVERE_MIN_N = 100           # ... over at least this many requests
+
+
+def severe_throttling(metrics: RunMetrics) -> bool:
+    """The early-stop condition -- an operational guard, not a test."""
+    return metrics.n >= SEVERE_MIN_N and metrics.throttle_rate >= SEVERE_THROTTLE_RATE
+
+
 def step(verdict: Verdict, n: int, looks_used: int, plan: ConfirmationPlan,
          class_n: Optional[Dict[str, int]] = None,
          look_verdict: Optional[Callable[[int], Verdict]] = None) -> Optional[tuple]:
-    """Decide after one confirmation repetition. `verdict` (all data so
-    far) must come from metrics whose bounds were computed at
-    plan.per_test_confidence; it decides FAIL, at any time. A look is
-    taken only when every group's count (n, and in a mix each class's
-    `class_n`) reaches the next scheduled requirement, and is decided by
-    `look_verdict(j)` -- the verdict on EXACTLY the first N_j requests
-    (fixed-count; `verdict` itself when not given, e.g. in simulations
-    whose n is exact already). Returns (verdict, stop_reason,
+    """Decide after one confirmation repetition. Verdicts count ONLY at a
+    look: taken when every group's count (n, and in a mix each class's
+    `class_n`) reaches the next scheduled requirement, and decided by
+    `look_verdict(j)` -- the verdict (bounds at plan.per_test_confidence)
+    on EXACTLY the first N_j requests (fixed-count; `verdict`, the
+    all-data one, when not given -- simulations whose n is exact
+    already). PASS -> confirmed, FAIL -> violation_demonstrated, else the
+    look is spent and measuring continues. Returns (verdict, stop_reason,
     looks_used) to stop, or None to keep measuring."""
-    if verdict.verdict == FAIL:
-        return FAIL, "observed_violation", looks_used
     while looks_used < plan.max_looks and plan.look_reached(looks_used, n, class_n):
         at_look = look_verdict(looks_used) if look_verdict is not None else verdict
-        looks_used += 1  # this scheduled look is spent whether or not it passes
+        looks_used += 1  # this scheduled look is spent whatever it decides
         if at_look.verdict == PASS:
             return PASS, "confirmed", looks_used
+        if at_look.verdict == FAIL:
+            return FAIL, "violation_demonstrated", looks_used
     if looks_used >= plan.max_looks:
         return INCONCLUSIVE, "looks_exhausted", looks_used
     return None

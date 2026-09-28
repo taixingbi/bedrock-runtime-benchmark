@@ -111,10 +111,37 @@ class TriStateVerdictTests(unittest.TestCase):
         success = next(c for c in v.checks if c.name == "success_rate")
         self.assertEqual(success.verdict, "INCONCLUSIVE")
 
-    def test_observed_violation_is_fail_regardless_of_sample_size(self):
-        v = evaluate(_metrics(n=50, throttle_rate=0.02, throttle_rate_upper=0.1), throttle_rate_max=0.001)
-        self.assertEqual(v.verdict, "FAIL")
-        self.assertEqual(next(c for c in v.checks if c.name == "throttle_rate").reason, "observed_violation")
+    def test_a_point_estimate_over_the_limit_is_not_a_fail_on_its_own(self):
+        """The real case: tiny_request at C=1 had 1 ModelErrorException in
+        181 requests -- 0.55% against a 0.5% limit. That is weak evidence
+        either way: INCONCLUSIVE, not a FAIL that makes a sweep look
+        non-monotonic. Likewise 1 throttle in 50."""
+        v = evaluate(_metrics(n=181, n_success=180, n_throttled=0, success_rate=0.9945), success_rate_min=0.995)
+        success = next(c for c in v.checks if c.name == "success_rate")
+        self.assertEqual((success.verdict, success.bad_events), ("INCONCLUSIVE", 1))
+        self.assertLess(success.bad_rate_lower, 0.005)
+        v = evaluate(_metrics(n=50, n_success=49, n_throttled=1, success_rate=0.98, throttle_rate=0.02),
+                     throttle_rate_max=0.001, success_rate_min=0.9)
+        self.assertEqual(v.verdict, "INCONCLUSIVE")
+
+    def test_fail_needs_the_lower_bound_above_the_limit(self):
+        v = evaluate(_metrics(n=50, n_success=45, n_throttled=5, success_rate=0.9, throttle_rate=0.1),
+                     throttle_rate_max=0.001, success_rate_min=0.5)
+        throttle = next(c for c in v.checks if c.name == "throttle_rate")
+        self.assertEqual((v.verdict, throttle.reason), ("FAIL", "violation_demonstrated"))
+        self.assertGreater(throttle.bad_rate_lower, 0.001)
+
+    def test_fail_alpha_is_split_over_the_checks(self):
+        """A point FAILs if ANY check FAILs, so each check's FAIL test runs
+        at 1 - alpha / m. 3 throttles in 300 against 0.25%: the lower bound
+        clears 0.25% at 95% (0.27%) but not at 1 - 0.05 / 2 (0.21%)."""
+        from bedrock_benchmark.analysis.capacity import fail_confidence
+        from bedrock_benchmark.analysis.metrics import rate_lower
+        self.assertGreater(rate_lower(3, 300, confidence=0.95), 0.0025)
+        self.assertLess(rate_lower(3, 300, confidence=fail_confidence(0.95, 2)), 0.0025)
+        v = evaluate(_metrics(n=300, n_success=297, n_throttled=3, success_rate=0.99, throttle_rate=0.01),
+                     throttle_rate_max=0.0025, success_rate_min=0.5, confidence=0.95)
+        self.assertEqual(v.verdict, "INCONCLUSIVE")
 
     def test_latency_fail_dominates_inconclusive(self):
         v = evaluate(_metrics(n=100, ttft_p95_ms=2000.0), ttft_p95_slo_ms=1000.0)
@@ -199,11 +226,11 @@ class MixedGateTests(unittest.TestCase):
         """Gold 99.5% + silver/bronze 99.0% blend to ~99.3%: each class
         meets its own SLO, so the point must not FAIL on a blend gate at
         gold's 99.5%."""
-        resolved = dict(throttle_rate_upper=0.0, n_throttled=0)
-        gold = _metrics(n=60_000, n_success=59_700, success_rate=0.995, success_rate_lower=0.9951, **resolved)
-        silver = _metrics(n=30_000, n_success=29_700, success_rate=0.99, success_rate_lower=0.9901, **resolved)
-        bronze = _metrics(n=10_000, n_success=9_900, success_rate=0.99, success_rate_lower=0.9901, **resolved)
-        blend = _metrics(n=100_000, n_success=99_300, success_rate=0.993, success_rate_lower=0.9927, **resolved)
+        resolved = dict(n_throttled=0)
+        gold = _metrics(n=60_000, n_success=59_760, success_rate=0.996, **resolved)
+        silver = _metrics(n=30_000, n_success=29_760, success_rate=0.992, **resolved)
+        bronze = _metrics(n=10_000, n_success=9_920, success_rate=0.992, **resolved)
+        blend = _metrics(n=100_000, n_success=99_440, success_rate=0.9944, **resolved)  # < 99.5%: not gated
         point = SweepPoint(concurrency=None, rps=5.0, metrics=blend,
                            class_metrics={"chat": gold, "rag": silver, "gen": bronze})
         class_slo = {"chat": dict(success_rate_min=0.995, throttle_rate_max=0.001),
@@ -216,11 +243,11 @@ class MixedGateTests(unittest.TestCase):
 
 class ExactCountDecisionTests(unittest.TestCase):
     def test_rounding_never_decides_a_rate_verdict(self):
-        """10,001 throttles in 10,000,000 requests is 0.0010001 -- a
-        violation of 0.001 -- but the 4-decimal throttle_rate reads
-        0.001. The decision uses the exact count."""
-        m = _metrics(n=10_000_000, n_success=10_000_000 - 10_001, n_throttled=10_001,
-                     success_rate=0.999, throttle_rate=0.001, throttle_rate_upper=0.00102)
+        """10,300 throttles in 10,000,000 requests is 0.00103 -- a
+        demonstrated violation of 0.001 (lower bound ~0.00101) -- but the
+        4-decimal throttle_rate reads 0.001. The decision uses the exact count."""
+        m = _metrics(n=10_000_000, n_success=10_000_000 - 10_300, n_throttled=10_300,
+                     success_rate=0.999, throttle_rate=0.001)
         check = next(c for c in evaluate(m, throttle_rate_max=0.001, success_rate_min=0.99).checks
                      if c.name == "throttle_rate")
         self.assertEqual((check.verdict, check.observed), ("FAIL", 0.001))  # reported rounded, decided exact

@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
 from .metrics import (
-    DEFAULT_CONFIDENCE, RunMetrics, min_samples_to_resolve_rate, quantile_upper_bound, rate_upper, required_samples,
+    DEFAULT_CONFIDENCE, RunMetrics, quantile_upper_bound, rate_lower, rate_upper, required_samples,
 )
 
 
@@ -85,6 +85,11 @@ class Check:
     # (order statistic) -- "p95 estimate 742ms, 95% UCB 796ms <= 800ms".
     # None when n is too small for any sample to bound it.
     p95_upper_bound: Optional[float] = None
+    # Every rate check: bad events (throttles; failures; requests over a
+    # latency threshold) and the exact LOWER bound on their rate at the
+    # FAIL confidence -- FAIL <=> this bound is above the tolerated rate.
+    bad_events: Optional[int] = None
+    bad_rate_lower: Optional[float] = None
 
     def to_dict(self) -> dict:
         return {k: v for k, v in self.__dict__.items() if v is not None}
@@ -93,11 +98,19 @@ class Check:
 @dataclass
 class Verdict:
     """PASS / FAIL / INCONCLUSIVE for one sweep point, with the per-check
-    breakdown. Insufficient evidence is NOT failure: a point with zero
-    throttles in 180 requests can't demonstrate a 0.1% throttle SLO
-    (that needs ~2,700), but it didn't violate it either -- it's
-    INCONCLUSIVE, and the artifact says how many requests would settle
-    it. FAIL is reserved for an observed violation."""
+    breakdown. Every SLO check is a bad-event RATE (throttles, failures,
+    requests over a latency threshold) against a tolerated rate, judged
+    symmetrically with exact Clopper-Pearson bounds:
+
+        upper bound <= tolerated  -> PASS          (compliance demonstrated)
+        lower bound >  tolerated  -> FAIL          (violation demonstrated)
+        otherwise                 -> INCONCLUSIVE  (the data can't tell)
+
+    So neither verdict rests on a point estimate: 1 error in 181 requests
+    (0.55%) against a 0.5% limit is INCONCLUSIVE, not FAIL -- and zero
+    throttles in 180 requests can't demonstrate 0.1% either. The artifact
+    says how many requests would settle an INCONCLUSIVE check. This is a
+    statement about evidence strength; the SLO itself never moves."""
     verdict: str
     checks: List[Check] = field(default_factory=list)
 
@@ -116,35 +129,39 @@ def _combine(checks: List[Check]) -> str:
     return INCONCLUSIVE if INCONCLUSIVE in verdicts else PASS
 
 
-def _rate_check(name: str, observed: float, bound: Optional[float], limit: float, *, upper: bool,
-                n: int, confidence: float, exact: Optional[float] = None) -> Check:
-    """upper=True: a max-rate limit (throttle); False: a min-rate limit
-    (success). Observed violation -> FAIL; the confidence bound clears
-    the limit -> PASS; otherwise INCONCLUSIVE with the sample size that
-    would resolve it (for a zero-event observation). The violation test
-    uses `exact` (count / n) when given -- `observed` is the rounded
-    value for the report, and rounding must never decide a verdict."""
-    rate = exact if exact is not None else observed
-    violated = rate > limit if upper else rate < limit
-    if violated:
-        return Check(name, FAIL, observed=observed, threshold=limit, reason="observed_violation", n=n)
-    if bound is not None and (bound <= limit if upper else bound >= limit):
-        return Check(name, PASS, observed=observed, threshold=limit, n=n)
-    tolerated = limit if upper else 1.0 - limit
-    required = min_samples_to_resolve_rate(tolerated, confidence=confidence) if tolerated > 0 else None
-    return Check(name, INCONCLUSIVE, observed=observed, threshold=limit, reason="insufficient_samples",
-                 n=n, required_n=required)
+def fail_confidence(confidence: float, checks: int) -> float:
+    """The confidence each check's FAIL test runs at. A point FAILs when
+    ANY of its m checks FAILs, so a false FAIL has m chances: Bonferroni
+    over the checks keeps P(false FAIL of the point) <= 1 - confidence.
+    (PASS needs EVERY check to pass -- an intersection -- so it needs no
+    such split.)"""
+    return 1.0 - (1.0 - confidence) / max(1, checks)
+
+
+def _bad_rate_check(name: str, k: int, n: int, tolerated: float, *, observed: Optional[float], threshold: float,
+                    confidence: float, fail_conf: float, **extra) -> Check:
+    """k bad events in n against a tolerated bad-event rate: exact upper
+    bound <= tolerated -> PASS; exact lower bound (at fail_conf) >
+    tolerated -> FAIL; otherwise INCONCLUSIVE with the n at which k bad
+    events would PASS. Decisions use the unrounded bounds."""
+    lower = rate_lower(k, n, confidence=fail_conf)
+    common = dict(observed=observed, threshold=threshold, n=n, bad_events=k, bad_rate_lower=round(lower, 6), **extra)
+    if lower > tolerated:
+        return Check(name, FAIL, reason="violation_demonstrated", **common)
+    if tolerated > 0 and rate_upper(k, n, confidence=confidence) <= tolerated:
+        return Check(name, PASS, **common)
+    required = required_samples(k, tolerated, confidence=confidence) if tolerated > 0 else None
+    return Check(name, INCONCLUSIVE, reason="insufficient_samples", required_n=required, **common)
 
 
 def _latency_check(name: str, key: str, metrics: RunMetrics, limit: Optional[float],
-                   confidence: float) -> Optional[Check]:
-    """p95 <= limit, proven rather than just observed -- H0: q95 > limit,
-    H1: q95 <= limit, tested distribution-free. With k of n
-    successful requests over `limit` (a request with no measurement
-    counts as over -- not measured is not compliant):
+                   confidence: float, fail_conf: float) -> Optional[Check]:
+    """p95 <= limit as an exceedance proportion, tested distribution-free.
+    With k of n successful requests over `limit` (a request with no
+    measurement counts as over -- not measured is not compliant):
 
-        k / n > 5%                        -> FAIL (the sample p95 is over)
         exact upper bound on k / n <= 5%  -> PASS
+        exact lower bound on k / n >  5%  -> FAIL
         otherwise                         -> INCONCLUSIVE, with required_n
 
     30 requests all under the limit still bound the exceedance at ~9.5%,
@@ -167,16 +184,16 @@ def _latency_check(name: str, key: str, metrics: RunMetrics, limit: Optional[flo
         # streaming TTFT, < 2 output tokens for TPOT) fails closed.
         return Check(name, FAIL, threshold=limit, reason="not_measured", n=n)
     k = sum(1 for v in samples if v is None or v > limit)
-    bound = round(rate_upper(k, n, confidence=confidence), 6)
     ucb = quantile_upper_bound(samples, LATENCY_QUANTILE, confidence=confidence)
-    common = dict(observed=observed, threshold=limit, n=n, exceedances=k, exceedance_rate_upper=bound,
-                  p95_upper_bound=None if ucb is None else round(ucb, 3))
-    if k / n > LATENCY_EXCEEDANCE_MAX:
-        return Check(name, FAIL, reason="observed_violation", **common)
-    if bound <= LATENCY_EXCEEDANCE_MAX:
-        return Check(name, PASS, **common)
-    return Check(name, INCONCLUSIVE, reason="insufficient_samples",
-                 required_n=required_samples(k, LATENCY_EXCEEDANCE_MAX, confidence=confidence), **common)
+    return _bad_rate_check(name, k, n, LATENCY_EXCEEDANCE_MAX, observed=observed, threshold=limit,
+                           confidence=confidence, fail_conf=fail_conf, exceedances=k,
+                           exceedance_rate_upper=round(rate_upper(k, n, confidence=confidence), 6),
+                           p95_upper_bound=None if ucb is None else round(ucb, 3))
+
+
+def check_count(*, ttft_p95_slo_ms=None, tpot_p95_slo_ms=None, latency_p95_slo_ms=None, **_) -> int:
+    """How many checks evaluate() runs for these SLO kwargs."""
+    return 2 + sum(v is not None for v in (ttft_p95_slo_ms, tpot_p95_slo_ms, latency_p95_slo_ms))
 
 
 def evaluate(
@@ -184,26 +201,36 @@ def evaluate(
     success_rate_min: float = 0.99, throttle_rate_max: float = 0.001,
     ttft_p95_slo_ms: Optional[float] = None, latency_p95_slo_ms: Optional[float] = None,
     tpot_p95_slo_ms: Optional[float] = None, confidence: Optional[float] = None,
+    fail_checks: Optional[int] = None,
 ) -> Verdict:
+    """`confidence` is each check's PASS confidence; FAIL runs at
+    fail_confidence(confidence, fail_checks) -- fail_checks defaults to
+    this call's own check count (a mix passes the total over classes)."""
     confidence = confidence or metrics.bound_confidence or DEFAULT_CONFIDENCE
     if metrics.n == 0:
         return Verdict(FAIL, [Check("requests", FAIL, observed=0, reason="no_requests", n=0)])
+    fail_conf = fail_confidence(confidence, fail_checks or check_count(
+        ttft_p95_slo_ms=ttft_p95_slo_ms, tpot_p95_slo_ms=tpot_p95_slo_ms, latency_p95_slo_ms=latency_p95_slo_ms))
     checks = [c for c in (
-        _latency_check("ttft_p95", "ttft", metrics, ttft_p95_slo_ms, confidence),
-        _latency_check("tpot_p95", "tpot", metrics, tpot_p95_slo_ms, confidence),
-        _latency_check("latency_p95", "latency", metrics, latency_p95_slo_ms, confidence),
+        _latency_check("ttft_p95", "ttft", metrics, ttft_p95_slo_ms, confidence, fail_conf),
+        _latency_check("tpot_p95", "tpot", metrics, tpot_p95_slo_ms, confidence, fail_conf),
+        _latency_check("latency_p95", "latency", metrics, latency_p95_slo_ms, confidence, fail_conf),
     ) if c is not None]
-    exact_success = metrics.n_success / metrics.n if metrics.n_success is not None else None
-    exact_throttle = metrics.n_throttled / metrics.n if metrics.n_success is not None else None
-    checks.append(_rate_check("success_rate", metrics.success_rate, metrics.success_rate_lower, success_rate_min,
-                              upper=False, n=metrics.n, confidence=confidence, exact=exact_success))
-    checks.append(_rate_check("throttle_rate", metrics.throttle_rate, metrics.throttle_rate_upper, throttle_rate_max,
-                              upper=True, n=metrics.n, confidence=confidence, exact=exact_throttle))
+    n = metrics.n
+    # Exact counts; hand-built metrics without them (tests) fall back to rate x n.
+    n_success = metrics.n_success if metrics.n_success is not None else round(metrics.success_rate * n)
+    n_throttled = metrics.n_throttled if metrics.n_success is not None else round(metrics.throttle_rate * n)
+    checks.append(_bad_rate_check("success_rate", n - n_success, n, 1.0 - success_rate_min,
+                                  observed=metrics.success_rate, threshold=success_rate_min,
+                                  confidence=confidence, fail_conf=fail_conf))
+    checks.append(_bad_rate_check("throttle_rate", n_throttled, n, throttle_rate_max,
+                                  observed=metrics.throttle_rate, threshold=throttle_rate_max,
+                                  confidence=confidence, fail_conf=fail_conf))
     return Verdict(_combine(checks), checks)
 
 
 def meets_slo(metrics: RunMetrics, *, gate_on_bounds: bool = False, **slo_kwargs) -> bool:
-    """Boolean view of evaluate(): not FAIL (no observed violation), or
+    """Boolean view of evaluate(): not FAIL (no demonstrated violation), or
     with gate_on_bounds=True strictly PASS (statistically demonstrated)."""
     verdict = evaluate(metrics, **slo_kwargs).verdict
     return verdict == PASS if gate_on_bounds else verdict != FAIL
@@ -222,9 +249,13 @@ def point_verdict(point: SweepPoint, class_slo: Optional[Dict[str, dict]] = None
     if point.client_limited:
         return Verdict(FAIL, [Check("client", FAIL, observed=point.peak_outstanding, reason="client_limited")])
     mixed = class_slo is not None and bool(point.class_metrics)
-    checks = [] if mixed else list(evaluate(point.metrics, **slo_kwargs).checks)
+    # The point FAILs if any check FAILs: split the FAIL alpha over every
+    # check it runs (in a mix, every check of every class).
+    total = sum(check_count(**(class_slo or {}).get(name, slo_kwargs)) for name in point.class_metrics) \
+        + (0 if mixed else check_count(**slo_kwargs))
+    checks = [] if mixed else list(evaluate(point.metrics, fail_checks=total, **slo_kwargs).checks)
     for name, m in point.class_metrics.items():
-        for c in evaluate(m, **(class_slo or {}).get(name, slo_kwargs)).checks:
+        for c in evaluate(m, fail_checks=total, **(class_slo or {}).get(name, slo_kwargs)).checks:
             c.name = f"{name}.{c.name}"
             checks.append(c)
     return Verdict(_combine(checks), checks)

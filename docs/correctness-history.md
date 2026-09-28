@@ -518,3 +518,21 @@ artifact was ever used to actually inform a gateway config:
     sha256 manifest to an immutable location, and `summary` answering
     "can I trust it / what did we learn / production usable / next".
     The profile gains only the optional `run:` block -- schema stays 23.
+75. **FAIL rested on a point estimate, at any time.** PASS needed the
+    exact upper bound within the limit at a planned look, but FAIL
+    fired whenever the running point estimate crossed the limit, on
+    any data: one ModelErrorException in 181 requests (0.55% vs gold's
+    0.5%) FAILed tiny_request at C=1 and made the sweep non-monotonic,
+    and in confirmation a single early bad event could fail a compliant
+    candidate. Now every check is symmetric -- upper bound within the
+    limit -> PASS, exact lower bound beyond it -> FAIL (split over the
+    point's checks), otherwise INCONCLUSIVE -- and confirmation decides
+    FAIL, like PASS, only at planned looks on exactly the first N_j
+    requests, so false FAILs are controlled at <= alpha too. Severe
+    throttling (>= 10% of >= 100 confirmation requests) still stops a
+    candidate early, as INCONCLUSIVE / `stopped_severe_throttling` --
+    not a statistical FAIL, not a saturation edge. Some former FAILs
+    become INCONCLUSIVE and confirmation can take longer; the SLOs are
+    unchanged. `observed_violation` is renamed `violation_demonstrated`;
+    checks gain `bad_events` / `bad_rate_lower`, and
+    `measurement.fail_rule` records the rule. Additive -- schema stays 23.

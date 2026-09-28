@@ -19,7 +19,7 @@ from ..analysis.capacity import (
 )
 from ..analysis.confirmation import (
     ConfirmationPlan, ConfirmationResult, highest_confirmed, limits_for, look_sample, plan_looks, reachable,
-    step,
+    severe_throttling, step,
 )
 from ..analysis.metrics import DEFAULT_CONFIDENCE, compute_run_metrics
 from ..calibration import CalibrationResult, calibrate_profile, estimate_profile, resolve_counter
@@ -193,7 +193,7 @@ _SEED_OFFSET = {"discovery": 0, "refinement": 20_000, "confirmation": 10_000, "c
 
 def _slo_kwargs(slo, *, latency: bool = True) -> dict:
     # Rate gates are always judged three-way at `confidence` (default 95%):
-    # observed violation -> FAIL, bound clears -> PASS, else INCONCLUSIVE.
+    # lower bound beyond the limit -> FAIL, upper bound within -> PASS, else INCONCLUSIVE.
     kwargs = dict(success_rate_min=slo.success_rate_min, throttle_rate_max=slo.throttle_rate_max,
                   confidence=slo.confidence or DEFAULT_CONFIDENCE)
     if latency:
@@ -502,8 +502,8 @@ async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress:
 
         # Phase 2 -- confirmation (analysis/confirmation.py): fresh,
         # independent repetitions at candidates chosen from discovery,
-        # PASS only at pre-planned looks, FAIL any time, caps ->
-        # INCONCLUSIVE. Discovery data is not reused here.
+        # PASS and FAIL only at pre-planned looks, a severe-throttling
+        # early stop and caps -> INCONCLUSIVE. Discovery data is not reused here.
         recommendation = recommend(points, class_gate, **gate_kwargs)
         plan = None
         confirmations: List[ConfirmationResult] = []
@@ -596,7 +596,11 @@ async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress:
                         v, reason = INCONCLUSIVE, None
                         remaining = cfg.max_duration_s - (time.perf_counter() - started)
                         rep_cap = cfg.max_repetitions if cfg.max_repetitions is not None else math.inf
-                        if reps >= rep_cap:
+                        if severe_throttling(point.metrics):
+                            # Operational guard, not a test: spare the
+                            # provider. Not a FAIL, not a saturation edge.
+                            reason = "stopped_severe_throttling"
+                        elif reps >= rep_cap:
                             reason = "max_repetitions"
                         elif n >= cfg.max_requests:
                             reason = "max_requests"
@@ -610,7 +614,8 @@ async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress:
                             if max_n < plan.look_schedule[looks_used]:
                                 reason = "unreachable_within_caps"
                     if reason is not None:
-                        if rp is not None and reason == "observed_violation" and suspect_point(point, ceiling_rps):
+                        if rp is not None and reason in ("violation_demonstrated", "stopped_severe_throttling") \
+                                and suspect_point(point, ceiling_rps):
                             # Still throttled far below the ceiling after a
                             # verified recovery: accepted as a real result.
                             note_suspect("confirmation", value, point, "reproduced_after_recovery")
@@ -618,8 +623,9 @@ async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress:
                         result = ConfirmationResult(
                             value, v, reason, repetitions=reps, n=n, looks_used=looks_used,
                             next_look_n=plan.look_schedule[looks_used] if looks_used < plan.max_looks else None,
-                            # A look's verdict when a look decided; the all-data one for a FAIL / cap.
-                            detail=last_look[1] if last_look and reason in ("confirmed", "looks_exhausted") else verdict,
+                            # A look's verdict when a look decided; the all-data one for a stop / cap.
+                            detail=last_look[1] if last_look and reason in (
+                                "confirmed", "violation_demonstrated", "looks_exhausted") else verdict,
                             point=point,
                             decision_n=last_look[2] if last_look else None,
                             decision_metrics=last_look[0].metrics if last_look else None,

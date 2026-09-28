@@ -129,8 +129,9 @@ class SweepConfig:
 class ConfirmationConfig:
     """Adaptive confirmation (analysis/confirmation.py): after discovery
     picks candidates, fresh independent repetitions at each candidate
-    until a pre-planned look can PASS it, an observed violation FAILs it,
-    or a cap is reached (-> INCONCLUSIVE). Discovery data never counts."""
+    until a pre-planned look PASSes or FAILs it (exact bounds), severe
+    throttling stops it early, or a cap is reached (both -> INCONCLUSIVE).
+    Discovery data never counts."""
     # PASS may be declared only at this many pre-planned sample sizes;
     # each test runs at 1 - alpha / (max_looks x K) for K candidates
     # (Bonferroni over looks and candidates).

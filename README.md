@@ -266,8 +266,9 @@ workload_classes:
 
 No statistically confirmed point means `admission_envelope: null`: a
 recommendation is never derived from an observed-only or INCONCLUSIVE
-point, and `reason` says why (e.g. `confirmation at 6.6667: FAIL
-(observed_violation, n=620)` for silver `rag_answer`).
+point, and `reason` says why -- each candidate's verdict and
+`stop_reason` (e.g. `confirmation at 6.6667: FAIL (violation_demonstrated,
+n=4380)`).
 
 ## Not in scope
 
@@ -283,7 +284,7 @@ enforces it, and reads nothing from a gateway's tables or config.
 | Doc | Covers |
 |---|---|
 | [methodology](docs/methodology.md) | core abstractions, SLO goodput, measurement window, input calibration and workload validation, mixed workloads, provenance and temporal validation |
-| [SLO statistics](docs/slo-statistics.md) | SLO profiles, PASS / FAIL / INCONCLUSIVE, exact bounds for latency / success / throttle, adaptive confirmation and false-PASS control |
+| [SLO statistics](docs/slo-statistics.md) | SLO profiles, PASS / FAIL / INCONCLUSIVE, exact bounds for latency / success / throttle, adaptive confirmation, false-PASS and false-FAIL control |
 | [quota model](docs/quota-model.md) | provider ceiling, TPM reservation vs consumption, quota-relative sweeps, `fetch_quota.py` |
 | [capacity-profile schema](docs/capacity-profile-schema.md) | the deliverable and its consumer contract, measurement vs recommendation; the temporal-capacity-profile and the machine-readable JSON Schemas |
 | [experiment design](docs/experiment-design.md) | models, workload catalog, experiments, constraints, running, pilot |

@@ -80,12 +80,25 @@ verdict (`capacity.py`'s `evaluate`):
   `statistically_confirmed` really means latency, success AND throttle
   are all statistically confirmed.
 - **rate checks** (success, throttle), on EXACT one-sided
-  (Clopper-Pearson) bounds at `confidence` (default 95%):
-  - observed violation (e.g. throttle rate above the limit) -> **FAIL**
-  - the bound clears the limit -> **PASS**
-  - no violation, but too few requests to prove it -> **INCONCLUSIVE**,
-    with `n` and `required_n` (0 throttles in 540 requests has a 95%
-    upper bound of ~0.55% -- resolving a 0.1% limit needs 2,995)
+  (Clopper-Pearson) bounds at `confidence` (default 95%). Every check --
+  latency ones included -- is a bad-event rate (failures, throttles,
+  requests over T) against a tolerated rate, judged symmetrically:
+  - upper bound <= tolerated -> **PASS** (compliance demonstrated)
+  - lower bound > tolerated -> **FAIL** (violation demonstrated;
+    `reason: violation_demonstrated`, `bad_events`, `bad_rate_lower`)
+  - otherwise -> **INCONCLUSIVE**, with `n` and `required_n` (0
+    throttles in 540 requests has a 95% upper bound of ~0.55% --
+    resolving a 0.1% limit needs 2,995)
+
+  A point estimate over the limit is not a FAIL by itself: 1 error in
+  181 requests (0.55%) against gold's 0.5% has a lower bound near 0.01%
+  -- INCONCLUSIVE, exactly as 0 errors in 181 can't PASS. The FAIL test
+  runs at `1 - alpha / m` for the point's m checks (a point FAILs if ANY
+  check fails, so a false FAIL has m chances; PASS needs every check,
+  so it needs no split). This states the strength of the evidence; the
+  SLO never moves. Missing measurements (`not_measured`), no requests
+  and client-limited points still fail closed -- those aren't
+  statistical claims.
 
 Exact, not Wilson: these checks sit at 0-2 events, exactly where Wilson
 is anti-conservative. Its 95% bound clears 0.1% after 2,703 clean
@@ -144,8 +157,9 @@ headroom                  max_inflight = floor(confirmed x (1 - headroom))
 
 The bracket's lower bound only needs to be non-FAIL: discovery picks
 candidates, it never proves anything, so an INCONCLUSIVE point is a
-valid lower bound. Only a FAIL (an observed violation) is an upper
-bound.
+valid lower bound. Only a FAIL (a demonstrated violation) is an upper
+bound. Discovery verdicts are per point (not family-wise): the
+saturation edge they give is observed, labelled `phase: discovery`.
 
 | Phase | Data | Used for | Never used for |
 |---|---|---|---|
@@ -281,7 +295,21 @@ confirmation repetition; it isn't counted against `max_duration_s`.
 a PASS can only be declared at `max_looks` sample sizes fixed before any
 confirmation data exists -- look j is where j-1 bad events would still
 clear the limit -- each at confidence `1 - 0.05 / max_looks`
-(Bonferroni). FAIL (an observed violation) stops it at any time.
+(Bonferroni). FAIL follows the same rule: it is declared only at a
+planned look, on the same first N_j requests, when a check's exact lower
+bound is beyond its limit -- so false FAILs are controlled like false
+PASSes (<= 5%), rather than a single early bad event failing a
+compliant candidate. At a true rate exactly at the limit (compliant),
+the old rule -- FAIL whenever the running point estimate is over the
+limit -- fails the candidate most of the time; the planned rule stays
+<= 5% (`tests/test_confirmation.py`).
+
+**Early stop is not FAIL.** A candidate whose confirmation data is
+severely throttled (>= 10% of at least 100 requests) stops at once to
+spare the provider and the account. It is recorded as INCONCLUSIVE with
+`stop_reason: stopped_severe_throttling` -- never as a statistical FAIL
+(no planned look decided it) and never as a saturation edge. The next
+candidate is still tested.
 
 **Fixed-count looks.** Look j is decided on EXACTLY the first N_j
 confirmation requests by scheduled time (in a mix, the first N_c,j of
@@ -333,9 +361,11 @@ raised to fit it. More samples, never a looser SLO.
 A candidate stops only on:
 
 1. a pre-planned sample-count look PASSes -> **PASS**
-2. an observed violation (any time) -> **FAIL**
-3. `max_requests` reached -> **INCONCLUSIVE**
-4. `max_duration_s` reached -> **INCONCLUSIVE**
+2. a pre-planned sample-count look FAILs (lower bound beyond the limit) -> **FAIL**
+3. every look spent, neither -> **INCONCLUSIVE** (`looks_exhausted`)
+4. severe throttling (early stop, operational) -> **INCONCLUSIVE** (`stopped_severe_throttling`)
+5. `max_requests` reached -> **INCONCLUSIVE**
+6. `max_duration_s` reached -> **INCONCLUSIVE**
 
 Never on a number of repetitions: no shipped experiment sets
 `max_repetitions` (it stays in the schema, default none, as an optional
@@ -347,9 +377,9 @@ from discovery's requests per repetition -- stops as
 at 1.67 rps collects ~150 requests per 90 s window: 3,688 doesn't fit in
 1,800 s).
 Each candidate reports `verdict`, `stop_reason` (`confirmed`,
-`observed_violation`, `looks_exhausted`, `max_repetitions`,
-`max_requests`, `max_duration`, `unreachable_within_caps`,
-`not_tested`), `n`, `looks_used` and `next_look_n` under the subject's
+`violation_demonstrated`, `looks_exhausted`, `stopped_severe_throttling`,
+`max_repetitions`, `max_requests`, `max_duration`,
+`unreachable_within_caps`, `provider_state_invalid`, `not_tested`), `n`, `looks_used` and `next_look_n` under the subject's
 `confirmation` block, next to the `plan` (confidence, candidates, order,
 `per_test_confidence`, look schedule, caps).
 

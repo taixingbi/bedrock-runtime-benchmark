@@ -46,9 +46,13 @@ class LatencyExceedanceTests(unittest.TestCase):
         c = _ttft(_results(70, 1))
         self.assertEqual((c.verdict, c.required_n), ("INCONCLUSIVE", 93))
 
-    def test_more_than_5_percent_over_is_fail(self):
-        c = _ttft(_results(90, 10))  # 10% over -> the sample p95 itself is over
-        self.assertEqual((c.verdict, c.reason), ("FAIL", "observed_violation"))
+    def test_fail_needs_the_exceedance_lower_bound_over_5_percent(self):
+        c = _ttft(_results(80, 20))  # 20% over: lower bound well above 5%
+        self.assertEqual((c.verdict, c.reason), ("FAIL", "violation_demonstrated"))
+        self.assertGreater(c.bad_rate_lower, 0.05)
+        c = _ttft(_results(90, 10))  # 10% over in 100: the sample p95 is over, but not demonstrably
+        self.assertEqual(c.verdict, "INCONCLUSIVE")
+        self.assertLess(c.bad_rate_lower, 0.05)
 
     def test_sample_p95_under_the_limit_is_not_enough_on_its_own(self):
         """The old rule: 40 requests, 1 slow -> sample p95 under 800 -> PASS.
@@ -59,8 +63,8 @@ class LatencyExceedanceTests(unittest.TestCase):
         self.assertEqual(_ttft(results).verdict, "INCONCLUSIVE")
 
     def test_a_missing_measurement_counts_as_an_exceedance(self):
-        c = _ttft(_results(100, 0, ttft_missing=6))  # 6/106 unmeasured -> > 5%
-        self.assertEqual((c.verdict, c.exceedances), ("FAIL", 6))
+        c = _ttft(_results(100, 0, ttft_missing=30))  # 30/130 unmeasured -> demonstrably > 5%
+        self.assertEqual((c.verdict, c.exceedances), ("FAIL", 30))
 
     def test_nothing_measured_fails_closed(self):
         c = _ttft(_results(0, 0, ttft_missing=20))
