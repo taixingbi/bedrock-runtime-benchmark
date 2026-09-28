@@ -77,7 +77,7 @@ from typing import Dict, List, Optional
 
 from .analysis.capacity import FAIL, INCONCLUSIVE, PASS, Recommendation
 from .analysis.metrics import DEFAULT_CONFIDENCE, RunMetrics, min_samples_to_resolve_rate, percentile
-from .experiments.executor import ExperimentReport, above_ceiling, achieved_rps
+from .experiments.executor import ExperimentReport, above_ceiling, ceiling_ratio, point_rates
 from .recommendation import admission_envelope
 from .results import RequestResult
 from .workload import WorkloadProfile
@@ -133,20 +133,22 @@ def _concurrency_block(rec: Recommendation, *, ceiling_rps: Optional[float] = No
     """MEASUREMENT only: observed_nonfailing -> statistically_confirmed.
     The policy step (headroom -> max_inflight) lives in the entry's
     `recommendation` block (recommendation.py), never here.
-    observed_nonfailing_achieved_rps is the request rate that point
-    produced; above the provider ceiling it ran on burst allowance."""
+    observed_nonfailing_rates are what that point produced (attempted /
+    successful / throttled / goodput); ceiling_ratio is successful_rps
+    over the nominal provider ceiling -- well above 1 means burst."""
     confirmed = rec.confirmed_point.concurrency if rec.confirmed_point is not None else None
     out = {
         "observed_nonfailing": rec.point.concurrency,
         **_observed_fields(rec),
-        "observed_nonfailing_achieved_rps": achieved_rps(rec.point),
+        "observed_nonfailing_rates": point_rates(rec.point),
         "statistically_confirmed": confirmed,
         "confirmation_source": rec.confirmation_source,
         "saturation": _saturation(rec),
         "observed_slo_goodput_rps": rec.point.metrics.slo_goodput_rps,
     }
     if ceiling_rps:
-        out["provider_ceiling_rps"] = round(ceiling_rps, 4)
+        out["provider_ceiling_rps"] = round(ceiling_rps, 4)  # nominal sustainable quota ceiling, not a hard wall
+        out["observed_nonfailing_ceiling_ratio"] = ceiling_ratio(rec.point, ceiling_rps)
         out["observed_nonfailing_above_provider_ceiling"] = above_ceiling(rec.point, ceiling_rps)
     return out
 
@@ -183,14 +185,18 @@ def _rate_block(rec: Recommendation, *, ceiling_rps: Optional[float]) -> dict:
 
 def _sweep_points(profile_report, ceiling_rps: Optional[float] = None) -> List[dict]:
     """Every swept point's verdict -- the transition region at a glance.
-    Concurrency points carry the rate they achieved; one above the
-    provider ceiling passed on burst allowance and is never a candidate."""
+    Concurrency points carry their rates -- attempted (inflated by fast
+    429s under overload), successful (served), throttled, goodput -- and
+    ceiling_ratio (served / nominal ceiling); one served >10% above the
+    ceiling passed on burst allowance and is never a candidate."""
     out = []
     for point, verdict in zip(profile_report.points, profile_report.verdicts):
         row = {"value": _value(point), "verdict": verdict.verdict, "phase": point.phase,
                "repetitions": len(point.repetitions) or 1, "n": point.metrics.n}
         if point.concurrency is not None:
-            row["achieved_rps"] = achieved_rps(point)
+            row.update(point_rates(point))
+            if ceiling_rps:
+                row["ceiling_ratio"] = ceiling_ratio(point, ceiling_rps)
             if ceiling_rps and above_ceiling(point, ceiling_rps):
                 row["above_provider_ceiling"] = True
         failed = [c.name for c in verdict.checks if c.verdict == "FAIL"]
@@ -332,9 +338,11 @@ def _calibration_point(spec, subject: str, rec: Optional[Recommendation], ceilin
     shape under its SLO, the quota and the measured provider environment
     -- C_safe = f(shape, SLO, quota, provider conditions) -- as an input
     for gateway policy derivation, not a config value (no headroom).
-    achieved_rps is what C and latency PRODUCED in this closed-loop run
-    -- an observation, not a tested rate envelope (that is
-    rate-capacity's sustained_rps). Null values when nothing was
+    The rates are what C and latency PRODUCED in this closed-loop run --
+    observations, not a tested rate envelope (that is rate-capacity's
+    sustained_rps). C_safe mostly reflects request service time while RPM
+    binds, so it is not a cost weight: very_large_context C=12 does not
+    make it cheaper than tiny_request C=2. Null values when nothing was
     confirmed."""
     workload = next((w for w in spec.workloads if w.name == subject), None)
     confirmed = rec.confirmed_point if rec is not None else None
@@ -344,15 +352,15 @@ def _calibration_point(spec, subject: str, rec: Optional[Recommendation], ceilin
         "slo_profile": workload.slo_profile if workload is not None else None,
         "tokens_per_request": ceiling.tokens_per_request if ceiling is not None else None,
         f"statistically_confirmed_{spec.sweep.type}": _value(confirmed) if confirmed is not None else None,
-        # Observed, not controlled: closed-loop C + latency produced it.
-        "achieved_rps": confirmed.metrics.request_throughput_rps if confirmed is not None else None,
-        "confirmed_slo_goodput_rps": confirmed.metrics.slo_goodput_rps if confirmed is not None else None,
+        # Observed, not controlled: closed-loop C + latency produced them.
+        "confirmed_rates": point_rates(confirmed) if confirmed is not None else None,
+        "ceiling_ratio": ceiling_ratio(confirmed, ceiling.rps if ceiling else None) if confirmed is not None else None,
         "observed_saturation_edge": _value(rec.saturation_point) if rec is not None and rec.saturation_point is not None else None,
         "bottleneck": (diagnosis or {}).get("bottleneck"),
         "scope": "isolated_workload_class",
-        "use": "input to gateway admission-class / weight derivation; not a config value, no headroom applied; "
-               "derived classes / weights must be validated under representative mixed traffic through the "
-               "deployed gateway (eval-bedrock-platform) before production",
+        "use": "workload-specific admission evidence -> policy derivation -> mixed validation; not a config "
+               "value or a cost weight, no headroom applied; any derived policy must be validated under "
+               "representative mixed traffic through the deployed gateway (eval-bedrock-platform) before production",
     }
     if confirmed is None:
         point["reason"] = "nothing statistically confirmed for this shape -- see confirmation.candidates"
@@ -641,7 +649,7 @@ def build_capacity_profile(report: ExperimentReport) -> dict:
 
     confidence = spec.slo.confidence or DEFAULT_CONFIDENCE
     return {
-        "schema_version": 20,
+        "schema_version": 21,
         "experiment": spec.name,
         # reference: carries production admission envelopes;
         # admission_calibration: confirmed calibration_point per workload

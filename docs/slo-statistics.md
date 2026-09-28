@@ -169,8 +169,12 @@ looked good. So confirmation starts from zero.
 
 **Candidates.** The highest point(s) of discovery's leading non-failing
 run, at or below the provider ceiling -- for a rate sweep its offered
-rps, for a concurrency sweep the request rate it ACHIEVED (more than 10%
-over the ceiling = burst). Above the ceiling a point passes discovery on
+rps, for a concurrency sweep the rate it was SERVED (`successful_rps`;
+`ceiling_ratio` = served / ceiling above 1.10 = burst). The ceiling is
+the NOMINAL sustainable quota rate, not an instantaneous hard wall: a
+point served at the ceiling reads a few % over it in a short window
+(`long_context_short_answer` confirmed at 6.74 rps, 1.01x), hence the
+tolerance. Above the ceiling a point passes discovery on
 burst allowance only: a concurrency that needs 9 rps can't hold under a
 6.67 rps quota, and confirming it just measures the bucket draining (the
 first `workload-shape-calibration` run: every candidate was at 8.3-9.1

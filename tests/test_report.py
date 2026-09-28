@@ -52,11 +52,11 @@ class BuildCapacityProfileTests(unittest.TestCase):
         defaults.update(overrides)
         return ExperimentSpec(**defaults)
 
-    def test_schema_version_is_20(self):
+    def test_schema_version_is_21(self):
         spec = self._spec()
         report = ExperimentReport(spec=spec, profiles=[ProfileReport(workload_name="short", recommendation=None)])
         profile = build_capacity_profile(report)
-        self.assertEqual(profile["schema_version"], 20)
+        self.assertEqual(profile["schema_version"], 21)
 
     def test_concurrency_sweep_writes_a_concurrency_block_not_rate(self):
         spec = self._spec(sweep_type="concurrency")
@@ -361,10 +361,14 @@ class BuildCapacityProfileTests(unittest.TestCase):
         self.assertEqual(point["workload_shape"], {"input_tokens": 256, "output_tokens": 32})
         self.assertEqual(point["slo_profile"], "gold")                       # its own business SLO
         self.assertEqual((point["statistically_confirmed_concurrency"], point["observed_saturation_edge"]), (4, 6))
-        self.assertEqual(point["achieved_rps"], 6.2)                         # observed, not a tested rate
+        rates = point["confirmed_rates"]                                    # observed, not a tested rate
+        self.assertEqual(rates["successful_rps"], 6.2)
+        self.assertEqual(set(rates), {"attempted_rps", "successful_rps", "throttled_rps", "slo_goodput_rps"})
         self.assertNotIn("sustained_rps", point)
+        self.assertNotIn("achieved_rps", point)
         self.assertEqual(point["scope"], "isolated_workload_class")
         self.assertIn("no headroom", point["use"])
+        self.assertIn("not a config value or a cost weight", point["use"])
         self.assertIn("mixed traffic", point["use"])
 
     def test_characterization_experiment_never_recommends(self):

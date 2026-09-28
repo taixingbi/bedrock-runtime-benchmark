@@ -77,17 +77,14 @@ Only **reference** experiments, on the three **reference** workloads (one
 per SLO tier), produce an admission-envelope recommendation.
 `workload-shape-calibration` is **admission calibration**: for the other four catalog
 shapes it produces statistically confirmed `calibration_point`s --
-C_safe = f(input/output tokens, SLO, quota, provider conditions) -- from which a gateway
-derives its admission classes or weights:
+C_safe = f(input/output tokens, SLO, quota, provider conditions):
 
 ```
-workload-shape-calibration -> confirmed calibration points -> gateway policy derivation -> admission config
+calibration_point -> workload-specific admission evidence -> policy derivation (gateway) -> mixed validation (eval-bedrock-platform)
 ```
 
-A calibration point is an input to that derivation, not a config value:
-no admission envelope, no headroom; its `achieved_rps` is what
-concurrency and latency produced (an observation), not a tested rate
-like `rate-capacity`'s `sustained_rps`. Calibration points are isolated-workload measurements; per-shape C_safe values don't combine mathematically into a global policy. Any admission classes or weights derived from them must be validated under representative mixed traffic through the deployed gateway (`eval-bedrock-platform`) before production use -- this repo calls Bedrock directly and never validates gateway policy.
+A calibration point is evidence, not a config value: no admission
+envelope, no headroom. C_safe mostly reflects request service time while RPM binds, so it is not a cost weight: `very_large_context` confirmed at C=12 and `tiny_request` at C=2 on nova-micro, and that does not make the large shape cheaper -- both are served at ~6.4-6.7 rps, the RPM ceiling. Rates are kept apart -- `attempted_rps` (inflated by fast 429s under overload), `successful_rps` (served), `throttled_rps`, `slo_goodput_rps` -- plus `ceiling_ratio` (served / nominal ceiling); all are observations of what concurrency and latency produced, not a tested rate like `rate-capacity`'s `sustained_rps`. Calibration points are isolated-workload measurements; per-shape C_safe values don't combine mathematically into a global policy, and any policy derived from them must be validated under representative mixed traffic through the deployed gateway (`eval-bedrock-platform`) before production use -- this repo calls Bedrock directly and never validates gateway policy.
 
 Each reference workload ends up with both an isolated concurrency and an
 isolated rate envelope:

@@ -96,7 +96,8 @@ def _candidates(points: List[SweepPoint], rec: Recommendation, spec: ExperimentS
                 how_many: int) -> List[SweepPoint]:
     """The `how_many` highest points in discovery's leading non-failing
     run, at or below the provider ceiling: for a rate sweep its offered
-    rps, for a concurrency sweep the request rate it ACHIEVED. A point
+    rps, for a concurrency sweep the rate it was SERVED (successful_rps,
+    within CEILING_RATE_TOLERANCE of the nominal ceiling). A point
     above the ceiling passed discovery on burst allowance -- a concurrency
     that needs 9 rps can't hold under a 6.67 rps quota -- so confirming it
     only measures the bucket draining. Returned ascending; the executor
@@ -112,24 +113,43 @@ def _candidates(points: List[SweepPoint], rec: Recommendation, spec: ExperimentS
     return eligible[-how_many:]
 
 
-# A concurrency point whose achieved rate exceeds the provider ceiling by
-# more than this ran on burst allowance, not sustainable quota. 10%: a
-# point AT the ceiling reads a few % over in a short window (short_chat
-# C=4 on nova-micro: 7.16 rps vs 6.67 in discovery, then confirmed at
-# 6.69 rps with 0 throttles); burst-inflated points read 1.2-1.4x.
+# Burst screen. provider_ceiling_rps is the NOMINAL sustainable quota
+# ceiling, not an instantaneous hard wall: a point served at the ceiling
+# reads a few % over it in a short window (short_chat C=4: 7.16 rps
+# attempted vs 6.67 in discovery, then confirmed at 6.69 rps with 0
+# throttles; long_context_short_answer C=5 confirmed at 6.74 rps, 1.01x).
+# A point SERVED more than 10% above it ran on burst allowance (those
+# read 1.2-1.4x) and is never a candidate.
 CEILING_RATE_TOLERANCE = 0.10
 
 
-def achieved_rps(point: SweepPoint) -> Optional[float]:
-    """Requests sent per second of measured window (closed loop: what C
-    and latency produced)."""
+def point_rates(point: SweepPoint) -> Dict[str, Optional[float]]:
+    """What a closed-loop point produced, kept apart -- under overload,
+    fast 429s inflate the attempted rate far above anything served:
+      attempted_rps    requests sent per second of window
+      successful_rps   successes completed in the window per second (served)
+      throttled_rps    429s per second of window
+      slo_goodput_rps  successes that also met their latency SLO"""
     m = point.metrics
-    return round(m.n / m.measured_duration_s, 4) if m.measured_duration_s else None
+    d = m.measured_duration_s
+    return {
+        "attempted_rps": round(m.n / d, 4) if d else None,
+        "successful_rps": m.request_throughput_rps,
+        "throttled_rps": round(m.n_throttled / d, 4) if d else None,
+        "slo_goodput_rps": m.slo_goodput_rps,
+    }
+
+
+def ceiling_ratio(point: SweepPoint, ceiling_rps: Optional[float]) -> Optional[float]:
+    """successful_rps / provider_ceiling_rps -- how close to the nominal
+    quota ceiling the point was SERVED."""
+    served = point.metrics.request_throughput_rps
+    return round(served / ceiling_rps, 4) if ceiling_rps and served is not None else None
 
 
 def above_ceiling(point: SweepPoint, ceiling_rps: float) -> bool:
-    rate = achieved_rps(point)
-    return rate is not None and rate > ceiling_rps * (1 + CEILING_RATE_TOLERANCE)
+    ratio = ceiling_ratio(point, ceiling_rps)
+    return ratio is not None and ratio > 1 + CEILING_RATE_TOLERANCE
 
 
 # Distinct seeds per phase, so no phase replays another's arrival pattern.

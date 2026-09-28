@@ -2,20 +2,20 @@
 
 > Docs: [methodology](methodology.md) · [SLO statistics](slo-statistics.md) · [quota model](quota-model.md) · [capacity-profile schema](capacity-profile-schema.md) · [experiment design](experiment-design.md) · [correctness history](correctness-history.md) · [README](../README.md)
 
-The benchmark's one deliverable and its contract with consumers. Schema version 20.
+The benchmark's one deliverable and its contract with consumers. Schema version 21.
 
 ## The profile
 
 Each run writes raw per-request JSONL and a `capacity-profile.yaml`
 artifact under `results/` (gitignored -- these are real measurement outputs, not
-checked-in fixtures). The `capacity-profile.yaml` schema (v20 -- see
+checked-in fixtures). The `capacity-profile.yaml` schema (v21 -- see
 [correctness history](correctness-history.md) for why `rate` and `concurrency` are always
 kept in separate blocks, why the rate block separates offered load
 from goodput, and why there's no `global_max_concurrency`). A
 rate-capacity result:
 
 ```yaml
-schema_version: 20
+schema_version: 21
 experiment: rate-capacity
 purpose: reference                                 # admission_calibration | characterization -- then recommendation is always null
 environment:                                       # provenance -- see methodology.md, "Provenance and temporal validation"
@@ -110,10 +110,11 @@ transport: {max_connections: 64, executor_workers: 64, total_max_attempts: 1, co
 ```
 
 A concurrency sweep writes `concurrency: {observed_nonfailing,
-observed_verdict, observed_nonfailing_achieved_rps, statistically_confirmed,
+observed_verdict, observed_nonfailing_rates, statistically_confirmed,
 saturation, observed_slo_goodput_rps, provider_ceiling_rps,
 observed_nonfailing_above_provider_ceiling, scope, summary}` instead of
-`rate` (its `sweep_points` carry `achieved_rps`, and
+`rate` (its `sweep_points` carry attempted / successful / throttled /
+goodput rps and `ceiling_ratio`, and
 `above_provider_ceiling: true` for points that ran on burst), and its
 recommendation sets `max_inflight` instead of `sustained_rps` --
 likewise from the confirmed point only. A sweep with
@@ -200,12 +201,12 @@ Contract rules a consumer can rely on:
 - A `purpose: admission_calibration` profile carries, per workload, a
   `calibration_point`: `{workload_shape: {input_tokens, output_tokens},
   slo_profile, tokens_per_request, statistically_confirmed_concurrency,
-  achieved_rps, confirmed_slo_goodput_rps, saturation, bottleneck,
-  scope, use}` -- statistically confirmed, no headroom. `achieved_rps` is
-  observed (closed-loop C + latency produced it), never a tested rate
-  like `sustained_rps`. Calibration points are isolated-workload measurements; per-shape C_safe values don't combine mathematically into a global policy. Any admission classes or weights derived from them must be validated under representative mixed traffic through the deployed gateway (`eval-bedrock-platform`) before production use -- this repo calls Bedrock directly and never validates gateway policy. It is an
-  input for deriving admission classes or weights, not a limit to
-  compare a config against (the gateway's review skips these profiles).
+  confirmed_rates: {attempted_rps, successful_rps, throttled_rps,
+  slo_goodput_rps}, ceiling_ratio, observed_saturation_edge, bottleneck,
+  scope, use}` -- statistically confirmed, no headroom. Rates are kept apart -- `attempted_rps` (inflated by fast 429s under overload), `successful_rps` (served), `throttled_rps`, `slo_goodput_rps` -- plus `ceiling_ratio` (served / nominal ceiling); all are observations of what concurrency and latency produced, not a tested rate like `rate-capacity`'s `sustained_rps`. C_safe mostly reflects request service time while RPM binds, so it is not a cost weight: `very_large_context` confirmed at C=12 and `tiny_request` at C=2 on nova-micro, and that does not make the large shape cheaper -- both are served at ~6.4-6.7 rps, the RPM ceiling.
+  It is workload-specific admission evidence (calibration_point -> workload-specific admission evidence -> policy derivation (gateway) -> mixed validation (eval-bedrock-platform)),
+  not a limit to compare a config against (the gateway's review skips
+  these profiles).
 - `max_inflight` is set for concurrency sweeps, `sustained_rps` for rate
   sweeps; the other is `null`. They are two independent guardrails, not
   a jointly validated (C, R) region.

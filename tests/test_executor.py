@@ -298,6 +298,9 @@ class RunExperimentTests(unittest.IsolatedAsyncioTestCase):
         rows = {r["value"]: r for r in entry["sweep_points"]}
         self.assertTrue(rows[8].get("above_provider_ceiling"))
         self.assertNotIn("above_provider_ceiling", rows[4])
+        self.assertLess(rows[4]["ceiling_ratio"], 1.1)          # served within the tolerance of the ceiling
+        self.assertGreater(rows[8]["ceiling_ratio"], 1.1)
+        self.assertTrue({"attempted_rps", "successful_rps", "throttled_rps", "slo_goodput_rps"} <= set(rows[8]))
         # Conditioning ran before the looks and never counted.
         conditioning = [r for r in report.all_results if r.tags.get("phase") == "conditioning"]
         self.assertTrue(conditioning and not any(r.tags["measured"] for r in conditioning))

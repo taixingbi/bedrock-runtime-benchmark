@@ -123,9 +123,9 @@ and the measured provider environment. Each shape keeps its
 own business SLO (`tiny_request` gold, `medium_context` and
 `long_context_short_answer` silver, `very_large_context` bronze), not a
 fixed research SLO. Its `calibration_point` (workload shape, SLO,
-`statistically_confirmed_concurrency`, `achieved_rps` and goodput,
-saturation, bottleneck) is an input to gateway policy
-derivation -- admission classes or weights -- never a config value:
+`statistically_confirmed_concurrency`, `confirmed_rates`,
+`ceiling_ratio`, saturation edge, bottleneck) is workload-specific
+admission evidence -- calibration_point -> workload-specific admission evidence -> policy derivation (gateway) -> mixed validation (eval-bedrock-platform) -- never a config value:
 
 ```
 eval-bedrock-runtime-benchmark (Benchmark -> Bedrock, no gateway in the path)
@@ -140,9 +140,14 @@ eval-bedrock-platform (-> gateway -> Bedrock)
   validates the deployed gateway policy under production-like mixed traffic
 ```
 
-`achieved_rps` is an observation -- in a closed-loop sweep the rate is
-what concurrency and latency produce -- not a tested rate envelope; that
-is `rate-capacity`'s `sustained_rps`. Calibration points are isolated-workload measurements; per-shape C_safe values don't combine mathematically into a global policy. Any admission classes or weights derived from them must be validated under representative mixed traffic through the deployed gateway (`eval-bedrock-platform`) before production use -- this repo calls Bedrock directly and never validates gateway policy.
+Rates are kept apart -- `attempted_rps` (inflated by fast 429s under overload), `successful_rps` (served), `throttled_rps`, `slo_goodput_rps` -- plus `ceiling_ratio` (served / nominal ceiling); all are observations of what concurrency and latency produced, not a tested rate like `rate-capacity`'s `sustained_rps`. C_safe mostly reflects request service time while RPM binds, so it is not a cost weight: `very_large_context` confirmed at C=12 and `tiny_request` at C=2 on nova-micro, and that does not make the large shape cheaper -- both are served at ~6.4-6.7 rps, the RPM ceiling. Calibration points are isolated-workload measurements; per-shape C_safe values don't combine mathematically into a global policy, and any policy derived from them must be validated under representative mixed traffic through the deployed gateway (`eval-bedrock-platform`) before production use -- this repo calls Bedrock directly and never validates gateway policy.
+
+**Next step for shape research (not nova-micro).** On nova-micro every
+shape hits the 400 RPM quota first, so this experiment measures
+C ~= R_quota x service time. Studying real token-shape capacity needs a
+model / quota where RPM doesn't bind first, so each shape can hit its own
+limit: long input -> prefill / TPM, long output -> decode / latency,
+small requests -> RPM. More nova-micro token shapes won't add to that.
 
 Because it feeds configuration, it needs independent confirmation like
 a reference experiment. Both `role` and `purpose` are recorded in the

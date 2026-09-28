@@ -426,3 +426,19 @@ artifact was ever used to actually inform a gateway config:
     v19 it corrects for candidates as well as looks, so it is now
     `confirmation.plan.per_test_confidence` = 1 - alpha / (L x K), and
     the module / config docs say 1 - alpha / (L x K), not 1 - alpha / L.
+
+## Schema v21 fixes
+
+67. **`achieved_rps` read like throughput.** Under overload fast 429s
+    pushed it to 95-145 rps on nova-micro's FAIL points. Concurrency
+    points, blocks and calibration points now report `attempted_rps`,
+    `successful_rps` (served), `throttled_rps` and `slo_goodput_rps`
+    separately, plus `ceiling_ratio` = served / nominal ceiling; the
+    burst screen uses the SERVED rate (ceiling_ratio > 1.10), since the
+    provider ceiling is nominal, not a hard wall
+    (`long_context_short_answer` confirmed at 6.74 rps, 1.01x).
+68. **Calibration points read like cost weights.** C_safe mostly
+    reflects service time while RPM binds (very_large_context C=12,
+    tiny_request C=2, both served at ~6.4-6.7 rps). `use` and docs now
+    say: workload-specific admission evidence -> policy derivation ->
+    mixed validation, never a weight or config value.

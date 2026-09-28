@@ -13,20 +13,22 @@
 # and rate-capacity.
 #
 # Output per shape: a `calibration_point` (confirmed concurrency,
-# achieved_rps, goodput, saturation, bottleneck). achieved_rps is what
-# C and latency produced in this closed-loop run -- an observation, not a
-# tested rate envelope (that's rate-capacity's sustained_rps). A gateway
-# derives its admission classes / weights from these points:
+# confirmed_rates -- attempted / successful / throttled / goodput rps --
+# ceiling_ratio, saturation edge, bottleneck). The rates are what C and
+# latency produced in this closed-loop run -- observations, not a tested
+# rate envelope (that's rate-capacity's sustained_rps):
 #
-#   concurrency-sweep          -> 3 reference production points  ┐
-#   workload-shape-calibration -> additional shape calibration   ┘
-#          -> gateway derives a workload-aware admission policy
-#          -> eval-bedrock-platform validates the DEPLOYED policy
+#   calibration_point -> workload-specific admission evidence
+#          -> policy derivation (gateway) -> mixed validation (eval-bedrock-platform)
+#
+# C_safe mostly reflects request service time while RPM binds, so it is
+# not a cost weight: very_large_context C=12 vs tiny_request C=2 does not
+# make the large shape cheaper -- both are served at the RPM ceiling.
 #
 # It is NOT a production config: no admission envelope, no headroom.
 # Calibration points are isolated-workload measurements; per-shape
 # C_safe values don't combine mathematically into a global policy. Any
-# admission classes or weights derived from them must be validated under
+# policy derived from them must be validated under
 # representative mixed traffic through the deployed gateway
 # (eval-bedrock-platform) before production use -- this repo calls
 # Bedrock directly and never validates gateway policy.
@@ -54,8 +56,9 @@ description: |
   Concurrency 1..48 (until two consecutive FAILs, then integer
   refinement and fixed-count confirmation) across the four non-reference
   catalog shapes, each under its own SLO. Produces statistically
-  confirmed workload-shape capacity points used to calibrate gateway
-  admission classes or weights -- not a production config.
+  confirmed workload-shape capacity points -- workload-specific
+  admission evidence for gateway policy derivation, not a production
+  config.
 
 workloads: [tiny_request, medium_context, long_context_short_answer, very_large_context]
 
@@ -85,8 +88,9 @@ sweep:
 # achieved 8.3-9.1 rps in discovery -- above the 6.67 rps ceiling, i.e.
 # on burst allowance -- and throttled 64-81% once the bucket drained.
 # Hence:
-#   - candidates are only points whose ACHIEVED rate is at or below the
-#     provider ceiling (code rule, like rate sweeps), and refinement
+#   - candidates are only points SERVED within 10% of the nominal
+#     provider ceiling (ceiling_ratio <= 1.10; a code rule, like rate
+#     sweeps' -- the ceiling is nominal, not a hard wall), and refinement
 #     treats an above-ceiling point as the upper bound of the bracket;
 #   - cooldown_s: 120 lets discovery's overload clear first;
 #   - warmup_s: 60 conditions each candidate (data discarded) so the
