@@ -168,18 +168,30 @@ double-dipping: the point was picked *because* its discovery sample
 looked good. So confirmation starts from zero.
 
 **Candidates.** The highest point(s) of discovery's leading non-failing
-run, at or below the provider ceiling -- for a rate sweep its offered
-rps, for a concurrency sweep the rate it was SERVED (`successful_rps`;
-`ceiling_ratio` = served / ceiling above 1.10 = burst). The ceiling is
-the NOMINAL sustainable quota rate, not an instantaneous hard wall: a
-point served at the ceiling reads a few % over it in a short window
-(`long_context_short_answer` confirmed at 6.74 rps, 1.01x), hence the
-tolerance. Above the ceiling a point passes discovery on
-burst allowance only: a concurrency that needs 9 rps can't hold under a
-6.67 rps quota, and confirming it just measures the bucket draining (the
-first `workload-shape-calibration` run: every candidate was at 8.3-9.1
-rps and throttled 64-81% in confirmation). Refinement treats an
-above-ceiling point as the upper bound of its bracket too.
+run. C_safe is the highest STATISTICALLY CONFIRMED SLO-compliant
+concurrency -- decided by independent confirmation, not by a heuristic
+filter -- so the provider ceiling is used for diagnostics, bracketing and
+candidate priority, never to reject a candidate outright:
+
+- `ceiling_ratio` = served rps / nominal ceiling; above 1.10 a point may
+  have passed discovery on burst allowance (the ceiling is a nominal
+  sustainable rate, not an instantaneous wall -- a point AT it reads a
+  few % over in a short window). Confirmation (cooldown -> conditioning ->
+  fixed-N looks) finds out whether it holds.
+- Refinement treats an above-ceiling point as the upper bound of its
+  bracket, so the region just below the ceiling gets resolved.
+- With `candidates: K > 1`, if none of the K chosen points is at or below
+  the ceiling, the lowest is swapped for the highest one that is -- a
+  burst-assisted FAIL still leaves a sustainable fallback.
+- A point confirmed above the ceiling is reported
+  (`confirmed_above_provider_ceiling`, `confirmed_ceiling_ratio`): it held
+  for the confirmation window, which can be short (bronze's first look is
+  ~437 requests, about a minute), not indefinitely -- the quota still caps
+  sustained production rate (`rate-capacity`'s `sustained_rps`).
+
+Rate sweeps are different: candidates are offered rps at or below the
+ceiling, because the policy caps `sustained_rps` at the quota anyway, so
+confirming above it adds nothing to the recommendation.
 
 **Provider-state isolation.** A managed provider's quota state carries
 over between phases: an overload point drains the burst / rolling

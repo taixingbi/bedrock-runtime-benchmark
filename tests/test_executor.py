@@ -280,11 +280,12 @@ class RunExperimentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((result.verdict, result.stop_reason), ("PASS", "confirmed"))
         self.assertEqual(result.decision_n, report.profiles[0].confirmation_plan.look_schedule[0])
 
-    async def test_points_above_the_provider_ceiling_are_upper_bounds_and_never_candidates(self):
+    async def test_above_ceiling_points_bound_refinement_but_confirmation_decides(self):
         """~19 rps per worker (50 ms calls) against an 85 rps ceiling: C=4
-        (~77 rps) is sustainable, C=5+ only ran on burst. No throttling in
-        the fake -- so without the ceiling rule every point would PASS and
-        C=8 would be the candidate."""
+        (~77 rps) is served within it, C=5+ above it. The ceiling bounds
+        the refinement bracket (5, 6 tested) and is reported, but it no
+        longer rejects a candidate: the fake never throttles, so C=8 --
+        served above the ceiling -- is confirmed, and flagged as such."""
         from bedrock_benchmark.ceiling import ProviderCeiling
         from bedrock_benchmark.experiments.schema import ConfirmationConfig, RefinementConfig
         from .fakes import ConcurrencyLimitedClient
@@ -299,18 +300,36 @@ class RunExperimentTests(unittest.IsolatedAsyncioTestCase):
         profile = report.profiles[0]
         self.assertEqual(sorted(p.concurrency for p in profile.points if p.phase == "refinement"), [5, 6])
         [candidate] = profile.confirmations
-        self.assertEqual(candidate.value, 4)               # not 5 / 6 / 8: they needed burst
+        self.assertEqual((candidate.value, candidate.verdict), (8, "PASS"))  # confirmation decides, not the ceiling
         entry = build_capacity_profile(report)["workload_classes"]["short"]
         rows = {r["value"]: r for r in entry["sweep_points"]}
         self.assertTrue(rows[8].get("above_provider_ceiling"))
         self.assertNotIn("above_provider_ceiling", rows[4])
-        self.assertLess(rows[4]["ceiling_ratio"], 1.1)          # served within the tolerance of the ceiling
+        self.assertLess(rows[4]["ceiling_ratio"], 1.1)
         self.assertGreater(rows[8]["ceiling_ratio"], 1.1)
         self.assertTrue({"attempted_rps", "successful_rps", "throttled_rps", "slo_goodput_rps"} <= set(rows[8]))
+        self.assertTrue(entry["concurrency"]["confirmed_above_provider_ceiling"])
         # Conditioning ran before the looks and never counted.
         conditioning = [r for r in report.all_results if r.tags.get("phase") == "conditioning"]
         self.assertTrue(conditioning and not any(r.tags["measured"] for r in conditioning))
         self.assertEqual(candidate.decision_n, profile.confirmation_plan.look_schedule[0])
+
+    async def test_with_several_candidates_one_sustainable_point_is_kept(self):
+        """Top-2 non-failing are 6 and 8, both served above the ceiling:
+        the lower is swapped for the highest sustainable point (4), so a
+        burst-assisted FAIL still leaves a fallback."""
+        from bedrock_benchmark.ceiling import ProviderCeiling
+        from bedrock_benchmark.experiments.schema import ConfirmationConfig
+        from .fakes import ConcurrencyLimitedClient
+        target = BedrockConverseTarget(model_id="m", client=ConcurrencyLimitedClient(limit=100, call_s=0.05))
+        spec = _spec(sweep=SweepConfig(type="concurrency", values=[1, 4, 6, 8]), repetitions=1, slo=self.LOOSE,
+                     confirmation=ConfirmationConfig(max_requests=10**6, candidates=2))
+        spec.provider_ceilings = {"short": ProviderCeiling(tokens_per_request=116, rpm_rps=85.0, tpm_rps=None)}
+
+        report = await run_experiment(spec, target=target)
+
+        results = report.profiles[0].confirmations
+        self.assertEqual([r.value for r in results], [8, 4])  # highest first; 4 is the sustainable fallback
 
     async def test_isolation_rests_between_subjects_and_before_refinement(self):
         from bedrock_benchmark.experiments.schema import RefinementConfig

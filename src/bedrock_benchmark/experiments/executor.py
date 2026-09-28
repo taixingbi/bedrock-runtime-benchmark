@@ -95,22 +95,33 @@ def _value(point: SweepPoint) -> float:
 def _candidates(points: List[SweepPoint], rec: Recommendation, spec: ExperimentSpec, subject: str,
                 how_many: int) -> List[SweepPoint]:
     """The `how_many` highest points in discovery's leading non-failing
-    run, at or below the provider ceiling: for a rate sweep its offered
-    rps, for a concurrency sweep the rate it was SERVED (successful_rps,
-    within CEILING_RATE_TOLERANCE of the nominal ceiling). A point
-    above the ceiling passed discovery on burst allowance -- a concurrency
-    that needs 9 rps can't hold under a 6.67 rps quota -- so confirming it
-    only measures the bucket draining. Returned ascending; the executor
-    tests them highest-first."""
+    run, returned ascending (the executor tests them highest-first).
+
+    Rate sweep: only offered rps at or below the provider ceiling --
+    production sustained_rps is capped at the quota anyway, so confirming
+    above it adds nothing to the recommendation.
+
+    Concurrency sweep: the provider ceiling is a PRIORITY rule, not a hard
+    reject. Whether a point is safe is decided by independent confirmation
+    (cooldown -> conditioning -> fixed-N looks), not by a heuristic: a
+    point served above the ceiling may hold, or may have passed discovery
+    on burst allowance -- confirmation finds out. But if none of the chosen
+    points is at or below the ceiling (ceiling_ratio <= 1 + tolerance),
+    the lowest one is swapped for the highest one that is, so a FAIL on
+    burst-assisted points still leaves a sustainable fallback to confirm.
+    """
     limit = rec.analysis.stable_pass_max
     eligible = [p for p in points if limit is not None and _value(p) <= limit]
     ceiling = spec.provider_ceilings.get(subject)
     if spec.sweep.type == "rate" and ceiling is not None and ceiling.rps:
         eligible = [p for p in eligible if _value(p) <= ceiling.rps + _ROUNDING_TOLERANCE]
-    elif ceiling is not None and ceiling.rps:
-        eligible = [p for p in eligible if not above_ceiling(p, ceiling.rps)]
     eligible.sort(key=_value)
-    return eligible[-how_many:]
+    chosen = eligible[-how_many:]
+    if spec.sweep.type == "concurrency" and ceiling is not None and ceiling.rps and how_many > 1 and chosen:
+        sustainable = [p for p in eligible if not above_ceiling(p, ceiling.rps)]
+        if sustainable and not any(p in sustainable for p in chosen):
+            chosen = sorted(chosen[1:] + [sustainable[-1]], key=_value)
+    return chosen
 
 
 # Burst screen. provider_ceiling_rps is the NOMINAL sustainable quota
@@ -118,8 +129,9 @@ def _candidates(points: List[SweepPoint], rec: Recommendation, spec: ExperimentS
 # reads a few % over it in a short window (short_chat C=4: 7.16 rps
 # attempted vs 6.67 in discovery, then confirmed at 6.69 rps with 0
 # throttles; long_context_short_answer C=5 confirmed at 6.74 rps, 1.01x).
-# A point SERVED more than 10% above it ran on burst allowance (those
-# read 1.2-1.4x) and is never a candidate.
+# A point SERVED more than 10% above it may be running on burst
+# allowance (those read 1.2-1.4x): it bounds refinement and loses
+# candidate PRIORITY, but confirmation -- not this screen -- decides.
 CEILING_RATE_TOLERANCE = 0.10
 
 

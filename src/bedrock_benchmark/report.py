@@ -150,6 +150,13 @@ def _concurrency_block(rec: Recommendation, *, ceiling_rps: Optional[float] = No
         out["provider_ceiling_rps"] = round(ceiling_rps, 4)  # nominal sustainable quota ceiling, not a hard wall
         out["observed_nonfailing_ceiling_ratio"] = ceiling_ratio(rec.point, ceiling_rps)
         out["observed_nonfailing_above_provider_ceiling"] = above_ceiling(rec.point, ceiling_rps)
+        if rec.confirmed_point is not None:
+            # Confirmed while SERVED above the nominal ceiling: it held for
+            # the confirmation window (which can be short -- bronze's first
+            # look is ~a minute), not proof it holds indefinitely; the quota
+            # still caps sustained production rate (rate-capacity).
+            out["confirmed_ceiling_ratio"] = ceiling_ratio(rec.confirmed_point, ceiling_rps)
+            out["confirmed_above_provider_ceiling"] = above_ceiling(rec.confirmed_point, ceiling_rps)
     return out
 
 
@@ -188,7 +195,8 @@ def _sweep_points(profile_report, ceiling_rps: Optional[float] = None) -> List[d
     Concurrency points carry their rates -- attempted (inflated by fast
     429s under overload), successful (served), throttled, goodput -- and
     ceiling_ratio (served / nominal ceiling); one served >10% above the
-    ceiling passed on burst allowance and is never a candidate."""
+    ceiling may be on burst allowance -- flagged, and left to
+    confirmation to decide."""
     out = []
     for point, verdict in zip(profile_report.points, profile_report.verdicts):
         row = {"value": _value(point), "verdict": verdict.verdict, "phase": point.phase,
@@ -354,6 +362,9 @@ def _calibration_point(spec, subject: str, rec: Optional[Recommendation], ceilin
         # Observed, not controlled: closed-loop C + latency produced them.
         "confirmed_rates": point_rates(confirmed) if confirmed is not None else None,
         "ceiling_ratio": ceiling_ratio(confirmed, ceiling.rps if ceiling else None) if confirmed is not None else None,
+        # Held above the nominal ceiling for the confirmation window only.
+        "confirmed_above_provider_ceiling": (above_ceiling(confirmed, ceiling.rps)
+                                             if confirmed is not None and ceiling is not None and ceiling.rps else None),
         "observed_saturation_edge": _value(rec.saturation_point) if rec is not None and rec.saturation_point is not None else None,
         "bottleneck": (diagnosis or {}).get("bottleneck"),
         "scope": "isolated_workload_class",
@@ -683,7 +694,7 @@ def build_capacity_profile(report: ExperimentReport) -> dict:
 
     confidence = spec.slo.confidence or DEFAULT_CONFIDENCE
     return {
-        "schema_version": 22,
+        "schema_version": 23,
         "experiment": spec.name,
         # reference: carries production admission envelopes;
         # admission_calibration: confirmed calibration_point per workload

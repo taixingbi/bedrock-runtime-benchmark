@@ -96,11 +96,14 @@ isolation:
 # 3,688 / 5,570, 736 / 1,113, 368 / 555.)
 #
 # Design (the runs behind it: docs/correctness-history.md):
-#   - candidates are only points SERVED within 10% of the nominal
-#     provider ceiling (ceiling_ratio <= 1.10; a code rule, like rate
-#     sweeps' -- the ceiling is nominal, not a hard wall): a point served
-#     above it ran on burst allowance. Refinement treats an above-ceiling
-#     point as the upper bound of the bracket;
+#   - C_safe is decided by confirmation, not by a heuristic filter: the
+#     provider ceiling (ceiling_ratio = served / nominal ceiling; > 1.10
+#     suggests burst) bounds the refinement bracket and sets candidate
+#     PRIORITY -- if both candidates are above it, the lower is swapped
+#     for the highest point at or below it -- but never rejects one. A
+#     point confirmed above the ceiling is flagged
+#     confirmed_above_provider_ceiling (it held for the confirmation
+#     window, not indefinitely);
 #   - every tested candidate: cooldown_s (overload from discovery or a
 #     higher candidate clears) -> warmup_s of conditioning (data
 #     discarded, so the fixed-N looks read steady state, not a rested

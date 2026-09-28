@@ -2,20 +2,20 @@
 
 > Docs: [methodology](methodology.md) · [SLO statistics](slo-statistics.md) · [quota model](quota-model.md) · [capacity-profile schema](capacity-profile-schema.md) · [experiment design](experiment-design.md) · [correctness history](correctness-history.md) · [README](../README.md)
 
-The benchmark's one deliverable and its contract with consumers. Schema version 22.
+The benchmark's one deliverable and its contract with consumers. Schema version 23.
 
 ## The profile
 
 Each run writes raw per-request JSONL and a `capacity-profile.yaml`
 artifact under `results/` (gitignored -- these are real measurement outputs, not
-checked-in fixtures). The `capacity-profile.yaml` schema (v22 -- see
+checked-in fixtures). The `capacity-profile.yaml` schema (v23 -- see
 [correctness history](correctness-history.md) for why `rate` and `concurrency` are always
 kept in separate blocks, why the rate block separates offered load
 from goodput, and why there's no `global_max_concurrency`). A
 rate-capacity result:
 
 ```yaml
-schema_version: 22
+schema_version: 23
 experiment: rate-capacity
 purpose: reference                                 # admission_calibration | characterization -- then recommendation is always null
 environment:                                       # provenance -- see methodology.md, "Provenance and temporal validation"
@@ -116,7 +116,9 @@ saturation, observed_slo_goodput_rps, provider_ceiling_rps,
 observed_nonfailing_above_provider_ceiling, scope, summary}` instead of
 `rate` (its `sweep_points` carry attempted / successful / throttled /
 goodput rps and `ceiling_ratio`, and
-`above_provider_ceiling: true` for points that ran on burst; confirmation
+`above_provider_ceiling: true` for points served >10% over the ceiling
+(diagnostic -- confirmation still decides; the block adds
+`confirmed_ceiling_ratio` / `confirmed_above_provider_ceiling`); confirmation
 candidates carry `ceiling_ratio` and, when throttled while served far
 below the ceiling, `throttled_below_ceiling: true`), and its
 recommendation sets `max_inflight` instead of `sustained_rps` --

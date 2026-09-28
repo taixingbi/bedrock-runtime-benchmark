@@ -472,3 +472,18 @@ artifact was ever used to actually inform a gateway config:
     baseline (provider state isn't observable); a recovery-time
     experiment to base it on data is noted as not yet done. No field
     changed.
+
+## Schema v23 fixes
+
+72. **A heuristic filter decided C_safe.** Concurrency candidates served
+    >1.10x the nominal ceiling were rejected outright (e.g. tiny_request
+    C=3 at 1.115x, very_large_context C=14 at 1.13x with 0 throttles), so
+    C_safe meant "highest confirmed point that also passed the filter".
+    With per-candidate cooldown + conditioning, confirmation itself tests
+    whether a point holds, so the ceiling is now diagnostics, bracketing
+    and PRIORITY only: candidates are the top-K non-failing points, and
+    if none is at or below the ceiling the lowest is swapped for the
+    highest one that is. A point confirmed above the ceiling is flagged
+    `confirmed_above_provider_ceiling` / `confirmed_ceiling_ratio` (held
+    for the confirmation window, not indefinitely). Rate sweeps keep
+    their <= ceiling candidates (sustained_rps is quota-capped anyway).
