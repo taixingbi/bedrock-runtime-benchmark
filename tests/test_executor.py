@@ -329,8 +329,15 @@ class RunExperimentTests(unittest.IsolatedAsyncioTestCase):
         b_start = min(r.scheduled_at for r in res if r.tags["subject"] == "b")
         self.assertGreaterEqual(b_start - a_end, 0.4)                     # inter-subject cooldown
         coarse_end = max(r.completed_at for r in res if r.tags["subject"] == "a" and r.tags["phase"] == "discovery")
-        refine_start = min(r.scheduled_at for r in res if r.tags["subject"] == "a" and r.tags["phase"] == "refinement")
-        self.assertGreaterEqual(refine_start - coarse_end, 0.3)           # rested before refinement
+        refine = [r for r in res if r.tags["subject"] == "a" and r.tags["phase"] == "refinement"]
+        self.assertGreaterEqual(min(r.scheduled_at for r in refine) - coarse_end, 0.3)  # recovery before refinement
+        # ... and before EACH refinement point, not just the first (edge at 5: 6 FAILs, then 5)
+        by_point = {}
+        for r in refine:
+            by_point.setdefault(r.tags["sweep_value"], []).append(r)
+        self.assertEqual(sorted(by_point), [5, 6])
+        first, second = sorted(by_point.values(), key=lambda rs: min(r.scheduled_at for r in rs))
+        self.assertGreaterEqual(min(r.scheduled_at for r in second) - max(r.completed_at for r in first), 0.3)
 
     async def test_without_confirmation_discovery_is_a_fixed_sequence_test(self):
         target = BedrockConverseTarget(model_id="m", client=FakeBedrockRuntimeClient())

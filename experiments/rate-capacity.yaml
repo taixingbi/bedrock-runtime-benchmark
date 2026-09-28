@@ -48,7 +48,7 @@ sweep:
 #
 # The discovery sweep ENDS at 2.5x the ceiling, so confirmation at ~1.0x
 # would otherwise start on a bucket that overload just drained: cooldown_s
-# rests first, and warmup_s conditions the candidate (data discarded) so
+# inserts a recovery interval, and warmup_s conditions the candidate (data discarded) so
 # the looks read steady state, not a rested bucket's burst credit. Neither
 # counts against max_duration_s.
 confirmation:
@@ -60,8 +60,9 @@ confirmation:
   warmup_s: 60
 
 # Provider-state isolation: the three workloads share one model's quota,
-# and each one's sweep ends in overload -- the next waits it out, so each
-# result is C_safe(W_i), not C_safe(W_i | history).
+# and each one's sweep ends in overload -- a fixed recovery interval
+# before the next reduces carry-over (approximating C_safe(W_i), not
+# C_safe(W_i | history); a policy, not a proven reset).
 isolation:
   inter_subject_cooldown_s: 120
 

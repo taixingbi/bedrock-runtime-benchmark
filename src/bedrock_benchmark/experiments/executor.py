@@ -361,14 +361,15 @@ async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress:
                     hi = _value(p)
                     break
                 lo = _value(p)
-            rested = False
             for _ in range(spec.sweep.refinement.max_points):
                 if lo is None or hi is None or hi - lo <= 1:
                     break
-                if not rested and spec.sweep.refinement.cooldown_s > 0:
-                    # Refinement follows the coarse sweep's overload points.
+                if spec.sweep.refinement.cooldown_s > 0:
+                    # Recovery interval before EVERY refinement point: the
+                    # first follows the coarse sweep's overload, each later
+                    # one may follow a refinement point that just FAILed --
+                    # and refinement exists to locate the boundary precisely.
                     await asyncio.sleep(spec.sweep.refinement.cooldown_s)
-                    rested = True
                 mid = (int(lo) + int(hi)) // 2
                 await measure(mid, spec.repetitions, "refinement")
                 point = build(mid, "refinement")

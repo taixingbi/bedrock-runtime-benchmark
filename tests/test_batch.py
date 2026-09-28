@@ -166,8 +166,8 @@ class PlanTests(unittest.TestCase):
         micro = load_models(names=["nova-micro"])[0]
         spec = load_experiment("experiments/workload-shape-calibration.yaml", micro)  # 4 workloads x (10 + 4 refinement) points
         spec.confirmation = None
-        # + a 120 s refinement cooldown per shape, 120 s between shapes
-        self.assertEqual(estimated_duration_s(spec), 4 * ((10 + 4) * 1 * (10 + 90) + 120) + 3 * 120)
+        # + a 120 s recovery before each of up to 4 refinement points per shape, 120 s between shapes
+        self.assertEqual(estimated_duration_s(spec), 4 * ((10 + 4) * 1 * (10 + 90) + 4 * 120) + 3 * 120)
         mixed = load_experiment("experiments/mixed-capacity.yaml", micro)  # a mix is ONE subject
         mixed.confirmation = None
         self.assertEqual(estimated_duration_s(mixed), 1 * 8 * 1 * (10 + 90))
@@ -182,7 +182,7 @@ class PlanTests(unittest.TestCase):
         micro = load_models(names=["nova-micro"])[0]
         spec = load_experiment("experiments/workload-shape-calibration.yaml", micro)
         self.assertEqual(estimated_duration_s(spec),
-                         4 * ((10 + 4) * 100 + 120) + (8 + 2 + 2 + 1) * 100 + 4 * (120 + 60) + 3 * 120)
+                         4 * ((10 + 4) * 100 + 4 * 120) + (8 + 2 + 2 + 1) * 100 + 4 * (120 + 60) + 3 * 120)
 
     def test_mix_confirmation_estimate_scales_each_class_by_its_share(self):
         """short_chat (gold) is 60% of the mix, so the first look is at

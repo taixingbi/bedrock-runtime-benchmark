@@ -51,11 +51,12 @@ sweep:
     strategy: integer_bisection
     stop_when_adjacent: true
     max_points: 4
-    cooldown_s: 120      # refinement starts right after the coarse sweep's overload points
+    cooldown_s: 120      # recovery interval before EACH refinement point
 
 # Provider-state isolation: the three classes share one model's quota, so
-# each waits out the previous class's overload -- C_safe(W_i), not
-# C_safe(W_i | history). confirmation.cooldown_s below rests before EVERY
+# a fixed recovery interval follows each class's overload to reduce
+# carry-over -- approximating C_safe(W_i), not C_safe(W_i | history).
+# confirmation.cooldown_s below inserts the same interval before EVERY
 # candidate, including a lower one after a higher one FAILed.
 isolation:
   inter_subject_cooldown_s: 120

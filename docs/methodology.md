@@ -68,11 +68,14 @@ highest concurrency that is statistically CONFIRMED to meet the SLO
 
 ## Measurement policy
 
-Every phase of a sweep starts from a rested provider -- between
-workloads, before refinement, before each confirmation candidate (see
-[SLO statistics](slo-statistics.md), "Provider-state isolation") -- so a
-result is C_safe(W_i), not C_safe(W_i | the overload that ran before it).
-The profile records the settings under `measurement.isolation`.
+A fixed recovery interval is inserted between phases -- between
+workloads, before each refinement point, before each confirmation
+candidate (see [SLO statistics](slo-statistics.md), "Provider-state
+isolation") -- to reduce carry-over from preceding overload, so a result
+approximates C_safe(W_i) rather than C_safe(W_i | the overload that ran
+before it). It is a recovery policy, not a proven return to baseline
+(provider state isn't observable). The profile records the settings
+under `measurement.isolation`.
 
 
 Every sweep point runs **warmup -> measurement window -> drain**:

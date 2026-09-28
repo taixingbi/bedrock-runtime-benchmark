@@ -184,13 +184,13 @@ above-ceiling point as the upper bound of its bracket too.
 **Provider-state isolation.** A managed provider's quota state carries
 over between phases: an overload point drains the burst / rolling
 bucket, and whatever runs next is measured conditional on that history --
-C_safe(W_i | history) instead of C_safe(W_i). So every phase starts
-rested:
+C_safe(W_i | history) instead of C_safe(W_i). So a fixed recovery
+interval is inserted to reduce carry-over from preceding overload:
 
 | Gap | Setting |
 |---|---|
 | between sweep subjects (workloads share one model's quota) | `isolation.inter_subject_cooldown_s` |
-| before refinement (it always follows the coarse sweep's overload) | `sweep.refinement.cooldown_s` |
+| before EACH refinement point (the first follows the coarse sweep's overload, later ones may follow a refinement FAIL) | `sweep.refinement.cooldown_s` |
 | before EVERY tested candidate -- incl. a lower one after a higher one FAILed | `confirmation.cooldown_s` |
 
 and each candidate then gets `confirmation.warmup_s` of conditioning
@@ -207,6 +207,13 @@ is flagged `throttled_below_ceiling`: its own load can't produce that, so
 it points at provider state (preceding overload, other traffic on the
 account), and the unconfirmed `reason` says to re-run before reading the
 result as unsafe.
+
+The interval is a recovery POLICY (120 s in the shipped experiments), not
+a proof that the provider is back at baseline: Bedrock's internal quota,
+burst and routing state isn't observable from outside. Not yet done: an
+experiment that measures the recovery time directly -- overload, then
+wait 0 / 30 / 60 / 120 / 180 s, then a low-load probe (throttle,
+throughput, TTFT) -- to base the interval on data.
 
 **Several candidates: highest first, alpha split.** With `candidates: K
 > 1` they're tested HIGHEST first and stop at the first PASS; a FAIL (or

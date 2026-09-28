@@ -74,13 +74,16 @@ sweep:
     strategy: integer_bisection
     stop_when_adjacent: true
     max_points: 4
-    cooldown_s: 120      # refinement starts right after the coarse sweep's overload points
+    cooldown_s: 120      # recovery interval before EACH refinement point
 
-# Provider-state isolation: every phase starts rested, so each result is
-# C_safe(W_i) -- not C_safe(W_i | the overload that ran just before it).
-# All shapes share one model's quota, so the next shape waits out the
+# Provider-state isolation: a fixed recovery interval is inserted to
+# reduce carry-over from preceding overload, so each result approximates
+# C_safe(W_i) rather than C_safe(W_i | the overload just before it). All
+# shapes share one model's quota, so the next shape waits after the
 # previous one's overload; confirmation.cooldown_s below does the same
 # before EVERY candidate, including a lower one after a higher one FAILed.
+# 120 s is a recovery policy, not a proven reset -- provider state isn't
+# observable.
 isolation:
   inter_subject_cooldown_s: 120
 

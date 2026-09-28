@@ -463,3 +463,12 @@ artifact was ever used to actually inform a gateway config:
     `throttled_below_ceiling`, and the reason says to re-run before
     reading it as unsafe. workload-shape-calibration.yaml no longer
     quotes past run results as design facts.
+71. **Refinement recovered only once.** `sweep.refinement.cooldown_s`
+    ran before the first refinement point only, so a later point could
+    inherit a refinement point that just FAILed -- exactly where the
+    boundary is being located. It now runs before EACH refinement point.
+    Docs and YAML also stop claiming phases "start rested": the interval
+    is a recovery policy to reduce carry-over, not a proven return to
+    baseline (provider state isn't observable); a recovery-time
+    experiment to base it on data is noted as not yet done. No field
+    changed.

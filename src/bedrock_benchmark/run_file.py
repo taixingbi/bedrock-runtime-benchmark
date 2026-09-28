@@ -66,7 +66,7 @@ def estimated_duration_s(spec: ExperimentSpec) -> float:
     refine = spec.sweep.refinement.max_points if spec.sweep.refinement is not None else 0
     discovery = (spec.sweep.point_count + refine) * spec.repetitions * per_run
     if spec.sweep.refinement is not None:
-        discovery += spec.sweep.refinement.cooldown_s  # once, before the first refinement point
+        discovery += spec.sweep.refinement.max_points * spec.sweep.refinement.cooldown_s  # before each point
     total = 0.0
     for index, subject in enumerate(spec.subject_names):
         if index > 0:

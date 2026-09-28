@@ -73,10 +73,9 @@ class RefinementConfig:
     # Extra points per sweep subject. 4 resolves a 16-wide gap
     # (32 -> 48: 40, 44, 46, 47), the widest in the shipped grids.
     max_points: int = 4
-    # Idle seconds before the first refinement point. Refinement always
-    # starts right after the coarse sweep's overload points (two
-    # consecutive FAILs), so without this its first point inherits a
-    # drained provider bucket.
+    # Recovery interval before EACH refinement point: the first follows the
+    # coarse sweep's overload points (two consecutive FAILs), each later
+    # one may follow a refinement point that just FAILed.
     cooldown_s: float = 0.0
 
 
@@ -195,11 +194,12 @@ class ExperimentSpec:
     seed: Optional[int] = None
     transport: TransportConfig = field(default_factory=TransportConfig)
     mix: Optional[MixConfig] = None
-    # `isolation: {inter_subject_cooldown_s}` -- idle seconds between sweep
-    # subjects (workloads) so each starts from a rested provider: all
-    # subjects share one model's quota, and a subject's overload points
-    # otherwise shape the next one's results -- C_safe(W_i | history)
-    # instead of C_safe(W_i).
+    # `isolation: {inter_subject_cooldown_s}` -- a fixed recovery interval
+    # between sweep subjects (workloads) to reduce carry-over: all subjects
+    # share one model's quota, and a subject's overload points otherwise
+    # shape the next one's results -- C_safe(W_i | history) instead of
+    # C_safe(W_i). A policy, not a proven reset: the provider's quota /
+    # burst / routing state isn't observable.
     inter_subject_cooldown_s: float = 0.0
     # Post-run check: Bedrock-REPORTED input_tokens p50 vs requested.
     # Outside this, the class's workload_validation is valid: false
