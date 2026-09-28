@@ -1,0 +1,40 @@
+# Workload-mix catalog -- the traffic compositions mixed-capacity measures.
+#
+# A mixed-capacity result is R_safe(mix): the confirmed total offered rate
+# at which EVERY class meets its own SLO, for THIS composition only. It is
+# never a global R_safe, and isolated per-class capacities never add up to
+# it. So each real workflow gets its own mix here and its own measurement:
+#
+#   chat-heavy workflow        -> R_safe(chat-heavy)
+#   RAG-heavy workflow         -> R_safe(rag-heavy)
+#   generation-heavy workflow  -> R_safe(generation-heavy)
+#
+# Weights should come from the workflow's actual production traffic
+# (gateway / application logs), not be invented:
+#
+#   source      reference_example           a fixed example for comparing runs over time --
+#                                           NOT a production assumption
+#               production_traffic_profile  measured from real traffic; requires observed_from
+#               synthetic                   a what-if composition (e.g. a stress case)
+#   observed_from   where / when the weights were measured (required for
+#                   production_traffic_profile), e.g. "gateway logs, tenant X,
+#                   2026-09-01..2026-09-14"
+#   weights     workload (catalog/workloads.yaml) -> relative weight (normalized)
+#
+# Measure one with:
+#   bedrock-benchmark run mixed-capacity --model <model> --mix <name>
+#
+# Template for a real workflow (copy, fill in from traffic data):
+#   support_rag_workflow:
+#     source: production_traffic_profile
+#     observed_from: "<system>, <tenant/app>, <date range>"
+#     description: "<which workflow>"
+#     weights: {short_chat: 0.25, rag_answer: 0.65, long_generation: 0.10}
+
+mixes:
+  chat60_rag30_gen10:
+    source: reference_example
+    description: >-
+      Reference example over the three reference workloads, kept fixed so
+      runs compare across time. Not a production traffic assumption.
+    weights: {short_chat: 0.6, rag_answer: 0.3, long_generation: 0.1}

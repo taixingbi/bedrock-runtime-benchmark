@@ -67,7 +67,12 @@ class ShippedConstraintsTests(unittest.TestCase):
         for path in sorted(Path("experiments").glob("*.yaml")):
             raw = yaml.safe_load(path.read_text())
             with self.subTest(path=path.name):
-                self.assertTrue(all(isinstance(n, str) and n in catalog for n in raw["workloads"]))
+                from bedrock_benchmark.experiments.schema import load_mixes
+                names = raw.get("workloads")
+                if names is None:
+                    names = load_mixes()[raw["mix"]["name"]]["weights"]
+                self.assertTrue(names)
+                self.assertTrue(all(isinstance(n, str) and n in catalog for n in names))
 
 
 class SloFileTests(unittest.TestCase):

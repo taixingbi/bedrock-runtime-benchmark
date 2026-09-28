@@ -65,6 +65,19 @@ class RunExperimentTests(unittest.IsolatedAsyncioTestCase):
     # throttle <= 5%, success >= 90% -> first look at a few dozen requests.
     LOOSE = SloConfig(latency_p95_ms=3000, throttle_rate_max=0.05, success_rate_min=0.9)
 
+    async def test_auto_confirmation_caps_run_to_a_planned_look(self):
+        from bedrock_benchmark.experiments.schema import ConfirmationConfig
+        target = BedrockConverseTarget(model_id="m", client=FakeBedrockRuntimeClient())
+        report = await run_experiment(
+            _spec(sweep=SweepConfig(type="rate", values=[400.0]), repetitions=1, slo=self.LOOSE,
+                  confirmation=ConfirmationConfig(max_looks=2, max_requests="auto", max_duration_s="auto")),
+            target=target,
+        )
+        [result] = report.profiles[0].confirmations
+        self.assertEqual(result.verdict, "PASS")
+        self.assertTrue(result.caps["per_candidate"])
+        self.assertGreaterEqual(result.caps["max_requests"], result.decision_n)
+
     async def test_confirmation_uses_only_its_own_independent_data(self):
         from bedrock_benchmark.experiments.schema import ConfirmationConfig
         target = BedrockConverseTarget(model_id="m", client=FakeBedrockRuntimeClient())
@@ -483,6 +496,14 @@ class RunExperimentTests(unittest.IsolatedAsyncioTestCase):
         profile = build_capacity_profile(report)
         self.assertIn("blend", profile["mixed_workloads"])
         self.assertEqual(profile["mixed_workloads"]["blend"]["shares"], {"short": 0.75, "long": 0.25})
+        blend = profile["mixed_workloads"]["blend"]
+        self.assertEqual(blend["configured_mix"]["assignment"], "stochastic")
+        self.assertEqual(blend["configured_mix"]["shares"], {"short": .75, "long": .25})
+        measured = [r for r in report.all_results if r.tags["measured"]]
+        self.assertEqual(blend["observed_mix"]["n"], len(measured))
+        self.assertEqual(blend["observed_mix"]["counts"],
+                         {name: sum(r.tags["workload"] == name for r in measured) for name in ("short", "long")})
+        self.assertEqual(blend["sweep_points"][0]["observed_mix"]["n"], point.metrics.n)
         # Classes measured only inside a mix get validation, never an isolated envelope.
         self.assertNotIn("rate", profile["workload_classes"]["short"])
         self.assertIn("workload_validation", profile["workload_classes"]["short"])

@@ -56,8 +56,8 @@ def estimated_duration_s(spec: ExperimentSpec) -> float:
     candidates are assumed to run at the ceiling (a non-failing point
     can't sustain much more). Capped at min(max_duration_s, candidates
     x max_repetitions x (warmup + window)) -- max_duration_s alone when
-    there's no repetition cap; without a known ceiling,
-    the cap itself. Plus `cooldown_s` once per subject that confirms.
+    there's no repetition cap (`auto`: uncapped -- the time the first look
+    needs at that rate); without a known ceiling, the cap itself. Plus `cooldown_s` once per subject that confirms.
 
     Real runs take longer when a look is spent on a stray bad event
     (up to the caps) and shorter on an early FAIL. Drain time on top
@@ -94,10 +94,11 @@ def _confirmation_estimate_s(spec: ExperimentSpec, subject: str, per_run: float)
     if c is None:
         return 0.0
     rep_cap = c.max_repetitions if c.max_repetitions is not None else math.inf
-    cap = min(c.max_duration_s, c.candidates * rep_cap * per_run)
+    auto_duration = c.max_duration_s == "auto"
+    cap = min(math.inf if auto_duration else c.max_duration_s, c.candidates * rep_cap * per_run)
     ceiling = spec.provider_ceilings.get(subject)
     if ceiling is None or not ceiling.rps:
-        return cap
+        return cap if cap < math.inf else 0.0
     from .analysis.confirmation import limits_for, plan_looks
     if spec.mix is not None:
         total_weight = sum(spec.mix.weights.values())
@@ -121,8 +122,11 @@ def _confirmation_estimate_s(spec: ExperimentSpec, subject: str, per_run: float)
                       max_duration_s=c.max_duration_s, candidates=max(1, k))
     per_rep = top_rps * spec.duration_s
     reps = math.ceil(plan.look_schedule[0] / per_rep) if per_rep > 0 else math.inf
-    if reps > rep_cap or plan.look_schedule[0] > c.max_requests:
+    max_requests = plan.look_schedule[-1] if c.max_requests == "auto" else c.max_requests
+    if reps > rep_cap or plan.look_schedule[0] > max_requests:
         return 0.0
+    # `auto` duration: no fixed cap -- the first look simply takes as long
+    # as it takes at this rate (a low-RPM model shows up here as hours).
     return min(reps * per_run, cap)
 
 
@@ -223,10 +227,10 @@ def _warn_if_throttle_slo_unresolvable(spec: ExperimentSpec) -> None:
 def run_file(
     path: str, model: ModelConfig, *, results_dir: str = "results", target_factory: Optional[TargetFactory] = None,
     slo_file: str = DEFAULT_SLO_FILE, workloads_file: str = DEFAULT_WORKLOADS_FILE,
-    only_slo_profiles: Optional[Collection[str]] = None, run_metadata: Optional[dict] = None,
+    only_slo_profiles: Optional[Collection[str]] = None, mix: Optional[str] = None, run_metadata: Optional[dict] = None,
 ) -> RunOutcome:
     spec = load_experiment(path, model, slo_file=slo_file, workloads_file=workloads_file,
-                           only_slo_profiles=only_slo_profiles)
+                           only_slo_profiles=only_slo_profiles, mix=mix)
     print(f"running experiment: {spec.name} on {model.name} ({model.model_id})")
     print(f"sweep: {describe_sweep(spec)}")
     for name in spec.subject_names:

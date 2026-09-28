@@ -11,15 +11,15 @@ from __future__ import annotations
 import asyncio
 import math
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Callable, Dict, List, Optional, Union
 
 from ..analysis.capacity import (
     FAIL, INCONCLUSIVE, PASS, Recommendation, SweepAnalysis, SweepPoint, Verdict, analyze_sweep, point_verdict, recommend,
 )
 from ..analysis.confirmation import (
-    ConfirmationPlan, ConfirmationResult, highest_confirmed, limits_for, look_sample, plan_looks, reachable,
-    severe_throttling, step,
+    ConfirmationPlan, ConfirmationResult, candidate_caps, highest_confirmed, limits_for, look_sample, plan_looks,
+    reachable, severe_throttling, step,
 )
 from ..analysis.metrics import DEFAULT_CONFIDENCE, compute_run_metrics
 from ..calibration import CalibrationResult, calibrate_profile, estimate_profile, resolve_counter
@@ -230,6 +230,7 @@ async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress:
     if spec.mix is not None:
         subjects = [WorkloadMix(
             name=spec.mix.name, entries=[(profiles[n], w) for n, w in spec.mix.weights.items()],
+            assignment=spec.mix.assignment,
         )]
     else:
         subjects = [profiles[w.name] for w in spec.workloads]
@@ -530,7 +531,8 @@ async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress:
                 if stopped:
                     confirmations.append(ConfirmationResult(value, INCONCLUSIVE, "not_tested"))
                     continue
-                est_per_rep = disc.metrics.n / max(1, len(disc.repetitions))
+                est_per_rep = (value * spec.duration_s if spec.sweep.type == "rate"
+                               else disc.metrics.n / max(1, len(disc.repetitions)))
                 result = None
                 looks_used = 0
                 # Every tested candidate: recovery (interval + verified
@@ -546,11 +548,17 @@ async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress:
                 if cfg.warmup_s > 0:
                     await condition(value, cfg.warmup_s)  # discarded: steady state before the looks
                 started += time.perf_counter() - paused_from
+                caps = candidate_caps(plan, cfg.max_requests, cfg.max_duration_s, est_requests_per_rep=est_per_rep,
+                                      per_rep_s=per_rep_s)
+                if caps["per_candidate"]:
+                    started = time.perf_counter()  # an `auto` budget is this candidate's own
+                requests_cap, duration_cap = caps["max_requests"], caps["max_duration_s"]
                 suspect_retries = 1 if rp is not None else 0
-                if not reachable(plan, est_requests_per_rep=est_per_rep, per_rep_s=per_rep_s,
-                                 remaining_duration_s=cfg.max_duration_s - (time.perf_counter() - started)):
+                if not reachable(replace(plan, max_requests=requests_cap), est_requests_per_rep=est_per_rep,
+                                 per_rep_s=per_rep_s,
+                                 remaining_duration_s=duration_cap - (time.perf_counter() - started)):
                     result = ConfirmationResult(value, INCONCLUSIVE, "unreachable_within_caps",
-                                                next_look_n=plan.look_schedule[0])
+                                                next_look_n=plan.look_schedule[0], caps=caps)
                 while result is None:
                     state = await measure(value, 1, "confirmation")
                     point = build(value, "confirmation", conf=plan.per_test_confidence)
@@ -594,7 +602,7 @@ async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress:
                         v, reason, looks_used = decision
                     else:
                         v, reason = INCONCLUSIVE, None
-                        remaining = cfg.max_duration_s - (time.perf_counter() - started)
+                        remaining = duration_cap - (time.perf_counter() - started)
                         rep_cap = cfg.max_repetitions if cfg.max_repetitions is not None else math.inf
                         if severe_throttling(point.metrics):
                             # Operational guard, not a test: spare the
@@ -602,7 +610,7 @@ async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress:
                             reason = "stopped_severe_throttling"
                         elif reps >= rep_cap:
                             reason = "max_repetitions"
-                        elif n >= cfg.max_requests:
+                        elif n >= requests_cap:
                             reason = "max_requests"
                         elif remaining < per_rep_s:
                             reason = "max_duration"
@@ -610,7 +618,7 @@ async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress:
                             # Requests still collectable within the caps,
                             # at this candidate's observed rate per rep.
                             more_reps = min(rep_cap - reps, int(remaining // per_rep_s))
-                            max_n = min(cfg.max_requests, n + (n / reps) * more_reps)
+                            max_n = min(requests_cap, n + (n / reps) * more_reps)
                             if max_n < plan.look_schedule[looks_used]:
                                 reason = "unreachable_within_caps"
                     if reason is not None:
@@ -629,6 +637,7 @@ async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress:
                             point=point,
                             decision_n=last_look[2] if last_look else None,
                             decision_metrics=last_look[0].metrics if last_look else None,
+                            caps=caps,
                         )
                 confirmations.append(result)
                 stopped = result.verdict == PASS or result.stop_reason == "provider_state_invalid"

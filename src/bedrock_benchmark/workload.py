@@ -24,7 +24,9 @@ global number is ever derived from isolated maxima).
 """
 from __future__ import annotations
 
+import math
 import random
+import weakref
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -90,16 +92,52 @@ class WorkloadProfile:
         return self
 
 
+MIX_ASSIGNMENTS = ("stochastic", "stratified")
+
+
+def block_counts(shares: Dict[str, float], *, max_block: int = 10000) -> Dict[str, int]:
+    """Smallest exact block, bounded to keep memory and prefix drift manageable.
+
+    Reject unrepresentable shares instead of rounding away rare classes.
+    Stochastic assignment supports arbitrary positive weights.
+    """
+    for size in range(1, max_block + 1):
+        counts = {n: s * size for n, s in shares.items()}
+        if all(round(c) > 0 and abs(c - round(c)) < 1e-9 for c in counts.values()):
+            return {n: int(round(c)) for n, c in counts.items()}
+    raise ValueError(f"stratified mix needs an exact block larger than {max_block}; "
+                     "use stochastic assignment or simpler weights")
+
+
 @dataclass
 class WorkloadMix:
+    """Several workload classes under one offered load.
+
+    assignment -- how each request gets its class:
+      stochastic  every request draws its class independently by weight:
+                  models production-like randomness; the realized mix
+                  drifts from the configured one by sampling noise.
+      stratified  requests are assigned in shuffled blocks with exactly
+                  the configured counts (60/30/10 -> blocks of 6/3/1), so
+                  any prefix of a repetition is within one block of the
+                  configured mix: measures THAT mix precisely.
+    Either way the class sequence depends only on the seed, never on
+    outcomes (the confirmation look times rely on that)."""
     name: str
     entries: List[Tuple[WorkloadProfile, float]] = field(default_factory=list)
+    assignment: str = "stochastic"
 
     def __post_init__(self) -> None:
         if not self.entries:
             raise ValueError(f"mix {self.name!r} has no entries")
-        if any(w <= 0 for _, w in self.entries):
+        if any(not math.isfinite(w) or w <= 0 for _, w in self.entries):
             raise ValueError(f"mix {self.name!r} weights must all be > 0")
+        if self.assignment not in MIX_ASSIGNMENTS:
+            raise ValueError(f"mix {self.name!r}: assignment must be one of {MIX_ASSIGNMENTS}")
+        self._counts = block_counts(self.shares) if self.assignment == "stratified" else {}
+        # Stratified: the pending block per generator (each runner has
+        # its own seeded rng, so every repetition starts a fresh block).
+        self._blocks: "weakref.WeakKeyDictionary[random.Random, List[WorkloadProfile]]" = weakref.WeakKeyDictionary()
 
     @property
     def shares(self) -> dict:
@@ -109,8 +147,15 @@ class WorkloadMix:
 
     def sample(self, rng: random.Random) -> WorkloadProfile:
         profiles = [p for p, _ in self.entries]
-        weights = [w for _, w in self.entries]
-        return rng.choices(profiles, weights=weights, k=1)[0]
+        if self.assignment == "stochastic":
+            return rng.choices(profiles, weights=[w for _, w in self.entries], k=1)[0]
+        block = self._blocks.get(rng)
+        if not block:
+            counts = self._counts
+            block = [p for p in profiles for _ in range(counts[p.name])]
+            rng.shuffle(block)
+            self._blocks[rng] = block
+        return block.pop()
 
 
 WORKLOAD_ROLES = ("reference", "characterization")

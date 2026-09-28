@@ -25,7 +25,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Collection, Dict, List, Optional
+from typing import Collection, Dict, List, Optional, Union
+
+import math
 
 import yaml
 
@@ -141,9 +143,14 @@ class ConfirmationConfig:
     # collected. max_repetitions is an optional extra cap -- None (the
     # default) caps by max_requests and max_duration_s only.
     max_repetitions: Optional[int] = None
-    max_requests: int = 8000
-    # Wall-time cap for the whole confirmation phase of one sweep subject.
-    max_duration_s: float = 1800.0
+    # A number, or "auto": the last look's sample size x AUTO_MARGIN.
+    max_requests: Union[int, str] = 8000
+    # A number: wall-time cap for the whole confirmation phase of one
+    # sweep subject. "auto": a budget PER CANDIDATE, the time to collect
+    # the last look's samples at that candidate's own request rate (from
+    # discovery) x AUTO_MARGIN -- so a low-RPM model isn't INCONCLUSIVE
+    # by construction just because a fixed window is too short for it.
+    max_duration_s: Union[float, str] = 1800.0
     # How many of the highest non-failing discovery points to confirm:
     # tested highest-first, stopping at the first PASS, with alpha split
     # over them (analysis/confirmation.py).
@@ -162,15 +169,84 @@ class ConfirmationConfig:
     warmup_s: float = 0.0
 
 
+AUTO = "auto"
+
+
 @dataclass
 class MixConfig:
     """Mixed-workload experiment: instead of sweeping each workload in
-    isolation, sweep ONE offered load (rate) or concurrency where each
-    request independently draws its class by weight. The only valid
-    source of a cross-class envelope -- isolated per-class maxima can't
-    be combined into one (see report.py)."""
+    isolation, sweep ONE offered load (rate) or concurrency over a class
+    mix. The only valid source of a cross-class envelope -- isolated
+    per-class maxima can't be combined into one (see report.py) -- and
+    only for THIS mix: R_safe(mix), never a global R_safe.
+
+    Weights normally come from catalog/mixes.yaml (the experiment names
+    the mix; `--mix` swaps it), where each mix records its `source`
+    (reference_example | production_traffic_profile | synthetic) and
+    `observed_from`. `assignment` (workload.WorkloadMix): stochastic
+    (independent draws -- production-like randomness) or stratified
+    (exact per-block composition -- measures the configured mix
+    precisely)."""
     name: str
     weights: Dict[str, float] = field(default_factory=dict)
+    assignment: str = "stochastic"
+    source: str = "inline"          # inline = weights written in the experiment file
+    observed_from: Optional[str] = None
+    description: str = ""
+
+
+DEFAULT_MIXES_FILE = "catalog/mixes.yaml"
+MIX_SOURCES = ("reference_example", "production_traffic_profile", "synthetic")
+
+
+def load_mixes(path: str = DEFAULT_MIXES_FILE) -> Dict[str, dict]:
+    """The mix catalog: name -> {source, observed_from, description, weights}."""
+    if not Path(path).exists():
+        return {}
+    raw = yaml.safe_load(Path(path).read_text()) or {}
+    mixes = raw.get("mixes") or {}
+    for name, cfg in mixes.items():
+        cfg = cfg or {}
+        unknown = sorted(set(cfg) - {"source", "observed_from", "description", "weights"})
+        if unknown:
+            raise ValueError(f"{path}: mixes.{name}: unknown keys {unknown}")
+        if cfg.get("source") not in MIX_SOURCES:
+            raise ValueError(f"{path}: mixes.{name}.source must be one of {list(MIX_SOURCES)}")
+        if cfg["source"] == "production_traffic_profile" and not cfg.get("observed_from"):
+            raise ValueError(f"{path}: mixes.{name}: a production_traffic_profile needs observed_from "
+                             f"(where / when the weights were measured)")
+        weights = cfg.get("weights")
+        if not isinstance(weights, dict) or not weights or any(not isinstance(w, (int, float)) or not math.isfinite(w) or w <= 0
+                                                               for w in weights.values()):
+            raise ValueError(f"{path}: mixes.{name}.weights: workload -> weight > 0")
+    return mixes
+
+
+def _resolve_mix(raw: dict, path: str, mixes_file: str, override: Optional[str]) -> Optional[MixConfig]:
+    """The experiment's mix -- a catalog reference (`mix: {name, assignment}`),
+    inline weights, or `override` (`--mix NAME`) replacing the name."""
+    cfg = dict(raw.get("mix") or {})
+    if override is not None:
+        if not cfg:
+            raise NoMatchingWorkloads(f"--mix {override}: not a mixed-workload experiment")
+        cfg = {"name": override, **({"assignment": cfg["assignment"]} if "assignment" in cfg else {})}
+    if not cfg:
+        return None
+    unknown = sorted(set(cfg) - {"name", "weights", "assignment"})
+    if unknown:
+        raise ValueError(f"{path}: mix takes name / weights / assignment, got {unknown}")
+    catalog = load_mixes(mixes_file)
+    name = cfg.get("name")
+    if "weights" in cfg:
+        if name in catalog:
+            raise ValueError(f"{path}: mix {name!r} is defined in {mixes_file} -- don't also give weights inline")
+        return MixConfig(name=name, weights=cfg["weights"], assignment=cfg.get("assignment", "stochastic"))
+    if name not in catalog:
+        raise ValueError(f"mix {name!r} is not in {mixes_file} (has: {sorted(catalog)})")
+    entry = catalog[name]
+    return MixConfig(name=name, weights=dict(entry["weights"]), assignment=cfg.get("assignment", "stochastic"),
+                     source=entry["source"], observed_from=entry.get("observed_from"),
+                     description=(entry.get("description") or "").strip())
 
 
 @dataclass
@@ -290,6 +366,7 @@ _POLICY_KEYS = ("provider_headroom", "quota_headroom")
 def load_experiment(
     path: str, model: ModelConfig, *, slo_file: str = DEFAULT_SLO_FILE, workloads_file: str = DEFAULT_WORKLOADS_FILE,
     only_slo_profiles: Optional[Collection[str]] = None, policy_file: str = DEFAULT_POLICY_FILE,
+    mix: Optional[str] = None, mixes_file: str = DEFAULT_MIXES_FILE,
 ) -> ExperimentSpec:
     """only_slo_profiles (e.g. {"gold"}) keeps just the workloads bound to
     those profiles. An isolated sweep keeps its matching workloads; a mix
@@ -316,6 +393,17 @@ def load_experiment(
             f"{path}: remove {present} -- headroom is recommendation POLICY, defined once in {policy_file}; "
             f"an experiment defines only what is measured"
         )
+    mix_config = _resolve_mix(raw, path, mixes_file, mix)
+    if mix_config is not None:
+        # A mix experiment's workloads ARE its mix's classes -- also when
+        # --mix swaps in a mix over other workloads.
+        listed = raw.get("workloads")
+        if mix is not None or listed is None:
+            raw = {**raw, "workloads": list(mix_config.weights)}
+        elif set(listed) != set(mix_config.weights):
+            raise ValueError(f"{path}: workloads {listed} must be exactly mix {mix_config.name!r}'s classes "
+                             f"{sorted(mix_config.weights)} (or omit `workloads:`)")
+        raw = {**raw, "mix": {"name": mix_config.name, "weights": mix_config.weights}}
     slos = load_slo(slo_file)
     policy = load_policy(policy_file)
     sweep = raw["sweep"]
@@ -343,7 +431,7 @@ def load_experiment(
         purpose=_purpose(raw, workloads, path, workloads_file),
         seed=raw.get("seed"),
         transport=TransportConfig(**transport),
-        mix=MixConfig(**raw["mix"]) if raw.get("mix") else None,
+        mix=mix_config,
         inter_subject_cooldown_s=_isolation(raw, path),
         recovery_probe=_recovery_probe(raw, path),
         workload_validation_tolerance_pct=raw.get("workload_validation_tolerance_pct", 10.0),
@@ -495,11 +583,16 @@ def _validate(spec: ExperimentSpec) -> None:
         if not 0 <= getattr(spec, name) < 1:
             raise ValueError(f"{name} must be in [0, 1)")
     c = spec.confirmation
+    def bad_cap(value, low) -> bool:
+        return (value != AUTO if isinstance(value, str) else
+                not isinstance(value, (int, float)) or not math.isfinite(value) or value < low)
+
     if c is not None and (c.max_looks < 1 or (c.max_repetitions is not None and c.max_repetitions < 1)
-                          or c.max_requests < 1
-                          or c.max_duration_s <= 0 or c.candidates < 1 or c.cooldown_s < 0 or c.warmup_s < 0):
+                          or bad_cap(c.max_requests, 1) or bad_cap(c.max_duration_s, 1e-9)
+                          or c.candidates < 1 or c.cooldown_s < 0 or c.warmup_s < 0):
         raise ValueError("confirmation: max_looks, max_repetitions, max_requests, candidates must be >= 1, "
-                         "max_duration_s > 0, cooldown_s >= 0 and warmup_s >= 0")
+                         "max_duration_s > 0 (max_requests / max_duration_s may be `auto`), cooldown_s >= 0 "
+                         "and warmup_s >= 0")
     if spec.throttle_pause_s < 0:
         raise ValueError(f"throttle_pause_s must be >= 0, got {spec.throttle_pause_s}")
     if spec.throttle_pause_s > 0 and spec.sweep.type != "concurrency":
@@ -539,5 +632,12 @@ def _validate(spec: ExperimentSpec) -> None:
         unknown = set(spec.mix.weights) - names
         if unknown:
             raise ValueError(f"mix {spec.mix.name!r} references undefined workloads: {sorted(unknown)}")
-        if not spec.mix.weights or any(w <= 0 for w in spec.mix.weights.values()):
+        if not spec.mix.weights or any(not math.isfinite(w) or w <= 0 for w in spec.mix.weights.values()):
             raise ValueError(f"mix {spec.mix.name!r} needs at least one workload, all weights > 0")
+        from ..workload import MIX_ASSIGNMENTS
+        if spec.mix.assignment not in MIX_ASSIGNMENTS:
+            raise ValueError(f"mix {spec.mix.name!r}: assignment must be one of {list(MIX_ASSIGNMENTS)}")
+        if spec.mix.assignment == "stratified":
+            from ..workload import block_counts
+            total = sum(spec.mix.weights.values())
+            block_counts({name: weight / total for name, weight in spec.mix.weights.items()})

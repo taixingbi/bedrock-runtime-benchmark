@@ -83,7 +83,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Union
 
 from .capacity import FAIL, INCONCLUSIVE, LATENCY_EXCEEDANCE_MAX, PASS, SweepPoint, Verdict
 from .metrics import RunMetrics, rate_upper, required_samples  # noqa: F401 -- re-exported
@@ -107,8 +107,8 @@ class ConfirmationPlan:
     per_test_confidence: float
     look_schedule: List[int]    # N_1 < ... < N_L total confirmation requests (expected, for a mix)
     max_repetitions: Optional[int]  # None: no repetition cap (sample-count driven)
-    max_requests: int
-    max_duration_s: float
+    max_requests: Union[int, str]
+    max_duration_s: Union[float, str]
     # Per look, the ACTUAL count each group needs: "total" (the blend's
     # checks) and, in a mix, each class name. A look is taken only when
     # every group has reached its count.
@@ -145,7 +145,7 @@ TOTAL = "total"  # the look-requirement group of blend (non-class) checks
 
 
 def plan_looks(limits: List[RateLimit], *, confidence: float, max_looks: int, max_repetitions: Optional[int],
-               max_requests: int, max_duration_s: float, candidates: int = 1) -> ConfirmationPlan:
+               max_requests: Union[int, str], max_duration_s: Union[float, str], candidates: int = 1) -> ConfirmationPlan:
     """Look j (1-based) is where every rate check could still PASS with
     j - 1 bad events of its own -- fixed before any confirmation data
     exists. Requirements are per group (the blend's total, and each
@@ -190,12 +190,16 @@ class ConfirmationResult:
     # The exact fixed-count sample the last LOOK was decided on (first N_j).
     decision_n: Optional[int] = None
     decision_metrics: Optional["RunMetrics"] = None
+    # The caps this candidate ran under -- per candidate when `auto`.
+    caps: Optional[dict] = None
 
     def to_dict(self) -> dict:
         out = {"value": self.value, "verdict": self.verdict, "stop_reason": self.stop_reason,
                "repetitions": self.repetitions, "n": self.n, "looks_used": self.looks_used}
         if self.next_look_n is not None and self.verdict != PASS:
             out["next_look_n"] = self.next_look_n
+        if self.caps is not None:
+            out["caps"] = self.caps
         if self.decision_metrics is not None:
             d = self.decision_metrics
             # What the look was DECIDED on: exactly the first decision_n requests.
@@ -258,6 +262,29 @@ def look_sample(results: List, sizes: Dict[str, int]) -> List:
     for cls, need in sizes.items():
         out += [r for r in ordered if r.tags.get("workload") == cls][:need]
     return out
+
+
+AUTO_MARGIN = 1.25  # `auto` caps: the last look's need x this, for a stray look / rate variance
+
+
+def candidate_caps(plan: ConfirmationPlan, max_requests, max_duration_s, *, est_requests_per_rep: float,
+                   per_rep_s: float) -> dict:
+    """Numeric caps for one candidate. `auto` max_requests = the last
+    look's sample size x AUTO_MARGIN; `auto` max_duration_s = the time
+    to collect that many at THIS candidate's request rate (offered RPS for rate sweeps; discovery's
+    measured requests per repetition for concurrency sweeps) x AUTO_MARGIN -- per candidate, so
+    a slow (low-RPM) candidate gets the time its looks need instead of
+    being INCONCLUSIVE by construction. Fixed numbers pass through
+    (max_duration_s then stays a cap on the whole subject's phase)."""
+    need = plan.look_schedule[-1]
+    requests = math.ceil(need * AUTO_MARGIN) if max_requests == "auto" else int(max_requests)
+    if max_duration_s != "auto":
+        return {"max_requests": requests, "max_duration_s": float(max_duration_s), "per_candidate": False}
+    if est_requests_per_rep <= 0:
+        budget = 0.0
+    else:
+        budget = math.ceil(min(need, requests) / est_requests_per_rep) * per_rep_s * AUTO_MARGIN
+    return {"max_requests": requests, "max_duration_s": round(budget, 1), "per_candidate": True}
 
 
 def reachable(plan: ConfirmationPlan, *, est_requests_per_rep: float, remaining_duration_s: float,

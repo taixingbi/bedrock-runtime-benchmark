@@ -143,7 +143,7 @@ there is no gateway config schema in this repo.
 |---|---|---|---|
 | `rate-capacity` | reference | 0.25x-2.5x of the provider ceiling, one reference workload per tier (`short_chat` gold, `rag_answer` silver, `long_generation` bronze) -- the canonical envelope run | ~57 min |
 | `concurrency-sweep` | reference | each reference workload alone, concurrency 1..48 until 2 consecutive FAILs; confirms the top 2 non-failing concurrencies | ~1.5 h |
-| `mixed-capacity` | reference | mixed-rate calibration: 0.25x-2.5x ceiling for ONE mix, 60% `short_chat` / 30% `rag_answer` / 10% `long_generation` | ~32 min |
+| `mixed-capacity` | reference | mixed-rate calibration: 0.25x-2.5x ceiling for a workflow mix (`--mix`); default 60/30/10 is a reference example | ~32 min |
 | `workload-shape-calibration` | admission_calibration | the 4 non-reference shapes x concurrency 1..48 until 2 consecutive FAILs, each under its own SLO | ~1-2 h |
 
 Only **reference** experiments, on the three **reference** workloads (one
@@ -185,15 +185,32 @@ Bedrock. The benchmark produces backend admission evidence; the gateway
 derives its config from it; `eval-bedrock-platform` validates the
 deployed gateway under production-like mixed traffic.
 
-**One mix is one number.** `mixed-capacity`'s 60/30/10 gives
-R_safe(60/30/10), not a global R_safe -- and after headroom,
-R_admission(60/30/10). A chat-heavy, balanced or generation-heavy mix
-can need a very different R_admission. For a shifting production mix,
-measure the representative mixes and take the minimum across them as a
-conservative limit, or configure per known traffic profile. Each mix is
-its own experiment file (e.g. `mixed-capacity-chat-heavy.yaml`) -- one
-`mix:` per file keeps confirmation, sample sizes and the report simple;
-only 60/30/10 is shipped.
+**Each workflow has its own `R_safe(mix)`.** Define weights from that workflow's
+production traffic in `catalog/mixes.yaml`, with `source: production_traffic_profile`
+and `observed_from` identifying the data and time range. Measure each workflow separately:
+
+```sh
+bedrock-benchmark plan mixed-capacity --model nova-micro --mix <workflow-name>
+bedrock-benchmark run mixed-capacity --model nova-micro --mix <workflow-name>
+```
+
+The shipped 60/30/10 mix is a reference example only. Every class must meet its
+own SLO before the total rate qualifies as `R_safe(mix)`; recommendation headroom
+then produces `R_admission(mix)`. Isolated class capacities cannot be added.
+
+`mix.assignment: stratified` uses shuffled blocks with the configured class
+counts (6/3/1 for the reference example); a window may end with a partial block.
+Use `stochastic` for independent weighted draws that model traffic randomness.
+Stratified mixes require an exact block of at most 10,000 requests; unsupported
+weights fail validation instead of silently rounding away rare classes.
+Artifacts record `configured_mix` and `observed_mix`, with observed counts and
+shares for each sweep point and measured confirmation candidate as well.
+
+Confirmation caps are `auto`: request budget is 1.25 times the last look's
+required total; duration is the number of windows needed at the candidate RPS,
+including per-window warmup, times 1.25. Each candidate gets its own budget,
+so low-RPM models can take hours. Numeric caps still impose explicit limits.
+
 A mixed/global total in-flight limit would need its own experiment
 (not built -- add one only if a consumer needs it). `max_inflight` and
 `sustained_rps` are two independently confirmed **guardrails**, one per

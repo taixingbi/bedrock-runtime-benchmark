@@ -344,11 +344,15 @@ share: 6,147 random mix arrivals can hold only 3,600 `short_chat` ones.
 The plan records these as `look_requirements` (e.g. look 1:
 short_chat 3,688, rag_answer 736, long_generation 368 -- per class
 only, since the blend isn't gated). Class
-counts depend only on the random class draws, never on outcomes, so the
+counts depend only on the seeded class assignment (stratified blocks or stochastic draws), never on outcomes, so the
 look times stay outcome-independent and the Bonferroni bound holds.
 `look_schedule_requests` (6,147 / 9,284 here) is only the expected total,
-used for caps and time estimates -- `mixed-capacity`'s `max_requests` is
-raised to fit it. More samples, never a looser SLO.
+used for caps and time estimates. `mixed-capacity` uses `auto` caps: requests
+are 1.25 times the last look's total; duration scales with required samples /
+candidate RPS, rounded up to full measurement windows, including each window's
+warmup and a 1.25 margin. This budget applies separately to each candidate.
+A fixed 1,800-second cap cannot collect the required evidence on low-RPM models.
+Numeric caps remain available. More samples, never a looser SLO.
 
 **Stopping rule.** Three concepts, kept apart:
 

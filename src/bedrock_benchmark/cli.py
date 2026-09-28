@@ -86,6 +86,13 @@ def cmd_list(args, root: Path) -> int:
     for name in experiment_names(root):
         spec = yaml.safe_load((root / "experiments" / f"{name}.yaml").read_text()) or {}
         workloads = spec.get("workloads") or []
+        if not workloads and spec.get("mix"):
+            from .experiments.schema import load_mixes
+            mix = spec["mix"]
+            weights = mix.get("weights")
+            if weights is None:
+                weights = load_mixes(str(root / "catalog/mixes.yaml"))[mix["name"]]["weights"]
+            workloads = list(weights)
         print(f"  {name:<28} {spec.get('purpose', ''):<22} workloads: {', '.join(workloads)}")
     print("\nStart with: bedrock-benchmark doctor --model <model>, then plan / pilot / run <experiment> --model <model>")
     return 0
@@ -99,7 +106,7 @@ def cmd_plan(args, root: Path, paths: List[str]) -> int:
     for model in models:
         for path in paths:
             try:
-                spec = load_experiment(path, model, only_slo_profiles=args.slo_profiles)
+                spec = load_experiment(path, model, only_slo_profiles=args.slo_profiles, mix=args.mix)
             except NoMatchingWorkloads as skip:
                 print(f"\n{model.name} / {Path(path).stem}: skipped -- {skip}")
                 continue
@@ -115,11 +122,12 @@ def cmd_plan(args, root: Path, paths: List[str]) -> int:
                 ceil = f"ceiling {ceiling.rps:.4g} rps ({ceiling.binding})" if ceiling and ceiling.rps else ""
                 print(f"  {w.name:<28} {w.input_tokens:>6} in / {w.output_tokens:<5} out  {w.slo_profile:<7} {ceil}")
             if spec.mix is not None:
-                print(f"  mix {spec.mix.name}: {spec.mix.weights}")
+                print(f"  mix {spec.mix.name}: {spec.mix.weights} "
+                      f"({spec.mix.assignment}, source={spec.mix.source})")
             print(f"Estimated duration: ~{estimated_duration_s(spec) / 60:.0f} min"
                   + (" (upper bound: stops after consecutive FAILs)" if spec.sweep.stop_after_fails else ""))
     print()
-    print(format_plan(plan(paths, models, only_slo_profiles=args.slo_profiles)))
+    print(format_plan(plan(paths, models, only_slo_profiles=args.slo_profiles, mix=args.mix)))
     print("\nNo requests sent.")
     return 0
 
@@ -131,7 +139,7 @@ def cmd_pilot(args, root: Path, paths: List[str], target_factory=None) -> int:
     models = _models(args)
     print(f"PILOT: {args.pilot_requests} sequential requests per model x workload")
     report = run_pilot_sync(paths, models, requests_per_workload=args.pilot_requests,
-                            only_slo_profiles=args.slo_profiles, target_factory=target_factory,
+                            only_slo_profiles=args.slo_profiles, mix=args.mix, target_factory=target_factory,
                             on_check=lambda c: print(format_check(c), flush=True))
     out = Path(args.results_dir or f"results/pilot-{time.strftime('%Y%m%d-%H%M%S')}")
     out.mkdir(parents=True, exist_ok=True)
@@ -148,10 +156,10 @@ def cmd_run(args, root: Path, paths: List[str], target_factory=None) -> int:
         return cmd_pilot(args, root, paths, target_factory=target_factory)
     from .batch import format_plan, format_summary, plan, run_batch
     models = _models(args)
-    print(format_plan(plan(paths, models, only_slo_profiles=args.slo_profiles)))
+    print(format_plan(plan(paths, models, only_slo_profiles=args.slo_profiles, mix=args.mix)))
     results_dir = Path(args.results_dir or f"results/run-all-{time.strftime('%Y%m%d-%H%M%S')}")
     batch = run_batch(paths, models, results_dir=results_dir, fail_fast=args.fail_fast,
-                      only_slo_profiles=args.slo_profiles, target_factory=target_factory,
+                      only_slo_profiles=args.slo_profiles, mix=args.mix, target_factory=target_factory,
                       run_metadata=run_metadata(args))
     print(f"\n{'=' * 78}\nSUMMARY\n{'=' * 78}")
     print(format_summary(batch))
@@ -266,6 +274,7 @@ def _parser() -> argparse.ArgumentParser:
         sp.add_argument("--all-models", action="store_true", help="every enabled model -- never the implicit default")
         sp.add_argument("--slo-profile", action="append", dest="slo_profiles", metavar="NAME",
                         help="only workloads bound to this SLO profile, e.g. gold (repeatable)")
+        sp.add_argument("--mix", metavar="NAME", help="workflow mix from catalog/mixes.yaml")
         sp.add_argument("--account", help="AWS account whose quotas apply (default: the live account)")
         return sp
 

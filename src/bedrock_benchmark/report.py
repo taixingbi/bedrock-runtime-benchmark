@@ -190,6 +190,12 @@ def _rate_block(rec: Recommendation, *, ceiling_rps: Optional[float]) -> dict:
     return out
 
 
+def _observed_mix(counts: Dict[str, int]) -> dict:
+    total = sum(counts.values())
+    return {"n": total, "counts": counts,
+            "shares": {name: n / total if total else None for name, n in counts.items()}}
+
+
 def _sweep_points(profile_report, ceiling_rps: Optional[float] = None) -> List[dict]:
     """Every swept point's verdict -- the transition region at a glance.
     Concurrency points carry their rates -- attempted (inflated by fast
@@ -201,6 +207,8 @@ def _sweep_points(profile_report, ceiling_rps: Optional[float] = None) -> List[d
     for point, verdict in zip(profile_report.points, profile_report.verdicts):
         row = {"value": _value(point), "verdict": verdict.verdict, "phase": point.phase,
                "repetitions": len(point.repetitions) or 1, "n": point.metrics.n}
+        if point.class_metrics:
+            row["observed_mix"] = _observed_mix({name: m.n for name, m in point.class_metrics.items()})
         if point.concurrency is not None:
             row.update(point_rates(point))
             if ceiling_rps:
@@ -395,6 +403,8 @@ def _throttled_below_ceiling(result, ceiling_rps: Optional[float]) -> bool:
 
 def _candidate_dict(result, ceiling_rps: Optional[float]) -> dict:
     out = result.to_dict()
+    if result.point is not None and result.point.class_metrics:
+        out["observed_mix"] = _observed_mix({name: m.n for name, m in result.point.class_metrics.items()})
     if result.point is not None and ceiling_rps:
         out["ceiling_ratio"] = ceiling_ratio(result.point, ceiling_rps)
         if _throttled_below_ceiling(result, ceiling_rps):
@@ -690,6 +700,17 @@ def build_capacity_profile(report: ExperimentReport, run_metadata: Optional[dict
         if profile_report.mix_shares is None:
             continue
         entry = {"shares": {k: round(v, 4) for k, v in profile_report.mix_shares.items()}}
+        entry["configured_mix"] = {
+            "name": spec.mix.name, "weights": dict(spec.mix.weights),
+            "shares": dict(profile_report.mix_shares), "assignment": spec.mix.assignment,
+            "source": spec.mix.source, "observed_from": spec.mix.observed_from,
+        }
+        entry["observed_mix"] = _observed_mix({
+            name: sum(1 for r in report.all_results
+                      if r.tags.get("measured", True) and r.tags.get("workload") == name)
+            for name in profile_report.mix_shares
+        })
+        entry["observed_mix"]["scope"] = "all_measured_requests"
         _envelope(entry, profile_report, spec, report.all_results)
         rec = profile_report.recommendation
         if rec is not None and rec.confirmed_point is not None:
