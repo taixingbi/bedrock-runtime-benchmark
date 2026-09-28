@@ -6,9 +6,26 @@ from bedrock_benchmark.client import TransportConfig
 from bedrock_benchmark.experiments.executor import ExperimentReport, ProfileReport
 from bedrock_benchmark.experiments.schema import ExperimentSpec, QuotaSnapshot, SloConfig, SweepConfig, TargetConfig
 from bedrock_benchmark.experiments.schema import load_experiment
-from bedrock_benchmark.report import build_capacity_profile
+from bedrock_benchmark.report import build_capacity_profile as _build_capacity_profile
 from bedrock_benchmark.results import RequestResult
 from bedrock_benchmark.workload import WorkloadProfile
+
+import jsonschema
+import yaml
+
+from bedrock_benchmark.contract import schema_for
+
+
+def build_capacity_profile(*args, **kwargs):
+    """Every profile these tests build must also conform to the shipped
+    JSON Schema (the machine contract consumers validate against)."""
+    profile = _build_capacity_profile(*args, **kwargs)
+    doc = yaml.safe_load(yaml.safe_dump(profile, sort_keys=False))  # exactly what lands on disk
+    _, schema = schema_for(doc)
+    errors = [f"{'/'.join(map(str, e.absolute_path))}: {e.message}"
+              for e in jsonschema.Draft202012Validator(schema).iter_errors(doc)]
+    assert not errors, errors
+    return profile
 
 
 def _metrics(**overrides) -> RunMetrics:
@@ -420,7 +437,7 @@ class BuildCapacityProfileTests(unittest.TestCase):
         self.assertIsNone(d["latency_healthy_at_observed_nonfailing"])  # no latency gate in this fixture
         envelope = entry["recommendation"]["admission_envelope"]
         self.assertEqual(envelope["evidence"], "single_run_operating_envelope")  # never production-ready alone
-        self.assertIn("drift.py", envelope["production_use"])
+        self.assertIn("bedrock-benchmark validate", envelope["production_use"])
 
 
     def test_load_generator_lag_is_a_validity_check(self):

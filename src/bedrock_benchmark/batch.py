@@ -133,7 +133,7 @@ def run_batch(
     paths: List[str], models: List[ModelConfig], *, results_dir: Path, fail_fast: bool = False,
     target_factory: Optional[TargetFactory] = None,
     slo_file: str = DEFAULT_SLO_FILE, workloads_file: str = DEFAULT_WORKLOADS_FILE,
-    only_slo_profiles: Optional[Collection[str]] = None,
+    only_slo_profiles: Optional[Collection[str]] = None, run_metadata: Optional[dict] = None,
 ) -> BatchResult:
     batch = BatchResult(results_dir=results_dir)
     planned = [p for p in plan(paths, models, slo_file=slo_file, workloads_file=workloads_file,
@@ -150,7 +150,7 @@ def run_batch(
         try:
             outcome = run_file(p.path, p.model, results_dir=str(results_dir), target_factory=target_factory,
                                slo_file=slo_file, workloads_file=workloads_file,
-                               only_slo_profiles=only_slo_profiles)
+                               only_slo_profiles=only_slo_profiles, run_metadata=run_metadata)
         except KeyboardInterrupt:
             raise
         except Exception as exc:  # noqa: BLE001 - one broken run shouldn't sink the batch

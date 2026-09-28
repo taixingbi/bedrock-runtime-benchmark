@@ -59,7 +59,18 @@ jobs:
       - name: bedrock-benchmark CLI
         run: |
           bedrock-benchmark list
-          bedrock-benchmark plan all
+          bedrock-benchmark plan all --all-models
+
+      # The machine contract: the shipped JSON Schemas are themselves valid
+      # (tests/test_cli.py checks engine output conforms to them).
+      - name: Artifact schemas
+        run: |
+          python -c "
+          import json, glob, jsonschema
+          for p in glob.glob('src/bedrock_benchmark/schemas/*.json'):
+              jsonschema.Draft202012Validator.check_schema(json.load(open(p)))
+              print(f'ok: {p}')
+          "
 
   pip-audit:
     name: Dependency scan (pip-audit)

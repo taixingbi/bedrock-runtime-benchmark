@@ -92,7 +92,7 @@ single run                         -> single_run_operating_envelope (every profi
     ↓
 repeated runs across times / days
     ↓
-temporal validation                -> scripts/drift.py: temporal_validation
+temporal validation                -> bedrock-benchmark validate: temporal-capacity-profile.yaml
     ↓
 conservative / stable envelope     -> the minimum confirmed admission value
     ↓

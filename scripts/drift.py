@@ -11,6 +11,10 @@ Prints YAML per (model, experiment, workload/mix, sweep kind): a
 `temporal_validation` block (runs, days / UTC hours observed, confirmed
 min/median/max/spread, conservative values, and which envelope the
 evidence supports) plus the runs, oldest first.
+
+Kept for backward compatibility -- the public command is
+`bedrock-benchmark validate`, which also writes the
+temporal-capacity-profile.yaml artifact (with a per-entry status).
 """
 from __future__ import annotations
 

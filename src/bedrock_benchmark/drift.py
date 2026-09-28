@@ -23,8 +23,10 @@ per (model, experiment, workload/mix, sweep kind) and states, as a
       unstable_operating_envelope        otherwise -- use the conservative value
 
 This needs several INDEPENDENT runs at different times, so it is never
-produced by a single run_all.py invocation; scripts/drift.py computes it
-over whatever profiles exist. A profile without `environment.measured_at`
+produced by a single run; `bedrock-benchmark validate` computes it over
+whatever profiles exist and writes a temporal-capacity-profile.yaml
+(build_temporal_profile). Runs whose measurement_validity is invalid are
+excluded. A profile without `environment.measured_at`
 (schema < 10) still counts as a run, but not toward days/hours observed.
 """
 from __future__ import annotations
@@ -42,7 +44,10 @@ def _profiles(paths: Iterable[str]) -> List[Tuple[str, dict]]:
         p = Path(raw)
         files = sorted(p.rglob("*-capacity-profile.yaml")) if p.is_dir() else [p]
         for f in files:
-            out.append((str(f), yaml.safe_load(f.read_text()) or {}))
+            doc = yaml.safe_load(f.read_text()) or {}
+            if doc.get("artifact") == "temporal_capacity_profile":
+                continue  # a previous `validate` output, not a run
+            out.append((str(f), doc))
     return out
 
 
@@ -139,3 +144,50 @@ def summarize(paths: Iterable[str], *, stability_threshold_pct: float = 20.0, mi
             "runs": [{k: v for k, v in r.items() if v is not None} for r in all_runs],
         })
     return report
+
+
+TEMPORAL_PROFILE_SCHEMA_VERSION = 1
+
+# temporal_validation.envelope -> the artifact's status (what a consumer may do).
+_STATUS = {
+    "stable_operating_envelope": "VALID",                     # production_capacity_input usable
+    "unstable_operating_envelope": "VALID_CONSERVATIVE",      # usable: it IS the minimum across runs
+    "insufficient_temporal_evidence": "INSUFFICIENT_EVIDENCE",
+    "single_run_operating_envelope": "INSUFFICIENT_EVIDENCE",
+}
+
+
+def build_temporal_profile(paths: Iterable[str], *, stability_threshold_pct: float = 20.0, min_runs: int = 3,
+                           min_days: int = 2) -> dict:
+    """The temporal-capacity-profile artifact: repeated single-run profiles
+    -> per (model, experiment, class/mix, kind) status and the ONLY value
+    meant for production capacity (production_capacity_input). A different
+    artifact type from a capacity profile on purpose -- a single run never
+    is one of these."""
+    from datetime import datetime, timezone
+    paths = list(paths)
+    entries = summarize(paths, stability_threshold_pct=stability_threshold_pct, min_runs=min_runs,
+                        min_days=min_days)
+    for e in entries:
+        e["status"] = _STATUS[e["temporal_validation"]["envelope"]]
+    return {
+        "artifact": "temporal_capacity_profile",
+        "temporal_profile_schema_version": TEMPORAL_PROFILE_SCHEMA_VERSION,
+        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "inputs": {"paths": paths, "profiles": len(_profiles(paths))},
+        "criteria": {"min_runs": min_runs, "min_days": min_days, "max_spread_pct": stability_threshold_pct},
+        "entries": entries,
+    }
+
+
+def format_temporal(profile: dict) -> str:
+    lines = [f"TEMPORAL VALIDATION  ({profile['inputs']['profiles']} profiles; needs >= "
+             f"{profile['criteria']['min_runs']} runs across >= {profile['criteria']['min_days']} days)"]
+    for e in profile["entries"]:
+        tv = e["temporal_validation"]
+        name = e.get("class") or e.get("mix")
+        use = tv.get("production_capacity_input")
+        lines.append(f"  {e['model']} / {e['experiment']} / {name} [{e['kind']}]: {e['status']}  "
+                     f"runs={tv['runs']} days={tv['days_observed']} invalid={tv.get('invalid_runs', 0)}  "
+                     f"production_capacity_input={use if use else 'none'}")
+    return "\n".join(lines)

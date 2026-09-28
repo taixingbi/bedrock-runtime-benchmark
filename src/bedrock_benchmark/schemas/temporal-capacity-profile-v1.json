@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "temporal-capacity-profile-v1.json",
+  "title": "temporal-capacity-profile.yaml, temporal_profile_schema_version 1 (eval-bedrock-runtime-benchmark)",
+  "description": "Repeated single-run profiles combined across time; production_capacity_input is the ONLY value meant for production capacity, and only with status VALID / VALID_CONSERVATIVE.",
+  "type": "object",
+  "required": [
+    "artifact",
+    "temporal_profile_schema_version",
+    "generated_at",
+    "criteria",
+    "entries"
+  ],
+  "properties": {
+    "artifact": {
+      "const": "temporal_capacity_profile"
+    },
+    "temporal_profile_schema_version": {
+      "const": 1
+    },
+    "criteria": {
+      "type": "object",
+      "required": [
+        "min_runs",
+        "min_days",
+        "max_spread_pct"
+      ]
+    },
+    "entries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "model",
+          "experiment",
+          "kind",
+          "status",
+          "temporal_validation"
+        ],
+        "properties": {
+          "kind": {
+            "enum": [
+              "concurrency",
+              "rate"
+            ]
+          },
+          "status": {
+            "enum": [
+              "VALID",
+              "VALID_CONSERVATIVE",
+              "INSUFFICIENT_EVIDENCE"
+            ]
+          },
+          "temporal_validation": {
+            "type": "object",
+            "required": [
+              "runs",
+              "days_observed",
+              "invalid_runs",
+              "envelope",
+              "production_capacity_input"
+            ]
+          }
+        }
+      }
+    }
+  }
+}

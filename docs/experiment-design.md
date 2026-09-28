@@ -17,7 +17,7 @@ constraints/               what every result is JUDGED AGAINST, and the policy a
   ├─ quota.yaml            quota:  what the provider ALLOWS (per account / region / model)
   └─ recommendation-policy.yaml  policy: headroom from a confirmed point to a recommendation
 experiments/*.yaml         HOW to load: purpose + workload names + sweep -- no shapes, SLO, quota or headroom
-scripts/                   entry points only (run.py, run_all.py, fetch_quota.py, drift.py)
+scripts/                   legacy entry points (run.py, run_all.py, fetch_quota.py, drift.py); the public one is bedrock-benchmark
         ↓
 every experiment x every model -> capacity-profile.yaml (judged against the constraints)
 ```
@@ -224,10 +224,11 @@ needs a new runner (rate-driven arrivals with a concurrency cap).
 python3.11 -m venv .venv && .venv/bin/pip install -e ".[dev]"   # same install CI uses; installs bedrock-benchmark
 
 bedrock-benchmark list                                                  # models + experiments, no AWS calls
+bedrock-benchmark doctor --model nova-micro                             # ready? identity, access, quota, config
 bedrock-benchmark plan concurrency-sweep --model nova-micro             # validate + estimate, no requests
 bedrock-benchmark pilot concurrency-sweep --model nova-micro            # ~30 s smoke test
 bedrock-benchmark run concurrency-sweep --model nova-micro              # the benchmark
-bedrock-benchmark run all                                               # every experiment x every enabled model
+bedrock-benchmark run all --all-models                                  # every experiment x every enabled model (explicit)
 bedrock-benchmark run rate-capacity --model nova-micro --model nova-pro
 bedrock-benchmark run concurrency-sweep --model nova-micro --slo-profile gold   # only gold workloads
 ```

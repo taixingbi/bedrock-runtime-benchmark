@@ -1,0 +1,470 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "capacity-profile-v23.json",
+  "title": "capacity-profile.yaml, schema_version 23 (eval-bedrock-runtime-benchmark)",
+  "description": "A SINGLE-RUN operating envelope. The machine contract consumers validate against; additional properties are allowed so additive fields don't break consumers.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "experiment",
+    "purpose",
+    "environment",
+    "validity",
+    "model",
+    "constraints",
+    "measurement",
+    "sweep",
+    "workload_classes",
+    "recommendation_policy",
+    "transport"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 23
+    },
+    "experiment": {
+      "type": "string"
+    },
+    "purpose": {
+      "enum": [
+        "reference",
+        "admission_calibration",
+        "characterization"
+      ]
+    },
+    "run": {
+      "type": "object",
+      "properties": {
+        "run_id": {
+          "type": "string"
+        },
+        "owner": {
+          "type": "string"
+        },
+        "purpose": {
+          "type": "string"
+        },
+        "ticket": {
+          "type": "string"
+        },
+        "environment": {
+          "type": "string"
+        }
+      },
+      "description": "Run ownership (run_id, owner, purpose, ticket, environment). Additive: optional so v23 profiles written before it still validate."
+    },
+    "environment": {
+      "type": "object",
+      "required": [
+        "measured_at",
+        "account",
+        "region",
+        "inference_profile"
+      ]
+    },
+    "validity": {
+      "type": "object",
+      "required": [
+        "envelope"
+      ],
+      "properties": {
+        "envelope": {
+          "const": "single_run_operating_envelope"
+        }
+      }
+    },
+    "model": {
+      "type": "object",
+      "required": [
+        "name",
+        "model_id",
+        "region"
+      ]
+    },
+    "constraints": {
+      "type": "object",
+      "required": [
+        "quota",
+        "slo"
+      ]
+    },
+    "measurement": {
+      "type": "object"
+    },
+    "sweep": {
+      "type": "object",
+      "required": [
+        "type"
+      ],
+      "properties": {
+        "type": {
+          "enum": [
+            "concurrency",
+            "rate"
+          ]
+        }
+      }
+    },
+    "workload_classes": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": [
+          "observed",
+          "workload_validation"
+        ],
+        "properties": {
+          "recommendation": {
+            "type": "object",
+            "required": [
+              "admission_envelope"
+            ],
+            "properties": {
+              "admission_envelope": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "object",
+                    "required": [
+                      "max_inflight",
+                      "sustained_rps",
+                      "source",
+                      "headroom_fraction",
+                      "evidence",
+                      "scope"
+                    ],
+                    "properties": {
+                      "max_inflight": {
+                        "type": [
+                          "integer",
+                          "null"
+                        ],
+                        "minimum": 1
+                      },
+                      "sustained_rps": {
+                        "type": [
+                          "number",
+                          "null"
+                        ],
+                        "exclusiveMinimum": 0
+                      },
+                      "source": {
+                        "const": "statistically_confirmed_measurement"
+                      },
+                      "headroom_fraction": {
+                        "type": "number",
+                        "minimum": 0,
+                        "exclusiveMaximum": 1
+                      },
+                      "evidence": {
+                        "const": "single_run_operating_envelope"
+                      },
+                      "scope": {
+                        "enum": [
+                          "isolated_workload_class",
+                          "workload_mix"
+                        ]
+                      }
+                    }
+                  }
+                ]
+              },
+              "reason": {
+                "type": "string"
+              }
+            }
+          },
+          "measurement_validity": {
+            "type": "object",
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "enum": [
+                  "valid",
+                  "suspect_reproduced",
+                  "invalid"
+                ]
+              },
+              "events": {
+                "type": "array"
+              },
+              "recovery_probes": {
+                "type": "array"
+              }
+            }
+          },
+          "concurrency": {
+            "type": "object",
+            "required": [
+              "statistically_confirmed",
+              "saturation",
+              "scope"
+            ],
+            "properties": {
+              "statistically_confirmed": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "saturation": {
+                "type": "object",
+                "required": [
+                  "status"
+                ],
+                "properties": {
+                  "status": {
+                    "enum": [
+                      "discovery_resolved",
+                      "discovery_not_reached",
+                      "discovery_unresolved"
+                    ]
+                  }
+                }
+              },
+              "scope": {
+                "enum": [
+                  "isolated_workload_class",
+                  "workload_mix"
+                ]
+              }
+            }
+          },
+          "rate": {
+            "type": "object",
+            "required": [
+              "statistically_confirmed_offered_rps",
+              "saturation",
+              "scope"
+            ],
+            "properties": {
+              "statistically_confirmed_offered_rps": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "saturation": {
+                "type": "object",
+                "required": [
+                  "status"
+                ],
+                "properties": {
+                  "status": {
+                    "enum": [
+                      "discovery_resolved",
+                      "discovery_not_reached",
+                      "discovery_unresolved"
+                    ]
+                  }
+                }
+              },
+              "scope": {
+                "enum": [
+                  "isolated_workload_class",
+                  "workload_mix"
+                ]
+              }
+            }
+          },
+          "calibration_point": {
+            "type": "object"
+          }
+        }
+      }
+    },
+    "mixed_workloads": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": [
+          "shares"
+        ],
+        "properties": {
+          "recommendation": {
+            "type": "object",
+            "required": [
+              "admission_envelope"
+            ],
+            "properties": {
+              "admission_envelope": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "object",
+                    "required": [
+                      "max_inflight",
+                      "sustained_rps",
+                      "source",
+                      "headroom_fraction",
+                      "evidence",
+                      "scope"
+                    ],
+                    "properties": {
+                      "max_inflight": {
+                        "type": [
+                          "integer",
+                          "null"
+                        ],
+                        "minimum": 1
+                      },
+                      "sustained_rps": {
+                        "type": [
+                          "number",
+                          "null"
+                        ],
+                        "exclusiveMinimum": 0
+                      },
+                      "source": {
+                        "const": "statistically_confirmed_measurement"
+                      },
+                      "headroom_fraction": {
+                        "type": "number",
+                        "minimum": 0,
+                        "exclusiveMaximum": 1
+                      },
+                      "evidence": {
+                        "const": "single_run_operating_envelope"
+                      },
+                      "scope": {
+                        "enum": [
+                          "isolated_workload_class",
+                          "workload_mix"
+                        ]
+                      }
+                    }
+                  }
+                ]
+              },
+              "reason": {
+                "type": "string"
+              }
+            }
+          },
+          "measurement_validity": {
+            "type": "object",
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "enum": [
+                  "valid",
+                  "suspect_reproduced",
+                  "invalid"
+                ]
+              },
+              "events": {
+                "type": "array"
+              },
+              "recovery_probes": {
+                "type": "array"
+              }
+            }
+          },
+          "concurrency": {
+            "type": "object",
+            "required": [
+              "statistically_confirmed",
+              "saturation",
+              "scope"
+            ],
+            "properties": {
+              "statistically_confirmed": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "saturation": {
+                "type": "object",
+                "required": [
+                  "status"
+                ],
+                "properties": {
+                  "status": {
+                    "enum": [
+                      "discovery_resolved",
+                      "discovery_not_reached",
+                      "discovery_unresolved"
+                    ]
+                  }
+                }
+              },
+              "scope": {
+                "enum": [
+                  "isolated_workload_class",
+                  "workload_mix"
+                ]
+              }
+            }
+          },
+          "rate": {
+            "type": "object",
+            "required": [
+              "statistically_confirmed_offered_rps",
+              "saturation",
+              "scope"
+            ],
+            "properties": {
+              "statistically_confirmed_offered_rps": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "saturation": {
+                "type": "object",
+                "required": [
+                  "status"
+                ],
+                "properties": {
+                  "status": {
+                    "enum": [
+                      "discovery_resolved",
+                      "discovery_not_reached",
+                      "discovery_unresolved"
+                    ]
+                  }
+                }
+              },
+              "scope": {
+                "enum": [
+                  "isolated_workload_class",
+                  "workload_mix"
+                ]
+              }
+            }
+          },
+          "calibration_point": {
+            "type": "object"
+          }
+        }
+      }
+    },
+    "recommendation_policy": {
+      "type": "object",
+      "required": [
+        "headroom_fraction",
+        "quota_headroom_fraction"
+      ]
+    },
+    "transport": {
+      "type": "object",
+      "required": [
+        "total_max_attempts"
+      ],
+      "properties": {
+        "total_max_attempts": {
+          "const": 1
+        }
+      }
+    }
+  }
+}

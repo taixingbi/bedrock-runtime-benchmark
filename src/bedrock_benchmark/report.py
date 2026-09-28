@@ -591,10 +591,11 @@ def _envelope(entry: dict, profile_report, spec, report_results: List[RequestRes
     envelope = entry["recommendation"].get("admission_envelope")
     if envelope is not None:
         # One run is one snapshot of provider conditions -- never by itself
-        # a production-safe config (see scripts/drift.py).
+        # a production-safe config (see drift.build_temporal_profile).
         envelope["evidence"] = "single_run_operating_envelope"
-        envelope["production_use"] = ("not production-ready alone: repeat across times / days and use "
-                                      "scripts/drift.py's temporal_validation.production_capacity_input")
+        envelope["production_use"] = ("not production-ready alone: repeat across times / days, then use "
+                                      "`bedrock-benchmark validate`'s production_capacity_input "
+                                      "(temporal-capacity-profile.yaml)")
     # evidence = the observed point; confirmed_evidence = the point the
     # recommendation is derived from, when it's a different point.
     entry["evidence"] = _evidence(rec.point)
@@ -654,7 +655,10 @@ def _environment(report: ExperimentReport) -> dict:
     }
 
 
-def build_capacity_profile(report: ExperimentReport) -> dict:
+def build_capacity_profile(report: ExperimentReport, run_metadata: Optional[dict] = None) -> dict:
+    """`run_metadata` -- who ran it and why ({run_id, owner, purpose,
+    ticket, environment}), so a shared result answers "who, why, which
+    run" without asking the author."""
     spec = report.spec
     by_name = {p.workload_name: p for p in report.profiles}
     workload_classes: Dict[str, dict] = {}
@@ -701,22 +705,23 @@ def build_capacity_profile(report: ExperimentReport) -> dict:
     return {
         "schema_version": 23,
         "experiment": spec.name,
+        "run": run_metadata or {},
         # reference: carries production admission envelopes;
         # admission_calibration: confirmed calibration_point per workload
         # shape (no envelope); characterization: measurement only.
         "purpose": spec.purpose,
         "environment": _environment(report),
         # One profile is ONE snapshot of provider conditions. Validity
-        # across time comes from comparing repeated runs (scripts/drift.py),
+        # across time comes from comparing repeated runs (bedrock-benchmark validate),
         # which reports runs / days_observed / spread per envelope.
         "validity": {
             # One run is never more than this; a stable / conservative
-            # envelope needs repeated independent runs (scripts/drift.py).
+            # envelope needs repeated independent runs (bedrock-benchmark validate).
             "envelope": "single_run_operating_envelope",
             "repeated_runs": 1,
             "days_observed": 1,
             "scope": "single run -- a snapshot of the provider conditions at measured_at; re-measure on "
-                     "other days and times and run scripts/drift.py for a temporal_validation",
+                     "other days and times, then `bedrock-benchmark validate` for a temporal-capacity-profile",
         },
         "model": {
             "name": spec.model_name,

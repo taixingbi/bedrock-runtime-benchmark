@@ -223,7 +223,7 @@ def _warn_if_throttle_slo_unresolvable(spec: ExperimentSpec) -> None:
 def run_file(
     path: str, model: ModelConfig, *, results_dir: str = "results", target_factory: Optional[TargetFactory] = None,
     slo_file: str = DEFAULT_SLO_FILE, workloads_file: str = DEFAULT_WORKLOADS_FILE,
-    only_slo_profiles: Optional[Collection[str]] = None,
+    only_slo_profiles: Optional[Collection[str]] = None, run_metadata: Optional[dict] = None,
 ) -> RunOutcome:
     spec = load_experiment(path, model, slo_file=slo_file, workloads_file=workloads_file,
                            only_slo_profiles=only_slo_profiles)
@@ -268,7 +268,7 @@ def run_file(
     profile_path = out_dir / f"{spec.name}-{run_id}-capacity-profile.yaml"
 
     write_jsonl(report.all_results, str(jsonl_path))
-    capacity_profile = build_capacity_profile(report)
+    capacity_profile = build_capacity_profile(report, {"run_id": run_id, **(run_metadata or {})})
     profile_path.parent.mkdir(parents=True, exist_ok=True)
     profile_path.write_text(yaml.safe_dump(capacity_profile, sort_keys=False))
 

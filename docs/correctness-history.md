@@ -503,3 +503,18 @@ artifact was ever used to actually inform a gateway config:
     excludes invalid runs from temporal validation. Additive -- invalid
     subjects never carry a confirmed point or envelope, so no consumer
     field changed.
+74. **Results weren't safely consumable by anyone but the author.**
+    Nothing checked readiness before a run (a missing quota entry or no
+    model access surfaced minutes in); `run all` defaulted to every
+    enabled model; the production input lived in a script's stdout
+    (`scripts/drift.py`), not an artifact; the contract was prose only;
+    profiles had no owner or purpose and lived on one laptop. Now:
+    `doctor` (READY / NOT READY -- fix: ...), `--model` or an explicit
+    `--all-models` for plan / pilot / run, `validate` writes a
+    `temporal-capacity-profile.yaml` (own artifact type and version,
+    per-entry `status` VALID / VALID_CONSERVATIVE /
+    INSUFFICIENT_EVIDENCE), JSON Schemas + `validate-profile`, a `run:`
+    block (run_id, owner, purpose, ticket, environment), `publish` with a
+    sha256 manifest to an immutable location, and `summary` answering
+    "can I trust it / what did we learn / production usable / next".
+    The profile gains only the optional `run:` block -- schema stays 23.

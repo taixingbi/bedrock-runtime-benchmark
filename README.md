@@ -1,9 +1,82 @@
 # eval-bedrock-runtime-benchmark
 
-Empirically characterizes the **SLO-qualified operating envelope of a
-Bedrock inference profile** under controlled token workloads and
-provider constraints, and turns the statistically confirmed part of it
-into an admission-envelope recommendation.
+Measures the **SLO-qualified operating envelope of a Bedrock inference
+profile** -- how much load a model serves within its SLO, statistically
+confirmed -- and turns it into an admission-envelope recommendation.
+
+## The paved road
+
+One command at a time (setup: [Install](#install)):
+
+```bash
+bedrock-benchmark doctor --model nova-micro
+```
+
+```bash
+bedrock-benchmark plan concurrency-sweep --model nova-micro
+```
+
+```bash
+bedrock-benchmark pilot concurrency-sweep --model nova-micro
+```
+
+```bash
+caffeinate -i bedrock-benchmark run concurrency-sweep --model nova-micro --ticket CAP-123 --purpose "model onboarding"
+```
+
+```bash
+bedrock-benchmark summary results/run-all-<timestamp>
+```
+
+```bash
+bedrock-benchmark validate results/
+```
+
+```bash
+bedrock-benchmark publish results/run-all-<timestamp> --destination s3://<team-bucket>/capacity
+```
+
+| Step | Answers | AWS calls |
+|---|---|---|
+| `doctor` | Is this machine / account / model / config ready? Python, boto3, git clean, config valid, identity + region, quota file = live, model access, ConverseStream, token-counting strategy -> `READY` / `NOT READY -- fix: ...` | 2-3 one-token requests |
+| `plan` | What will run, against which quota and ceilings, for how long? | STS only |
+| `pilot` | Does each workload reach its shape and SLO at all? | a few requests |
+| `run` | The benchmark -> `capacity-profile.yaml` + raw JSONL, then a human summary | the full run |
+| `summary` | Can I trust this run? What did we learn? Is it production usable (never, alone)? What next? | none |
+| `validate` | Do repeated runs agree across days / times? -> `temporal-capacity-profile.yaml` with a status per envelope: `VALID`, `VALID_CONSERVATIVE`, `INSUFFICIENT_EVIDENCE` | none |
+| `publish` | Copies the run to the team's shared, immutable location with a `manifest.yaml` (owner, ticket, sha256 per file) | S3 (or a directory) |
+| `validate-profile` | Does an artifact conform to the machine contract ([schemas](src/bedrock_benchmark/schemas/))? | none |
+
+Rules the CLI enforces:
+
+- **No broad expensive defaults.** `plan` / `pilot` / `run` need `--model`
+  (repeatable) or an explicit `--all-models`.
+- **Every run has an owner.** `run` records a `run:` block in the profile:
+  `run_id`, `owner` (default `$USER`), `purpose`, `ticket`, `environment`
+  (default `dev`).
+- **A single run is never production config.** Only a
+  temporal-capacity-profile entry with status `VALID` or
+  `VALID_CONSERVATIVE` carries a `production_capacity_input`.
+
+## Who uses what
+
+| Role | Uses | Owns |
+|---|---|---|
+| Benchmark maintainer | everything; `docs/`, `tests/` | methodology, statistics, experiment YAMLs, the artifact schemas |
+| Model onboarding engineer | `doctor` -> `plan` -> `pilot` -> `run` -> `summary` -> `publish` | `catalog/models.yaml`, `constraints/quota.yaml` entries for the new model |
+| Platform engineer | published `temporal-capacity-profile.yaml` (`production_capacity_input`) | turning a VALID envelope into capacity planning |
+| Gateway engineer | `capacity-profile.yaml` via `eval-bedrock-gateway`'s `capacity_review`, validated with `validate-profile` | the gateway's admission config -- never this repo |
+| SRE | `summary`, `validate`, the publish manifest | deciding when a profile is stale and re-measuring |
+| Service / product owner | -- | `constraints/slo.yaml` (gold / silver / bronze): SLOs are policy inputs; the benchmark never tunes or relaxes them |
+
+Four layers, each usable without the one below it:
+
+| Layer | Interface | For |
+|---|---|---|
+| CLI | `bedrock-benchmark ...` | everyone |
+| Engine | `bedrock_benchmark.batch.run_batch`, `pilot`, `drift.build_temporal_profile`, `doctor.run_doctor` | automation |
+| Artifact API | `capacity-profile.yaml` (schema v23), `temporal-capacity-profile.yaml` (v1), JSON Schemas in `src/bedrock_benchmark/schemas/` | consumers |
+| Consumers | `eval-bedrock-gateway` (`capacity_review`), `eval-bedrock-platform` | policy and deployed validation |
 
 ## What problem does this solve?
 
@@ -133,62 +206,36 @@ not a statistically confirmed 2-D (C, R) capacity surface -- no joint
 
 **A single run is not a production config.** Every profile is a
 `single_run_operating_envelope`; repeat across times and days, and take
-`scripts/drift.py`'s `temporal_validation.production_capacity_input` --
-the conservative value, set only once the temporal evidence suffices.
+`production_capacity_input` from `bedrock-benchmark validate`'s
+temporal-capacity-profile -- the conservative value, set only once the
+temporal evidence suffices (status `VALID` / `VALID_CONSERVATIVE`).
 
 Every experiment is discovery followed by adaptive confirmation at the
 candidate -- the only way a point becomes statistically confirmed.
 Times are nova-micro `--dry-run` estimates.
 
-## Quick start
+## Install
 
 ```bash
 python3.11 -m venv .venv && .venv/bin/pip install -e ".[dev]"
+```
+
+```bash
 source .venv/bin/activate
+```
+
+```bash
 export AWS_PROFILE=<your-profile> AWS_REGION=us-east-1
 ```
 
-That installs the `bedrock-benchmark` command. You only name a model and
-an experiment -- no file paths (one command at a time):
-
-```bash
-bedrock-benchmark list
-```
-
-```bash
-bedrock-benchmark plan workload-shape-calibration --model nova-micro
-```
-
-```bash
-bedrock-benchmark pilot workload-shape-calibration --model nova-micro
-```
-
-```bash
-caffeinate -i bedrock-benchmark run workload-shape-calibration --model nova-micro
-```
-
-| Command | Does | AWS calls |
-|---|---|---|
-| `list` | models and experiments | none |
-| `plan <experiment> --model <m>` | validates config + quota, shows workloads, ceilings and estimated runtime | STS only (which account) |
-| `pilot <experiment> --model <m>` | a few requests per workload: access, workload shape, SLO reachability, throttling | a few |
-| `run <experiment> --model <m>` | the benchmark -> `capacity-profile.yaml` + raw JSONL | the full run |
-
-`run ... --dry-run` is `plan`, `run ... --pilot` is `pilot`. `all` runs
-every experiment; `--model` repeats (default: every enabled model);
-`--slo-profile gold` keeps only workloads bound to a profile. It works
-from any directory (it finds the checkout, or set
-`BEDROCK_BENCHMARK_HOME`). Check quotas are current first with
-`.venv/bin/python scripts/fetch_quota.py --all`. Results go to
-`results/run-all-<timestamp>/<model>/`. (`scripts/run.py` and
-`scripts/run_all.py` still work but are not the public interface.) Each profile is a
-**single-run operating envelope**. Repeated runs on different days and
-times of day combine into a stable / conservative envelope
-(`temporal_validation`) with:
-
-```bash
-.venv/bin/python scripts/drift.py results/
-```
+That installs the `bedrock-benchmark` command (without activating the
+venv: `.venv/bin/bedrock-benchmark`). You name models and experiments --
+never file paths; `bedrock-benchmark list` shows both. It works from any
+directory (it finds the checkout, or set `BEDROCK_BENCHMARK_HOME`).
+`run ... --dry-run` is `plan`, `run ... --pilot` is `pilot`; `all` runs
+every experiment; `--slo-profile gold` keeps only workloads bound to a
+profile. Results go to `results/run-all-<timestamp>/<model>/`.
+(`scripts/*.py` still work but are not the public interface.)
 
 ## Output example
 
@@ -238,7 +285,7 @@ enforces it, and reads nothing from a gateway's tables or config.
 | [methodology](docs/methodology.md) | core abstractions, SLO goodput, measurement window, input calibration and workload validation, mixed workloads, provenance and temporal validation |
 | [SLO statistics](docs/slo-statistics.md) | SLO profiles, PASS / FAIL / INCONCLUSIVE, exact bounds for latency / success / throttle, adaptive confirmation and false-PASS control |
 | [quota model](docs/quota-model.md) | provider ceiling, TPM reservation vs consumption, quota-relative sweeps, `fetch_quota.py` |
-| [capacity-profile schema](docs/capacity-profile-schema.md) | the deliverable and its consumer contract, measurement vs recommendation |
+| [capacity-profile schema](docs/capacity-profile-schema.md) | the deliverable and its consumer contract, measurement vs recommendation; the temporal-capacity-profile and the machine-readable JSON Schemas |
 | [experiment design](docs/experiment-design.md) | models, workload catalog, experiments, constraints, running, pilot |
 | [admission control](docs/admission-control.md) | minimum gateway admission config, two guardrails (not a 2-D region), production capacity input |
 | [benchmark outputs](docs/benchmark-outputs.md) | every output, from admission values to evidence and temporal validation |

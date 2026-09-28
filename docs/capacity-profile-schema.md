@@ -17,6 +17,7 @@ rate-capacity result:
 ```yaml
 schema_version: 23
 experiment: rate-capacity
+run: {run_id: 3f2a..., owner: alice, purpose: model onboarding, ticket: CAP-123, environment: dev}   # who ran it and why (bedrock-benchmark run --owner/--purpose/--ticket/--environment)
 purpose: reference                                 # admission_calibration | characterization -- then recommendation is always null
 environment:                                       # provenance -- see methodology.md, "Provenance and temporal validation"
   measured_at: {start: 2026-09-26T19:06:40+00:00, end: ...}
@@ -93,7 +94,7 @@ workload_classes:
         quota_headroom_fraction: 0.1
         effective_headroom_fraction: 0.2    # 1 - sustained_rps / confirmed, after the quota cap
         evidence: single_run_operating_envelope   # never production-ready alone
-        production_use: "not production-ready alone: repeat across times / days and use scripts/drift.py's ..."
+        production_use: "not production-ready alone: repeat across times / days, then use `bedrock-benchmark validate`'s ..."
         binding: measurement                # or provider_quota
         basis: {statistically_confirmed_offered_rps: 5.0, provider_ceiling_rps: 6.6667}
     sweep_points: [{value: 1.6667, verdict: INCONCLUSIVE, phase: discovery, n: 150, inconclusive: [...]}, ...]  # phase: discovery | refinement
@@ -187,6 +188,41 @@ decision, which can apply its own margins on top (e.g. more for a
 critical tenant).
 
 
+## Machine-readable contract
+
+The prose above explains the fields; the contract consumers check is a
+JSON Schema shipped with the package, one per artifact type and version:
+
+| Artifact | Version field | Schema |
+|---|---|---|
+| `capacity-profile.yaml` (one run) | `schema_version: 23` | [`capacity-profile-v23.json`](../src/bedrock_benchmark/schemas/capacity-profile-v23.json) |
+| `temporal-capacity-profile.yaml` (repeated runs) | `artifact: temporal_capacity_profile`, `temporal_profile_schema_version: 1` | [`temporal-capacity-profile-v1.json`](../src/bedrock_benchmark/schemas/temporal-capacity-profile-v1.json) |
+
+```bash
+bedrock-benchmark validate-profile results/run-all-<ts>/nova-micro/*-capacity-profile.yaml
+```
+
+The schemas pin what a consumer decides on -- versions, `purpose`,
+`validity.envelope`, `admission_envelope` (`source`, `evidence`,
+`scope`, headroom), `measurement_validity.status`, saturation status,
+`transport.total_max_attempts: 1`, and for temporal entries the
+`status` and `production_capacity_input` -- and allow additional
+properties, so additive fields don't break consumers. `run:` is
+optional because v23 profiles written before it exist. Every profile the
+test suite builds is validated against the schema, and `publish` refuses
+a run whose profiles don't conform.
+
+## Publishing
+
+`bedrock-benchmark publish <run dir> --destination s3://bucket/prefix`
+(or a directory) copies the run unchanged to
+`<destination>/<YYYY>/<MM>/<run dir>/` with a `manifest.yaml`:
+`owner`, `run_id`, `purpose`, `ticket`, `environment`, `measured_at`,
+`evidence: single_run_operating_envelope`, one line per profile (model,
+experiment, purpose, schema) and every file's size + sha256. The
+manifest is written last (its presence means the upload completed) and
+never overwritten: a published run is immutable.
+
 ## Consumers
 
 The benchmark knows nothing about any gateway's configuration schema.
@@ -217,12 +253,13 @@ Contract rules a consumer can rely on:
   a jointly validated (C, R) region.
 - Every admission envelope is `evidence: single_run_operating_envelope`.
   A production capacity value comes from repeated runs through
-  `scripts/drift.py` (`temporal_validation.production_capacity_input`),
+  `bedrock-benchmark validate` (the temporal-capacity-profile's
+  `production_capacity_input`, status `VALID` / `VALID_CONSERVATIVE`),
   never from one profile.
 - **Production consumers take a capacity input only when it is
   statistically confirmed AND `measurement_validity.status` is `valid`
   (or knowingly `suspect_reproduced`) AND temporally validated**
-  (`production_capacity_input` non-null -- drift.py already excludes
+  (`production_capacity_input` non-null -- temporal validation already excludes
   `invalid` runs). Anything else is evidence at most, never config.
 - Every class/mix carries `measurement_validity: {status, events,
   recovery_probes}` -- see [SLO statistics](slo-statistics.md),

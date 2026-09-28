@@ -221,20 +221,23 @@ validity:
   envelope: single_run_operating_envelope
   repeated_runs: 1
   days_observed: 1
-  scope: "single run -- ... run scripts/drift.py for a temporal_validation"
+  scope: "single run -- ... then `bedrock-benchmark validate` for a temporal-capacity-profile"
 ```
 
 The benchmark therefore produces two kinds of envelope:
 
 | Envelope | From | Says |
 |---|---|---|
-| **single-run operating envelope** | one `run_all.py` run (every profile) | what was confirmed under the conditions at `measured_at` |
-| **stable / conservative operating envelope** | `scripts/drift.py` over repeated, independent runs | what holds across days and times of day |
+| **single-run operating envelope** | one `bedrock-benchmark run` (every profile) | what was confirmed under the conditions at `measured_at` |
+| **stable / conservative operating envelope** | `bedrock-benchmark validate` over repeated, independent runs | what holds across days and times of day |
 
 The second needs data from several independent points in time, so a
-single run never produces it. `scripts/drift.py` lines repeated profiles
-up per (model, experiment, workload/mix, sweep kind) and emits a
-`temporal_validation` block:
+single run never produces it. `bedrock-benchmark validate` lines
+repeated profiles up per (model, experiment, workload/mix, sweep kind)
+and writes a separate artifact, `temporal-capacity-profile.yaml`
+(`artifact: temporal_capacity_profile`, own schema version, JSON Schema
+`temporal-capacity-profile-v1.json`), with one entry per envelope: a
+`status` and a `temporal_validation` block:
 
 ```yaml
 temporal_validation:
@@ -259,7 +262,7 @@ single run                         -> single_run_operating_envelope (every profi
     ↓
 repeated runs across times / days
     ↓
-temporal validation                -> scripts/drift.py: temporal_validation
+temporal validation                -> bedrock-benchmark validate: temporal-capacity-profile.yaml
     ↓
 conservative / stable envelope     -> the minimum confirmed admission value
     ↓
@@ -272,11 +275,23 @@ production capacity input          -> temporal_validation.production_capacity_in
 and the spread is within `--threshold`), or
 `unstable_operating_envelope` -- then plan from the conservative value.
 A run that confirmed nothing is never stable. Compare only runs of the
-same methodology: each run lists its `git_commit`.
+same methodology: each run lists its `git_commit`. Runs whose
+`measurement_validity` is `invalid` are excluded.
+
+The entry's `status` is what a consumer may do with it:
+
+| `envelope` | `status` | `production_capacity_input` |
+|---|---|---|
+| `stable_operating_envelope` | `VALID` | set |
+| `unstable_operating_envelope` | `VALID_CONSERVATIVE` | set -- the minimum across runs |
+| `insufficient_temporal_evidence`, `single_run_operating_envelope` | `INSUFFICIENT_EVIDENCE` | null |
 
 ```bash
-.venv/bin/python scripts/drift.py results/
+bedrock-benchmark validate results/
 ```
+
+(`scripts/drift.py` prints the same entries without writing the
+artifact; kept for backward compatibility.)
 
 The research workflow: fix a model and workloads, run every experiment,
 repeat mornings and evenings on different days, and study the drift.
