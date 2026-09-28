@@ -52,6 +52,10 @@ class ProfileReport:
     # Confirmation phase (None/empty when not configured or nothing to confirm).
     confirmation_plan: Optional["ConfirmationPlan"] = None
     confirmations: List["ConfirmationResult"] = field(default_factory=list)
+    # Provider-state validity of this subject's measurement: status
+    # valid | suspect_reproduced | invalid, the suspect events and every
+    # recovery probe (see ExperimentSpec.recovery_probe).
+    measurement_validity: Optional[dict] = None
 
 
 @dataclass
@@ -159,13 +163,32 @@ def ceiling_ratio(point: SweepPoint, ceiling_rps: Optional[float]) -> Optional[f
     return round(served / ceiling_rps, 4) if ceiling_rps and served is not None else None
 
 
+# Provider-state suspect: throttled this hard while SERVED this far below
+# the nominal ceiling -- the point's own load can't produce that, so it
+# points at provider state (a preceding overload, other traffic on the
+# account). With a recovery probe configured this is a CONTROL signal:
+# the point's data is discarded, the provider is recovered, the point is
+# re-measured.
+SUSPECT_THROTTLE_RATE = 0.10
+SUSPECT_CEILING_RATIO = 0.50
+
+
+def suspect_point(point: SweepPoint, ceiling_rps: Optional[float]) -> bool:
+    if point is None or not ceiling_rps:
+        return False
+    ratio = ceiling_ratio(point, ceiling_rps)
+    return (point.metrics.throttle_rate >= SUSPECT_THROTTLE_RATE
+            and ratio is not None and ratio < SUSPECT_CEILING_RATIO)
+
+
 def above_ceiling(point: SweepPoint, ceiling_rps: float) -> bool:
     ratio = ceiling_ratio(point, ceiling_rps)
     return ratio is not None and ratio > 1 + CEILING_RATE_TOLERANCE
 
 
 # Distinct seeds per phase, so no phase replays another's arrival pattern.
-_SEED_OFFSET = {"discovery": 0, "refinement": 20_000, "confirmation": 10_000, "conditioning": 30_000}
+_SEED_OFFSET = {"discovery": 0, "refinement": 20_000, "confirmation": 10_000, "conditioning": 30_000,
+                "recovery_probe": 40_000}
 
 
 def _slo_kwargs(slo, *, latency: bool = True) -> dict:
@@ -212,11 +235,6 @@ async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress:
         subjects = [profiles[w.name] for w in spec.workloads]
 
     for index, subject in enumerate(subjects):
-        if index > 0 and spec.inter_subject_cooldown_s > 0:
-            # All subjects share one model's quota: let the previous
-            # subject's overload points clear so this one isn't measured
-            # conditional on that history.
-            await asyncio.sleep(spec.inter_subject_cooldown_s)
         is_mix = isinstance(subject, WorkloadMix)
         shares = subject.shares if is_mix else None
         # SLOs: an isolated workload uses its own profile. A mix judges
@@ -303,6 +321,84 @@ async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress:
                                "phase": "conditioning", "measured": False})
                 report.all_results.append(r)
 
+        sub_ceiling = spec.provider_ceilings.get(subject.name)
+        ceiling_rps = sub_ceiling.rps if sub_ceiling is not None else None
+        rp = spec.recovery_probe
+        validity: Dict = {"status": "valid", "events": [], "recovery_probes": []}
+        baseline_ttft: Dict[str, Optional[float]] = {"ms": None}
+
+        async def probe(reason: str, attempt: int) -> bool:
+            """Short low-load probe (data discarded): is the provider healthy?"""
+            seed = None if spec.seed is None else spec.seed + _SEED_OFFSET["recovery_probe"] + attempt
+            runner = ConcurrencyRunner(target, subject, concurrency=rp.concurrency, duration_s=rp.duration_s,
+                                       warmup_s=0.0, stream=spec.stream, seed=seed)
+            results = await runner.run()
+            for r in results:
+                r.tags.update({"subject": subject.name, "sweep_type": spec.sweep.type, "phase": "recovery_probe",
+                               "measured": False, "probe_reason": reason})
+                report.all_results.append(r)
+            m = compute_run_metrics(results, windows=[runner.window], confidence=confidence)
+            ttft = m.ttft_p50_ms if m.ttft_p50_ms is not None else m.latency_p50_ms
+            healthy = m.n > 0 and m.throttle_rate <= rp.max_throttle_rate and m.success_rate >= rp.min_success_rate
+            if healthy and ttft and baseline_ttft["ms"] and ttft > baseline_ttft["ms"] * rp.max_ttft_ratio:
+                healthy = False
+            if healthy and ttft and baseline_ttft["ms"] is None:
+                baseline_ttft["ms"] = ttft
+            validity["recovery_probes"].append({
+                "reason": reason, "attempt": attempt, "n": m.n, "throttle_rate": m.throttle_rate,
+                "success_rate": m.success_rate, "ttft_p50_ms": ttft, "healthy": healthy})
+            return healthy
+
+        async def recover(cooldown_s: float, reason: str) -> bool:
+            """Fixed recovery interval, then -- with a recovery probe --
+            VERIFY recovery: probe, and if unhealthy wait and re-probe up to
+            max_attempts. False = the provider never looked healthy."""
+            if cooldown_s > 0:
+                await asyncio.sleep(cooldown_s)
+            if rp is None:
+                return True
+            for attempt in range(1, rp.max_attempts + 1):
+                if attempt > 1 and rp.retry_cooldown_s > 0:
+                    await asyncio.sleep(rp.retry_cooldown_s)
+                if await probe(reason, attempt):
+                    return True
+            validity["status"] = "invalid"
+            validity["events"].append({"reason": reason, "outcome": "provider_unrecovered",
+                                       "probes": rp.max_attempts})
+            return False
+
+        def invalidate(phase: str, value: float) -> None:
+            """Drop a phase's data at `value`: it was measured in a suspect
+            provider state. Kept in the raw JSONL, tagged, never measured."""
+            state = acc[phase].pop(value, None)
+            for r in (state or {}).get("results", []):
+                r.tags.update({"phase": "invalidated", "invalidated_phase": phase, "measured": False})
+
+        def note_suspect(phase: str, value: float, point: SweepPoint, outcome: str) -> None:
+            validity["events"].append({
+                "phase": phase, "value": value, "throttle_rate": point.metrics.throttle_rate,
+                "ceiling_ratio": ceiling_ratio(point, ceiling_rps), "outcome": outcome})
+            if outcome == "reproduced_after_recovery" and validity["status"] == "valid":
+                validity["status"] = "suspect_reproduced"
+
+        async def measure_valid(value: float, phase: str) -> Optional[SweepPoint]:
+            """measure + build, with the suspect signature as a control
+            signal: discard, recover, re-measure once. None = the provider
+            never recovered (the subject's measurement is invalid)."""
+            await measure(value, spec.repetitions, phase)
+            point = build(value, phase)
+            if rp is None or not suspect_point(point, ceiling_rps):
+                return point
+            if not await recover(0.0, f"suspect {phase} point {value:g}"):
+                note_suspect(phase, value, point, "provider_unrecovered")
+                return None
+            invalidate(phase, value)
+            await measure(value, spec.repetitions, phase)
+            again = build(value, phase)
+            note_suspect(phase, value, point,
+                         "reproduced_after_recovery" if suspect_point(again, ceiling_rps) else "cleared_after_recovery")
+            return again
+
         def build(value: float, phase: str, conf: Optional[float] = None,
                   subset: Optional[List[RequestResult]] = None) -> SweepPoint:
             """Metrics from ONE phase's data; bounds at `conf` (default:
@@ -338,13 +434,20 @@ async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress:
                 phase=phase,
             )
 
+        # Start of the subject: a recovery interval after the previous
+        # subject (all share one model's quota), then -- with a probe --
+        # a verified healthy baseline before any discovery point.
+        healthy = await recover(spec.inter_subject_cooldown_s if index > 0 else 0.0,
+                                "start of subject" if index == 0 else "after previous subject")
+
         # Phase 1 -- discovery: every value, spec.repetitions each.
-        values = spec.sweep_values(subject.name)
+        values = spec.sweep_values(subject.name) if healthy else []
         points: List[SweepPoint] = []
         consecutive_fails = 0
         for value in values:
-            await measure(value, spec.repetitions, "discovery")
-            point = build(value, "discovery")
+            point = await measure_valid(value, "discovery")
+            if point is None:
+                break  # provider never recovered: stop -- no conclusion from this subject
             points.append(point)
             if on_progress is not None:
                 on_progress(subject.name, value, point)
@@ -356,12 +459,10 @@ async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress:
         # between the last non-failing point L and the first FAIL F, so
         # the candidate is the real edge rather than the coarse grid
         # point below it. Still discovery-class data: selects, never confirms.
-        if spec.sweep.refinement is not None:
+        if spec.sweep.refinement is not None and validity["status"] != "invalid":
             # Upper bound: the first FAIL -- or, with a known ceiling, the
             # first point whose achieved rate is above it (burst, not
             # sustainable). Lower bound: the highest point below that.
-            sub_ceiling = spec.provider_ceilings.get(subject.name)
-            ceiling_rps = sub_ceiling.rps if sub_ceiling is not None else None
 
             def upper(p: SweepPoint) -> bool:
                 return (point_verdict(p, class_gate, **gate_kwargs).verdict == FAIL
@@ -380,15 +481,16 @@ async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress:
                     break
                 if (int(lo) + int(hi)) // 2 in (lo, hi):
                     break  # no integer strictly between the bounds -- nothing new to test
-                if spec.sweep.refinement.cooldown_s > 0:
-                    # Recovery interval before EVERY refinement point: the
-                    # first follows the coarse sweep's overload, each later
-                    # one may follow a refinement point that just FAILed --
-                    # and refinement exists to locate the boundary precisely.
-                    await asyncio.sleep(spec.sweep.refinement.cooldown_s)
+                # Recovery before EVERY refinement point: the first follows
+                # the coarse sweep's overload, each later one may follow a
+                # refinement point that just FAILed -- and refinement exists
+                # to locate the boundary precisely.
                 mid = (int(lo) + int(hi)) // 2
-                await measure(mid, spec.repetitions, "refinement")
-                point = build(mid, "refinement")
+                if not await recover(spec.sweep.refinement.cooldown_s, f"before refinement point {mid}"):
+                    break
+                point = await measure_valid(mid, "refinement")
+                if point is None:
+                    break
                 points.append(point)
                 if on_progress is not None:
                     on_progress(subject.name, mid, point)
@@ -405,7 +507,7 @@ async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress:
         recommendation = recommend(points, class_gate, **gate_kwargs)
         plan = None
         confirmations: List[ConfirmationResult] = []
-        if spec.confirmation is not None and recommendation is not None:
+        if spec.confirmation is not None and recommendation is not None and validity["status"] != "invalid":
             cfg = spec.confirmation
             # Candidates come from discovery ALONE, before any confirmation
             # data -- so alpha can be split over exactly these K.
@@ -431,16 +533,20 @@ async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress:
                 est_per_rep = disc.metrics.n / max(1, len(disc.repetitions))
                 result = None
                 looks_used = 0
-                # Every tested candidate: cooldown -> conditioning -> looks,
-                # so none inherits what ran before it (discovery's overload,
-                # or a higher candidate that just FAILed under throttling).
-                # Neither counts against max_duration_s: shift its clock.
+                # Every tested candidate: recovery (interval + verified
+                # healthy probe) -> conditioning -> looks, so none inherits
+                # what ran before it and conditioning never starts on a
+                # throttled provider. None of it counts against
+                # max_duration_s: shift its clock.
                 paused_from = time.perf_counter()
-                if cfg.cooldown_s > 0:
-                    await asyncio.sleep(cfg.cooldown_s)
+                if not await recover(cfg.cooldown_s, f"before candidate {value:g}"):
+                    confirmations.append(ConfirmationResult(value, INCONCLUSIVE, "provider_state_invalid"))
+                    stopped = True  # the provider never recovered: no further candidate is meaningful
+                    continue
                 if cfg.warmup_s > 0:
                     await condition(value, cfg.warmup_s)  # discarded: steady state before the looks
                 started += time.perf_counter() - paused_from
+                suspect_retries = 1 if rp is not None else 0
                 if not reachable(plan, est_requests_per_rep=est_per_rep, per_rep_s=per_rep_s,
                                  remaining_duration_s=cfg.max_duration_s - (time.perf_counter() - started)):
                     result = ConfirmationResult(value, INCONCLUSIVE, "unreachable_within_caps",
@@ -450,6 +556,24 @@ async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress:
                     point = build(value, "confirmation", conf=plan.per_test_confidence)
                     if on_progress is not None:
                         on_progress(subject.name, value, point)
+                    if suspect_retries and suspect_point(point, ceiling_rps):
+                        # Control signal: throttled far below the ceiling --
+                        # provider state, not this candidate's own load.
+                        # Discard its confirmation data, recover, restart.
+                        suspect_retries -= 1
+                        paused_from = time.perf_counter()
+                        ok = await recover(0.0, f"suspect confirmation at {value:g}")
+                        note_suspect("confirmation", value, point,
+                                     "restarted_after_recovery" if ok else "provider_unrecovered")
+                        invalidate("confirmation", value)
+                        if not ok:
+                            result = ConfirmationResult(value, INCONCLUSIVE, "provider_state_invalid")
+                            break
+                        if cfg.warmup_s > 0:
+                            await condition(value, cfg.warmup_s)
+                        started += time.perf_counter() - paused_from
+                        looks_used = 0
+                        continue
                     verdict = point_verdict(point, class_look, **gate_look)
                     n, reps = point.metrics.n, len(state["windows"])
                     class_n = {name: m.n for name, m in point.class_metrics.items()} if is_mix else None
@@ -486,6 +610,10 @@ async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress:
                             if max_n < plan.look_schedule[looks_used]:
                                 reason = "unreachable_within_caps"
                     if reason is not None:
+                        if rp is not None and reason == "observed_violation" and suspect_point(point, ceiling_rps):
+                            # Still throttled far below the ceiling after a
+                            # verified recovery: accepted as a real result.
+                            note_suspect("confirmation", value, point, "reproduced_after_recovery")
                         last_look = looked.get(max(looked)) if looked else None
                         result = ConfirmationResult(
                             value, v, reason, repetitions=reps, n=n, looks_used=looks_used,
@@ -497,7 +625,7 @@ async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress:
                             decision_metrics=last_look[0].metrics if last_look else None,
                         )
                 confirmations.append(result)
-                stopped = result.verdict == PASS
+                stopped = result.verdict == PASS or result.stop_reason == "provider_state_invalid"
             confirmed = highest_confirmed(confirmations)
             recommendation.confirmed_point = confirmed.point if confirmed is not None else None
             recommendation.confirmation_source = "confirmation"
@@ -509,6 +637,7 @@ async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress:
             confirmation_plan=plan,
             confirmations=confirmations,
             verdicts=[point_verdict(p, class_gate, **gate_kwargs) for p in points],
+            measurement_validity=validity,
         ))
 
     return report

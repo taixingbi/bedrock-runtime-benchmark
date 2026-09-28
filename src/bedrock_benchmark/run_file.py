@@ -67,13 +67,17 @@ def estimated_duration_s(spec: ExperimentSpec) -> float:
     discovery = (spec.sweep.point_count + refine) * spec.repetitions * per_run
     if spec.sweep.refinement is not None:
         discovery += spec.sweep.refinement.max_points * spec.sweep.refinement.cooldown_s  # before each point
+    probe = spec.recovery_probe.duration_s if spec.recovery_probe else 0.0
+    if spec.sweep.refinement is not None:
+        discovery += spec.sweep.refinement.max_points * probe  # a recovery probe before each refinement point
     total = 0.0
     for index, subject in enumerate(spec.subject_names):
+        total += probe  # at the start of each subject (healthy probes; unhealthy ones retry)
         if index > 0:
             total += spec.inter_subject_cooldown_s
         confirm = _confirmation_estimate_s(spec, subject, per_run)
-        if confirm > 0:  # cooldown + conditioning for the (highest) candidate, assumed to PASS
-            confirm += spec.confirmation.cooldown_s + spec.confirmation.warmup_s
+        if confirm > 0:  # cooldown + probe + conditioning for the (highest) candidate, assumed to PASS
+            confirm += spec.confirmation.cooldown_s + probe + spec.confirmation.warmup_s
         total += discovery + confirm
     return total
 

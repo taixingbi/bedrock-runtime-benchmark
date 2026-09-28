@@ -219,6 +219,19 @@ Contract rules a consumer can rely on:
   A production capacity value comes from repeated runs through
   `scripts/drift.py` (`temporal_validation.production_capacity_input`),
   never from one profile.
+- **Production consumers take a capacity input only when it is
+  statistically confirmed AND `measurement_validity.status` is `valid`
+  (or knowingly `suspect_reproduced`) AND temporally validated**
+  (`production_capacity_input` non-null -- drift.py already excludes
+  `invalid` runs). Anything else is evidence at most, never config.
+- Every class/mix carries `measurement_validity: {status, events,
+  recovery_probes}` -- see [SLO statistics](slo-statistics.md),
+  "Measurement validity". `invalid` means the provider never passed a
+  recovery probe: nothing from that subject is a capacity conclusion.
+- A calibration point never becomes gateway config directly: calibration
+  point -> derived workload policy -> mixed-traffic validation ->
+  temporal validation -> gateway config (not `C_confirmed = 6` ->
+  `max_inflight = 6`).
 - `scope: isolated_workload_class` values hold for that class alone:
   never sum them across classes or treat one as a global limit (the
   gateway's review takes the minimum across classes).

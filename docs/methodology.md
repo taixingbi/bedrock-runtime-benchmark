@@ -75,7 +75,11 @@ isolation") -- to reduce carry-over from preceding overload, so a result
 approximates C_safe(W_i) rather than C_safe(W_i | the overload that ran
 before it). It is a recovery policy, not a proven return to baseline
 (provider state isn't observable). The profile records the settings
-under `measurement.isolation`.
+under `measurement.isolation`. With `isolation.recovery_probe` the
+recovery itself is checked -- a short low-load probe must be healthy
+before the next phase -- and points throttled far below the ceiling are
+discarded, recovered and re-measured; each subject reports
+`measurement_validity` (`valid` / `suspect_reproduced` / `invalid`).
 
 
 Every sweep point runs **warmup -> measurement window -> drain**:

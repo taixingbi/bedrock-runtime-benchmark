@@ -214,18 +214,38 @@ Without the per-candidate cooldown, a run on nova-micro saw
 `very_large_context` C=2 (~1 rps, 0 throttles in discovery) 97%
 throttled in confirmation straight after C=4 FAILed -- history, not C=2.
 
-A candidate throttled >= 10% while served below 0.5x the nominal ceiling
-is flagged `throttled_below_ceiling`: its own load can't produce that, so
-it points at provider state (preceding overload, other traffic on the
-account), and the unconfirmed `reason` says to re-run before reading the
-result as unsafe.
+The interval alone is a recovery POLICY, not a proof that the provider
+is back at baseline -- a run showed `long_context_short_answer`'s
+conditioning (after 120 s) itself 98% throttled. So recovery is made a
+**checked experiment state** (`isolation.recovery_probe`): after each
+interval a short low-load probe (C=1, 20 s, data discarded) must be
+healthy -- no throttling, >= 90% success, TTFT p50 within 2x the
+subject's first healthy probe -- before the next phase; unhealthy ->
+wait `retry_cooldown_s` and probe again, up to `max_attempts`. The order
+for every candidate is: recovery interval -> healthy probe ->
+conditioning -> looks, so conditioning never starts on a throttled
+provider.
 
-The interval is a recovery POLICY (120 s in the shipped experiments), not
-a proof that the provider is back at baseline: Bedrock's internal quota,
-burst and routing state isn't observable from outside. Not yet done: an
-experiment that measures the recovery time directly -- overload, then
-wait 0 / 30 / 60 / 120 / 180 s, then a low-load probe (throttle,
-throughput, TTFT) -- to base the interval on data.
+**Measurement validity.** A point throttled >= 10% while served below
+0.5x the nominal ceiling can't be explained by its own load -- it points
+at provider state. With a recovery probe this is a **control signal**,
+not just a report: the point's data is discarded (kept in the raw JSONL
+as `phase: invalidated`), recovery is verified, and the point is
+re-measured once (a confirmation candidate restarts from zero). Every
+subject reports `measurement_validity`:
+
+| status | meaning |
+|---|---|
+| `valid` | no suspect state, or it cleared after recovery |
+| `suspect_reproduced` | the signature came back after a VERIFIED recovery -- accepted as a real result (possibly a limit other than the nominal quota), and flagged |
+| `invalid` | the provider never passed a probe -- the sweep stops and no capacity conclusion (confirmed or not) is drawn; re-run |
+
+PASS / FAIL / INCONCLUSIVE stay the statistical verdicts; validity is a
+separate layer that says whether the measurement can support one.
+Without a probe the candidate is still flagged `throttled_below_ceiling`
+in the report. Not yet done: an experiment that measures the recovery
+time directly (overload, wait 0 / 30 / 60 / 120 / 180 s, probe) to base
+the interval itself on data.
 
 **Several candidates: highest first, alpha split.** With `candidates: K
 > 1` they're tested HIGHEST first and stop at the first PASS; a FAIL (or

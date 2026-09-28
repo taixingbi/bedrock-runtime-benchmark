@@ -97,3 +97,28 @@ class ConcurrencyLimitedClient(FakeBedrockRuntimeClient):
         finally:
             with self._lock:
                 self._active -= 1
+
+
+class DegradedClient(FakeBedrockRuntimeClient):
+    """Throttles every load call during [start_s, end_s) after creation --
+    a provider in a degraded / drained state for a while (end_s=inf:
+    never recovers). Calibration probes (maxTokens == 1) pass through."""
+    def __init__(self, start_s: float = 0.0, end_s: float = float("inf"), **kwargs):
+        super().__init__(**kwargs)
+        import time
+        self._t0, self._start, self._end = time.monotonic(), start_s, end_s
+
+    def _degraded(self, kwargs) -> None:
+        import time
+        if (kwargs.get("inferenceConfig") or {}).get("maxTokens") == 1:
+            return
+        if self._start <= time.monotonic() - self._t0 < self._end:
+            raise ThrottlingError()
+
+    def converse(self, **kwargs) -> dict:
+        self._degraded(kwargs)
+        return super().converse(**kwargs)
+
+    def converse_stream(self, **kwargs) -> dict:
+        self._degraded(kwargs)
+        return super().converse_stream(**kwargs)

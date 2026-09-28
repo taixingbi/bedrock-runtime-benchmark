@@ -77,6 +77,10 @@ see [experiment design](experiment-design.md#planned-joint-capacity)).
 
 ### Production capacity input
 
+A production capacity input must be statistically confirmed, from a
+measurement whose `measurement_validity` is `valid`, and temporally
+validated -- anything else is evidence, not config.
+
 A single benchmark run produces a `single_run_operating_envelope` -- one
 snapshot of provider conditions at `measured_at`. Every admission
 envelope in a profile says so (`evidence: single_run_operating_envelope`),

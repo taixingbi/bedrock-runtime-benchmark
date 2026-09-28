@@ -487,3 +487,19 @@ artifact was ever used to actually inform a gateway config:
     `confirmed_above_provider_ceiling` / `confirmed_ceiling_ratio` (held
     for the confirmation window, not indefinitely). Rate sweeps keep
     their <= ceiling candidates (sustained_rps is quota-capped anyway).
+73. **Recovery was assumed, not checked.** A nova-micro run after a
+    120 s interval still showed `long_context_short_answer`'s
+    conditioning 98% throttled and `very_large_context` throttled from
+    C=2 in discovery. `isolation.recovery_probe` makes recovery a checked
+    state: after each interval a short C=1 probe must be healthy
+    (no throttling, >= 90% success, TTFT p50 <= 2x baseline) before the
+    next phase, retried up to `max_attempts`; the order per candidate is
+    interval -> healthy probe -> conditioning -> looks. The
+    throttled-below-ceiling signature is now a control signal: the
+    point's data is discarded (`phase: invalidated`), recovery verified,
+    the point re-measured once. Each subject reports
+    `measurement_validity` (valid / suspect_reproduced / invalid); an
+    invalid subject stops and supports no conclusion, and drift.py
+    excludes invalid runs from temporal validation. Additive -- invalid
+    subjects never carry a confirmed point or envelope, so no consumer
+    field changed.

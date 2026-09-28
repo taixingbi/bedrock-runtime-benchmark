@@ -77,7 +77,7 @@ from typing import Dict, List, Optional
 
 from .analysis.capacity import FAIL, INCONCLUSIVE, PASS, Recommendation
 from .analysis.metrics import DEFAULT_CONFIDENCE, RunMetrics, min_samples_to_resolve_rate, percentile
-from .experiments.executor import ExperimentReport, above_ceiling, ceiling_ratio, point_rates
+from .experiments.executor import ExperimentReport, above_ceiling, ceiling_ratio, point_rates, suspect_point
 from .recommendation import admission_envelope
 from .results import RequestResult
 from .workload import WorkloadProfile
@@ -341,7 +341,8 @@ def _no_recommendation(purpose: str) -> dict:
                       "production admission envelopes come only from reference experiments"}
 
 
-def _calibration_point(spec, subject: str, rec: Optional[Recommendation], ceiling, diagnosis: Optional[dict]) -> dict:
+def _calibration_point(spec, subject: str, rec: Optional[Recommendation], ceiling, diagnosis: Optional[dict],
+                       validity: Optional[dict] = None) -> dict:
     """admission_calibration: the CONFIRMED capacity of one workload
     shape under its SLO, the quota and the measured provider environment
     -- C_safe = f(shape, SLO, quota, provider conditions) -- as an input
@@ -374,24 +375,19 @@ def _calibration_point(spec, subject: str, rec: Optional[Recommendation], ceilin
     }
     if confirmed is None:
         point["reason"] = "nothing statistically confirmed for this shape -- see confirmation.candidates"
+    status = (validity or {}).get("status")
+    if status is not None:
+        point["measurement_validity"] = status
+    if status == "invalid":
+        point["reason"] = ("measurement INVALID: the provider never passed a recovery probe -- no capacity "
+                           "conclusion (confirmed or not) is drawn from this run; re-run")
     return point
 
 
-# A candidate throttled this hard while SERVED this far below the nominal
-# ceiling isn't hitting its own quota share -- its own load can't produce
-# that. It points at provider state (a preceding overload that drained the
-# bucket, other traffic on the account), so its FAIL says little about
-# the candidate itself.
-_SUSPECT_THROTTLE_RATE = 0.10
-_SUSPECT_CEILING_RATIO = 0.50
-
-
 def _throttled_below_ceiling(result, ceiling_rps: Optional[float]) -> bool:
-    if result.point is None or not ceiling_rps:
-        return False
-    ratio = ceiling_ratio(result.point, ceiling_rps)
-    return (result.point.metrics.throttle_rate >= _SUSPECT_THROTTLE_RATE
-            and ratio is not None and ratio < _SUSPECT_CEILING_RATIO)
+    """See executor.suspect_point: throttled while served far below the
+    nominal ceiling -- provider state, not the candidate's own load."""
+    return suspect_point(result.point, ceiling_rps)
 
 
 def _candidate_dict(result, ceiling_rps: Optional[float]) -> dict:
@@ -409,6 +405,9 @@ def _unconfirmed_reason(profile_report, spec) -> str:
     where the fixed-sequence test stopped and how many requests it
     lacked. Never suggests relaxing the SLO."""
     prefix = "no statistically confirmed point -- "
+    if (profile_report.measurement_validity or {}).get("status") == "invalid":
+        return prefix + ("measurement INVALID: the provider never passed a recovery probe, so this run supports no "
+                         "capacity conclusion (not 'unsafe') -- see measurement_validity; re-run")
     if profile_report.recommendation is None:
         return prefix + "the first swept value already FAILs the SLO, so there is nothing to confirm; sweep lower values"
     if profile_report.confirmation_plan is not None:
@@ -532,6 +531,10 @@ def _envelope(entry: dict, profile_report, spec, report_results: List[RequestRes
     skipped = [v for v in spec.sweep_values(subject) if v not in swept]
     if skipped and spec.sweep.stop_after_fails is not None:
         entry["sweep_stopped_early"] = {"after_consecutive_fails": spec.sweep.stop_after_fails, "skipped_values": skipped}
+    if profile_report.measurement_validity is not None:
+        # valid | suspect_reproduced | invalid -- a consumer takes a capacity
+        # conclusion only from a valid (or knowingly suspect_reproduced) one.
+        entry["measurement_validity"] = profile_report.measurement_validity
     if profile_report.confirmation_plan is not None:
         # Independent data at the candidates; the only source of
         # statistically_confirmed when present.
@@ -555,7 +558,8 @@ def _envelope(entry: dict, profile_report, spec, report_results: List[RequestRes
             unconfirmed_reason=_unconfirmed_reason(profile_report, spec),
         )
         if spec.purpose == "admission_calibration":
-            entry["calibration_point"] = _calibration_point(spec, subject, None, spec.provider_ceilings.get(subject), None)
+            entry["calibration_point"] = _calibration_point(spec, subject, None, spec.provider_ceilings.get(subject), None,
+                                                            profile_report.measurement_validity)
         return
     ceiling = spec.provider_ceilings.get(subject)
     ceiling_rps = ceiling.rps if ceiling else None
@@ -577,7 +581,8 @@ def _envelope(entry: dict, profile_report, spec, report_results: List[RequestRes
     # after this benchmark's safety headroom (recommendation.py) -- only
     # from a reference experiment.
     if spec.purpose == "admission_calibration":
-        entry["calibration_point"] = _calibration_point(spec, subject, rec, ceiling, entry["diagnosis"])
+        entry["calibration_point"] = _calibration_point(spec, subject, rec, ceiling, entry["diagnosis"],
+                                                        profile_report.measurement_validity)
     entry["recommendation"] = _no_recommendation(spec.purpose) if spec.purpose != "reference" else admission_envelope(
         spec.sweep.type, confirmed, headroom=spec.provider_headroom, quota_headroom=spec.quota_headroom,
         provider_ceiling_rps=ceiling_rps, scope=scope,
@@ -762,6 +767,8 @@ def build_capacity_profile(report: ExperimentReport) -> dict:
                 "inter_subject_cooldown_s": spec.inter_subject_cooldown_s,
                 "refinement_cooldown_s": spec.sweep.refinement.cooldown_s if spec.sweep.refinement else None,
                 "per_candidate_cooldown_s": spec.confirmation.cooldown_s if spec.confirmation else None,
+                # Recovery is checked by this probe, not assumed (None: intervals only).
+                "recovery_probe": dict(spec.recovery_probe.__dict__) if spec.recovery_probe else None,
             },
             "repetitions": spec.repetitions,
             # rates/percentiles over requests scheduled in the window

@@ -92,11 +92,17 @@ def summarize(paths: Iterable[str], *, stability_threshold_pct: float = 20.0, mi
                 groups.setdefault((model, profile.get("experiment"), scope, name, kind), []).append({
                     "measured_at": measured, "confirmed": confirmed, "admission": production,
                     "git_commit": env.get("git_commit"), "profile": path,
+                    # v23+: a run whose provider never recovered supports no conclusion.
+                    "measurement_validity": (entry.get("measurement_validity") or {}).get("status", "valid"),
                 })
 
     report = []
-    for (model, experiment, scope, name, kind), runs in sorted(groups.items(), key=lambda kv: tuple(map(str, kv[0]))):
-        runs.sort(key=lambda r: r["measured_at"] or "")
+    for (model, experiment, scope, name, kind), all_runs in sorted(groups.items(), key=lambda kv: tuple(map(str, kv[0]))):
+        all_runs.sort(key=lambda r: r["measured_at"] or "")
+        # Only VALID measurements are evidence: an invalid run (provider never
+        # recovered) is listed but counts toward nothing -- not as a
+        # confirmation, not as an unconfirmed run, not toward days.
+        runs = [r for r in all_runs if r["measurement_validity"] != "invalid"]
         unit, admission_key = _UNITS[kind]
         confirmed = [r["confirmed"] for r in runs if r["confirmed"] is not None]
         admission = [r["admission"] for r in runs if r["admission"] is not None]
@@ -106,6 +112,7 @@ def summarize(paths: Iterable[str], *, stability_threshold_pct: float = 20.0, mi
             "runs": len(runs), "days_observed": len(days),
             "utc_hours_observed": sorted({int(t[11:13]) for t in stamps}),
             "confirmed_runs": len(confirmed), "unconfirmed_runs": len(runs) - len(confirmed),
+            "invalid_runs": len(all_runs) - len(runs),
         }
         spread = None
         if confirmed:
@@ -129,6 +136,6 @@ def summarize(paths: Iterable[str], *, stability_threshold_pct: float = 20.0, mi
         report.append({
             "model": model, "experiment": experiment, scope: name, "kind": kind,
             "temporal_validation": tv,
-            "runs": [{k: v for k, v in r.items() if v is not None} for r in runs],
+            "runs": [{k: v for k, v in r.items() if v is not None} for r in all_runs],
         })
     return report

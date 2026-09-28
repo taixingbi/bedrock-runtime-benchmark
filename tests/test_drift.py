@@ -56,6 +56,20 @@ class DriftTests(unittest.TestCase):
         self.assertEqual((tv["confirmed_runs"], tv["unconfirmed_runs"]), (2, 1))
         self.assertEqual(tv["envelope"], "unstable_operating_envelope")
 
+    def test_invalid_runs_are_listed_but_never_evidence(self):
+        with tempfile.TemporaryDirectory() as d:
+            for i, (t, v) in enumerate([("2026-09-26T08:00", 6.67), ("2026-09-26T20:00", 6.67),
+                                        ("2026-09-27T09:00", 6.0)]):
+                self._write(d, str(i), _profile(t + ":00+00:00", v, round(v * 0.8, 4)))
+            bad = _profile("2026-09-28T09:00:00+00:00", 1.0, 0.8)
+            bad["workload_classes"]["short_chat"]["measurement_validity"] = {"status": "invalid"}
+            self._write(d, "bad", bad)
+            [g] = summarize([d])
+        tv = g["temporal_validation"]
+        self.assertEqual((tv["runs"], tv["invalid_runs"]), (3, 1))
+        self.assertEqual(tv["conservative_rps"], 6.0)  # the invalid 1.0 is not the minimum
+        self.assertEqual(len(g["runs"]), 4)            # still listed
+
     def test_too_few_runs_or_days_is_insufficient_evidence(self):
         with tempfile.TemporaryDirectory() as d:
             self._write(d, "a", _profile("2026-09-26T10:00:00+00:00", 5.0, 4.0))

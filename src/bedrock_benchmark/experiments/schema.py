@@ -55,6 +55,26 @@ class QuotaSnapshot:
     tpm: Optional[float] = None
 
 
+@dataclass
+class RecoveryProbe:
+    """`isolation.recovery_probe` -- turns provider recovery into a checked
+    experiment state instead of an assumption. After each fixed recovery
+    interval, `duration_s` of load at `concurrency` (data discarded) must
+    look healthy before the next phase starts: throttle_rate <=
+    max_throttle_rate, success_rate >= min_success_rate, and TTFT p50
+    within max_ttft_ratio x the subject's first healthy probe. Unhealthy
+    -> wait `retry_cooldown_s` and probe again, up to `max_attempts`; never
+    healthy -> the subject's measurement is INVALID (no capacity
+    conclusion is drawn from it)."""
+    duration_s: float = 20.0
+    concurrency: int = 1
+    max_throttle_rate: float = 0.0
+    min_success_rate: float = 0.9
+    max_ttft_ratio: float = 2.0
+    max_attempts: int = 5
+    retry_cooldown_s: float = 120.0
+
+
 REFINEMENT_STRATEGIES = ("integer_bisection",)
 
 
@@ -201,6 +221,9 @@ class ExperimentSpec:
     # C_safe(W_i). A policy, not a proven reset: the provider's quota /
     # burst / routing state isn't observable.
     inter_subject_cooldown_s: float = 0.0
+    # `isolation.recovery_probe` -- see RecoveryProbe. None = fixed
+    # intervals only (no recovery check, no suspect-point re-measure).
+    recovery_probe: Optional["RecoveryProbe"] = None
     # Post-run check: Bedrock-REPORTED input_tokens p50 vs requested.
     # Outside this, the class's workload_validation is valid: false
     # (the 4-chars/token padding estimate missed for this model).
@@ -321,6 +344,7 @@ def load_experiment(
         transport=TransportConfig(**transport),
         mix=MixConfig(**raw["mix"]) if raw.get("mix") else None,
         inter_subject_cooldown_s=_isolation(raw, path),
+        recovery_probe=_recovery_probe(raw, path),
         workload_validation_tolerance_pct=raw.get("workload_validation_tolerance_pct", 10.0),
         output_validation_tolerance_pct=raw.get("output_validation_tolerance_pct", 25.0),
         slo_profiles=dict(slos.profiles),
@@ -337,11 +361,24 @@ def load_experiment(
     return spec
 
 
+def _recovery_probe(raw: dict, path: str) -> Optional[RecoveryProbe]:
+    cfg = (raw.get("isolation") or {}).get("recovery_probe")
+    if not cfg:
+        return None
+    probe = RecoveryProbe(**cfg)
+    if (probe.duration_s <= 0 or probe.concurrency < 1 or probe.max_attempts < 1 or probe.retry_cooldown_s < 0
+            or not 0 <= probe.max_throttle_rate <= 1 or not 0 <= probe.min_success_rate <= 1
+            or probe.max_ttft_ratio <= 1):
+        raise ValueError(f"{path}: isolation.recovery_probe: duration_s > 0, concurrency / max_attempts >= 1, "
+                         f"retry_cooldown_s >= 0, rates in [0, 1], max_ttft_ratio > 1")
+    return probe
+
+
 def _isolation(raw: dict, path: str) -> float:
     isolation = raw.get("isolation") or {}
-    unknown = sorted(set(isolation) - {"inter_subject_cooldown_s"})
+    unknown = sorted(set(isolation) - {"inter_subject_cooldown_s", "recovery_probe"})
     if unknown:
-        raise ValueError(f"{path}: isolation takes only inter_subject_cooldown_s, got {unknown}")
+        raise ValueError(f"{path}: isolation takes inter_subject_cooldown_s / recovery_probe, got {unknown}")
     value = float(isolation.get("inter_subject_cooldown_s", 0.0))
     if value < 0:
         raise ValueError(f"{path}: isolation.inter_subject_cooldown_s must be >= 0")

@@ -166,11 +166,13 @@ class PlanTests(unittest.TestCase):
         micro = load_models(names=["nova-micro"])[0]
         spec = load_experiment("experiments/workload-shape-calibration.yaml", micro)  # 4 workloads x (10 + 4 refinement) points
         spec.confirmation = None
-        # + a 120 s recovery before each of up to 4 refinement points per shape, 120 s between shapes
-        self.assertEqual(estimated_duration_s(spec), 4 * ((10 + 4) * 1 * (10 + 90) + 4 * 120) + 3 * 120)
+        # + per shape: 120 s recovery + a 20 s probe before each of up to 4 refinement points, a 20 s
+        # probe at the start; 120 s between shapes
+        self.assertEqual(estimated_duration_s(spec),
+                         4 * ((10 + 4) * 1 * (10 + 90) + 4 * (120 + 20) + 20) + 3 * 120)
         mixed = load_experiment("experiments/mixed-capacity.yaml", micro)  # a mix is ONE subject
         mixed.confirmation = None
-        self.assertEqual(estimated_duration_s(mixed), 1 * 8 * 1 * (10 + 90))
+        self.assertEqual(estimated_duration_s(mixed), 20 + 1 * 8 * 1 * (10 + 90))  # + the start probe
 
     def test_concurrency_sweep_confirmation_estimate_assumes_the_ceiling_rate(self):
         """A concurrency candidate's request rate is unknown up front, so
@@ -182,7 +184,8 @@ class PlanTests(unittest.TestCase):
         micro = load_models(names=["nova-micro"])[0]
         spec = load_experiment("experiments/workload-shape-calibration.yaml", micro)
         self.assertEqual(estimated_duration_s(spec),
-                         4 * ((10 + 4) * 100 + 4 * 120) + (8 + 2 + 2 + 1) * 100 + 4 * (120 + 60) + 3 * 120)
+                         4 * ((10 + 4) * 100 + 4 * (120 + 20) + 20) + (8 + 2 + 2 + 1) * 100
+                         + 4 * (120 + 20 + 60) + 3 * 120)
 
     def test_mix_confirmation_estimate_scales_each_class_by_its_share(self):
         """short_chat (gold) is 60% of the mix, so the first look is at
@@ -190,7 +193,8 @@ class PlanTests(unittest.TestCase):
         raised max_repetitions (16)."""
         micro = load_models(names=["nova-micro"])[0]
         mixed = load_experiment("experiments/mixed-capacity.yaml", micro)
-        self.assertEqual(estimated_duration_s(mixed), 8 * 100 + 11 * 100 + 120 + 60)  # + cooldown, conditioning
+        # + start probe; cooldown, probe, conditioning before the candidate
+        self.assertEqual(estimated_duration_s(mixed), 20 + 8 * 100 + 11 * 100 + 120 + 20 + 60)
 
     def test_rate_capacity_confirmation_estimate_uses_each_tiers_first_look(self):
         """Per workload: 8 discovery points x 100s, plus the repetitions to
@@ -201,7 +205,7 @@ class PlanTests(unittest.TestCase):
         spec = load_experiment("experiments/rate-capacity.yaml", micro)
         self.assertEqual([w.slo_profile for w in spec.workloads], ["gold", "silver", "bronze"])
         self.assertEqual(estimated_duration_s(spec),
-                         3 * 8 * 100 + (7 + 2 + 1) * 100 + 3 * (120 + 60) + 2 * 120)
+                         3 * (20 + 8 * 100) + (7 + 2 + 1) * 100 + 3 * (120 + 20 + 60) + 2 * 120)
 
     def test_plan_is_every_experiment_for_every_enabled_model_grouped_by_model(self):
         paths = sorted(str(p) for p in Path("experiments").glob("*.yaml"))

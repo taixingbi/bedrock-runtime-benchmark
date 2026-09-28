@@ -60,6 +60,21 @@ sweep:
 # candidate, including a lower one after a higher one FAILed.
 isolation:
   inter_subject_cooldown_s: 120
+  # Recovery is CHECKED, not assumed: after each recovery interval a short
+  # low-load probe (data discarded) must be healthy -- no throttling,
+  # >= 90% success, TTFT p50 within 2x the first healthy probe -- before
+  # the next phase; unhealthy -> wait retry_cooldown_s and probe again, up
+  # to max_attempts; never healthy -> measurement_validity: invalid.
+  # Points throttled far below the ceiling are discarded, recovered and
+  # re-measured once (provider state, not the point's own load).
+  recovery_probe:
+    duration_s: 20
+    concurrency: 1
+    max_throttle_rate: 0.0
+    min_success_rate: 0.9
+    max_ttft_ratio: 2.0
+    max_attempts: 5
+    retry_cooldown_s: 120
 
 # The whole experiment, per class:
 #

@@ -358,6 +358,61 @@ class RunExperimentTests(unittest.IsolatedAsyncioTestCase):
         first, second = sorted(by_point.values(), key=lambda rs: min(r.scheduled_at for r in rs))
         self.assertGreaterEqual(min(r.scheduled_at for r in second) - max(r.completed_at for r in first), 0.3)
 
+    def _probe_spec(self, **overrides):
+        from bedrock_benchmark.ceiling import ProviderCeiling
+        from bedrock_benchmark.experiments.schema import RecoveryProbe
+        spec = _spec(sweep=SweepConfig(type="concurrency", values=[1]), repetitions=1, slo=self.LOOSE,
+                     recovery_probe=RecoveryProbe(duration_s=0.05, retry_cooldown_s=0.15, max_attempts=10,
+                                                  max_ttft_ratio=50.0), **overrides)
+        # A high nominal ceiling, so a throttled point is served far below it.
+        spec.provider_ceilings = {"short": ProviderCeiling(tokens_per_request=116, rpm_rps=1000.0, tpm_rps=None)}
+        return spec
+
+    async def test_healthy_provider_passes_the_recovery_probe(self):
+        target = BedrockConverseTarget(model_id="m", client=FakeBedrockRuntimeClient())
+
+        report = await run_experiment(self._probe_spec(), target=target)
+
+        validity = report.profiles[0].measurement_validity
+        self.assertEqual(validity["status"], "valid")
+        self.assertTrue(validity["recovery_probes"] and all(p["healthy"] for p in validity["recovery_probes"]))
+        probes = [r for r in report.all_results if r.tags.get("phase") == "recovery_probe"]
+        self.assertTrue(probes and not any(r.tags["measured"] for r in probes))  # never measured
+
+    async def test_suspect_point_is_discarded_recovered_and_remeasured(self):
+        """The provider degrades while the discovery point runs, then heals:
+        the point (throttled far below the ceiling) is a control signal --
+        its data is discarded, recovery is VERIFIED by probes, and the
+        re-measured point is clean."""
+        from .fakes import DegradedClient
+        target = BedrockConverseTarget(model_id="m", client=DegradedClient(start_s=0.08, end_s=0.5))
+
+        report = await run_experiment(self._probe_spec(), target=target)
+
+        profile = report.profiles[0]
+        validity = profile.measurement_validity
+        [event] = validity["events"]
+        self.assertEqual((event["phase"], event["outcome"]), ("discovery", "cleared_after_recovery"))
+        self.assertEqual(validity["status"], "valid")
+        self.assertTrue(any(not p["healthy"] for p in validity["recovery_probes"]))  # recovery was checked, not assumed
+        self.assertEqual(profile.points[0].metrics.throttle_rate, 0.0)             # the re-measured point
+        self.assertTrue(any(r.tags.get("phase") == "invalidated" for r in report.all_results))
+
+    async def test_provider_that_never_recovers_makes_the_measurement_invalid(self):
+        from .fakes import DegradedClient
+        from bedrock_benchmark.experiments.schema import RecoveryProbe
+        target = BedrockConverseTarget(model_id="m", client=DegradedClient())  # degraded forever
+        spec = self._probe_spec()
+        spec.recovery_probe = RecoveryProbe(duration_s=0.05, retry_cooldown_s=0.01, max_attempts=2)
+
+        report = await run_experiment(spec, target=target)
+
+        profile = report.profiles[0]
+        self.assertEqual(profile.measurement_validity["status"], "invalid")
+        self.assertEqual(profile.points, [])  # no point measured on a provider that never looked healthy
+        entry = build_capacity_profile(report)["workload_classes"]["short"]
+        self.assertIn("measurement INVALID", entry["recommendation"]["reason"])
+
     async def test_without_confirmation_discovery_is_a_fixed_sequence_test(self):
         target = BedrockConverseTarget(model_id="m", client=FakeBedrockRuntimeClient())
         report = await run_experiment(_spec(slo=self.LOOSE), target=target)
