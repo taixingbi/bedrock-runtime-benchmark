@@ -340,10 +340,9 @@ def _calibration_point(spec, subject: str, rec: Optional[Recommendation], ceilin
     for gateway policy derivation, not a config value (no headroom).
     The rates are what C and latency PRODUCED in this closed-loop run --
     observations, not a tested rate envelope (that is rate-capacity's
-    sustained_rps). C_safe mostly reflects request service time while RPM
-    binds, so it is not a cost weight: very_large_context C=12 does not
-    make it cheaper than tiny_request C=2. Null values when nothing was
-    confirmed."""
+    sustained_rps). Different workload shapes may require different
+    concurrency to reach the same provider rate ceiling, so concurrency is
+    not a workload cost weight. Null values when nothing was confirmed."""
     workload = next((w for w in spec.workloads if w.name == subject), None)
     confirmed = rec.confirmed_point if rec is not None else None
     point = {

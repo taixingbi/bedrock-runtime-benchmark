@@ -206,7 +206,7 @@ Contract rules a consumer can rely on:
   slo_profile, tokens_per_request, statistically_confirmed_concurrency,
   confirmed_rates: {attempted_rps, successful_rps, throttled_rps,
   slo_goodput_rps}, ceiling_ratio, observed_saturation_edge, bottleneck,
-  scope, use}` -- statistically confirmed, no headroom. Rates are kept apart -- `attempted_rps` (inflated by fast 429s under overload), `successful_rps` (served), `throttled_rps`, `slo_goodput_rps` -- plus `ceiling_ratio` (served / nominal ceiling); all are observations of what concurrency and latency produced, not a tested rate like `rate-capacity`'s `sustained_rps`. C_safe mostly reflects request service time while RPM binds, so it is not a cost weight: `very_large_context` confirmed at C=12 and `tiny_request` at C=2 on nova-micro, and that does not make the large shape cheaper -- both are served at ~6.4-6.7 rps, the RPM ceiling.
+  scope, use}` -- statistically confirmed, no headroom. Rates are kept apart -- `attempted_rps` (inflated by fast 429s under overload), `successful_rps` (served), `throttled_rps`, `slo_goodput_rps` -- plus `ceiling_ratio` (served / nominal ceiling); all are observations of what concurrency and latency produced, not a tested rate like `rate-capacity`'s `sustained_rps`. Different workload shapes may require different concurrency to reach the same provider rate ceiling; therefore concurrency must not be interpreted as a workload cost weight.
   It is workload-specific admission evidence (calibration_point -> workload-specific admission evidence -> policy derivation (gateway) -> mixed validation (eval-bedrock-platform)),
   not a limit to compare a config against (the gateway's review skips
   these profiles).

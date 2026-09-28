@@ -54,6 +54,13 @@ jobs:
                   print(f'ok: {model.name} x {path}')
           "
 
+      # The public CLI: installed by `pip install -e .`, lists the catalog,
+      # and plans every experiment for every enabled model -- no AWS calls.
+      - name: bedrock-benchmark CLI
+        run: |
+          bedrock-benchmark list
+          bedrock-benchmark plan all
+
   pip-audit:
     name: Dependency scan (pip-audit)
     runs-on: ubuntu-latest

@@ -140,7 +140,7 @@ eval-bedrock-platform (-> gateway -> Bedrock)
   validates the deployed gateway policy under production-like mixed traffic
 ```
 
-Rates are kept apart -- `attempted_rps` (inflated by fast 429s under overload), `successful_rps` (served), `throttled_rps`, `slo_goodput_rps` -- plus `ceiling_ratio` (served / nominal ceiling); all are observations of what concurrency and latency produced, not a tested rate like `rate-capacity`'s `sustained_rps`. C_safe mostly reflects request service time while RPM binds, so it is not a cost weight: `very_large_context` confirmed at C=12 and `tiny_request` at C=2 on nova-micro, and that does not make the large shape cheaper -- both are served at ~6.4-6.7 rps, the RPM ceiling. Calibration points are isolated-workload measurements; per-shape C_safe values don't combine mathematically into a global policy, and any policy derived from them must be validated under representative mixed traffic through the deployed gateway (`eval-bedrock-platform`) before production use -- this repo calls Bedrock directly and never validates gateway policy.
+Rates are kept apart -- `attempted_rps` (inflated by fast 429s under overload), `successful_rps` (served), `throttled_rps`, `slo_goodput_rps` -- plus `ceiling_ratio` (served / nominal ceiling); all are observations of what concurrency and latency produced, not a tested rate like `rate-capacity`'s `sustained_rps`. Different workload shapes may require different concurrency to reach the same provider rate ceiling; therefore concurrency must not be interpreted as a workload cost weight. Calibration points are isolated-workload measurements; per-shape C_safe values don't combine mathematically into a global policy, and any policy derived from them must be validated under representative mixed traffic through the deployed gateway (`eval-bedrock-platform`) before production use -- this repo calls Bedrock directly and never validates gateway policy.
 
 **Next step for shape research (not nova-micro).** On nova-micro every
 shape hits the 400 RPM quota first, so this experiment measures
@@ -221,20 +221,22 @@ needs a new runner (rate-driven arrivals with a concurrency cap).
 ## Running experiments
 
 ```bash
-python3.11 -m venv .venv && .venv/bin/pip install -e ".[dev]"   # same install CI uses
+python3.11 -m venv .venv && .venv/bin/pip install -e ".[dev]"   # same install CI uses; installs bedrock-benchmark
 
-# one experiment
-.venv/bin/python scripts/run.py experiments/concurrency-sweep.yaml                     # every enabled model
-.venv/bin/python scripts/run.py experiments/concurrency-sweep.yaml --model nova-micro  # one model
-
-# everything: every experiment x every enabled model
-.venv/bin/python scripts/run_all.py --dry-run          # validate all pairs + time estimate, no AWS calls
-.venv/bin/python scripts/run_all.py                    # 4 experiments x 5 models ~= 5.5h
-.venv/bin/python scripts/run_all.py --model nova-micro --model nova-pro
-.venv/bin/python scripts/run_all.py experiments/rate-capacity.yaml
-.venv/bin/python scripts/run_all.py --model nova-micro --slo-profile gold   # only gold workloads
-.venv/bin/python scripts/run_all.py --model nova-micro --pilot          # ~30 s smoke test, no batch
+bedrock-benchmark list                                                  # models + experiments, no AWS calls
+bedrock-benchmark plan concurrency-sweep --model nova-micro             # validate + estimate, no requests
+bedrock-benchmark pilot concurrency-sweep --model nova-micro            # ~30 s smoke test
+bedrock-benchmark run concurrency-sweep --model nova-micro              # the benchmark
+bedrock-benchmark run all                                               # every experiment x every enabled model
+bedrock-benchmark run rate-capacity --model nova-micro --model nova-pro
+bedrock-benchmark run concurrency-sweep --model nova-micro --slo-profile gold   # only gold workloads
 ```
+
+Experiments are named, never pathed: `bedrock-benchmark` (`src/bedrock_benchmark/cli.py`)
+maps a name to its file and finds the checkout itself, so the directory
+layout is not part of the interface. It is a thin layer over the same
+engine `scripts/run.py` / `scripts/run_all.py` call (still there for
+backward compatibility).
 
 `--slo-profile NAME` (repeatable) runs only the workloads bound to that
 profile in `catalog/workloads.yaml`: an isolated sweep keeps its

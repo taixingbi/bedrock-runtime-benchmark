@@ -84,7 +84,7 @@ calibration_point -> workload-specific admission evidence -> policy derivation (
 ```
 
 A calibration point is evidence, not a config value: no admission
-envelope, no headroom. C_safe mostly reflects request service time while RPM binds, so it is not a cost weight: `very_large_context` confirmed at C=12 and `tiny_request` at C=2 on nova-micro, and that does not make the large shape cheaper -- both are served at ~6.4-6.7 rps, the RPM ceiling. Rates are kept apart -- `attempted_rps` (inflated by fast 429s under overload), `successful_rps` (served), `throttled_rps`, `slo_goodput_rps` -- plus `ceiling_ratio` (served / nominal ceiling); all are observations of what concurrency and latency produced, not a tested rate like `rate-capacity`'s `sustained_rps`. Calibration points are isolated-workload measurements; per-shape C_safe values don't combine mathematically into a global policy, and any policy derived from them must be validated under representative mixed traffic through the deployed gateway (`eval-bedrock-platform`) before production use -- this repo calls Bedrock directly and never validates gateway policy.
+envelope, no headroom. Different workload shapes may require different concurrency to reach the same provider rate ceiling; therefore concurrency must not be interpreted as a workload cost weight. Rates are kept apart -- `attempted_rps` (inflated by fast 429s under overload), `successful_rps` (served), `throttled_rps`, `slo_goodput_rps` -- plus `ceiling_ratio` (served / nominal ceiling); all are observations of what concurrency and latency produced, not a tested rate like `rate-capacity`'s `sustained_rps`. Calibration points are isolated-workload measurements; per-shape C_safe values don't combine mathematically into a global policy, and any policy derived from them must be validated under representative mixed traffic through the deployed gateway (`eval-bedrock-platform`) before production use -- this repo calls Bedrock directly and never validates gateway policy.
 
 Each reference workload ends up with both an isolated concurrency and an
 isolated rate envelope:
@@ -144,27 +144,44 @@ Times are nova-micro `--dry-run` estimates.
 
 ```bash
 python3.11 -m venv .venv && .venv/bin/pip install -e ".[dev]"
+source .venv/bin/activate
 export AWS_PROFILE=<your-profile> AWS_REGION=us-east-1
 ```
 
-Check quotas, then smoke-test, then run (one command at a time):
+That installs the `bedrock-benchmark` command. You only name a model and
+an experiment -- no file paths (one command at a time):
 
 ```bash
-.venv/bin/python scripts/fetch_quota.py --all
+bedrock-benchmark list
 ```
 
 ```bash
-.venv/bin/python scripts/run_all.py --model nova-micro --pilot
+bedrock-benchmark plan workload-shape-calibration --model nova-micro
 ```
 
 ```bash
-caffeinate -i .venv/bin/python scripts/run_all.py --model nova-micro
+bedrock-benchmark pilot workload-shape-calibration --model nova-micro
 ```
 
-Useful variants: `--dry-run` (plan and time estimate, no AWS calls),
-`--slo-profile gold` (only workloads bound to a profile), one experiment
-path instead of all, `scripts/run.py <experiment>` for a single run.
-Results go to `results/run-all-<timestamp>/<model>/`. Each profile is a
+```bash
+caffeinate -i bedrock-benchmark run workload-shape-calibration --model nova-micro
+```
+
+| Command | Does | AWS calls |
+|---|---|---|
+| `list` | models and experiments | none |
+| `plan <experiment> --model <m>` | validates config + quota, shows workloads, ceilings and estimated runtime | STS only (which account) |
+| `pilot <experiment> --model <m>` | a few requests per workload: access, workload shape, SLO reachability, throttling | a few |
+| `run <experiment> --model <m>` | the benchmark -> `capacity-profile.yaml` + raw JSONL | the full run |
+
+`run ... --dry-run` is `plan`, `run ... --pilot` is `pilot`. `all` runs
+every experiment; `--model` repeats (default: every enabled model);
+`--slo-profile gold` keeps only workloads bound to a profile. It works
+from any directory (it finds the checkout, or set
+`BEDROCK_BENCHMARK_HOME`). Check quotas are current first with
+`.venv/bin/python scripts/fetch_quota.py --all`. Results go to
+`results/run-all-<timestamp>/<model>/`. (`scripts/run.py` and
+`scripts/run_all.py` still work but are not the public interface.) Each profile is a
 **single-run operating envelope**. Repeated runs on different days and
 times of day combine into a stable / conservative envelope
 (`temporal_validation`) with:
