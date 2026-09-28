@@ -362,8 +362,12 @@ async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress:
                     break
                 lo = _value(p)
             for _ in range(spec.sweep.refinement.max_points):
-                if lo is None or hi is None or hi - lo <= 1:
+                if lo is None or hi is None:
                     break
+                if spec.sweep.refinement.stop_when_adjacent and hi - lo <= 1:
+                    break
+                if (int(lo) + int(hi)) // 2 in (lo, hi):
+                    break  # no integer strictly between the bounds -- nothing new to test
                 if spec.sweep.refinement.cooldown_s > 0:
                     # Recovery interval before EVERY refinement point: the
                     # first follows the coarse sweep's overload, each later
