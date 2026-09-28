@@ -264,10 +264,9 @@ def _diagnosis(rec: Recommendation, profile_report, ceiling) -> dict:
     """What limits capacity -- read from the saturation point's FAILED
     checks, not guessed from one number:
 
-      rpm_quota / tpm_quota   throttling (and only throttle-caused
-                              failures), latency still within SLO
+      provider_throttling     throttling observed; quota mechanism unproven
       latency                 a latency check failed, no throttling
-      quota_and_latency       both
+      provider_throttling_and_latency  both
       errors                  non-throttle failures
       not_reached / unresolved  no clean saturation point to read
     """
@@ -279,9 +278,12 @@ def _diagnosis(rec: Recommendation, profile_report, ceiling) -> dict:
                  # None when no latency check is configured -- not vacuously healthy.
                  "latency_healthy_at_observed_nonfailing": (
                      all(c["verdict"] != FAIL for c in latency_at_observed.values()) if latency_at_observed else None)}
+    out["nominal_binding_constraint"] = ceiling.binding if ceiling is not None else None
+    out["attribution_basis"] = "observed symptoms; nominal quotas do not identify the cause of throttling"
+    suspect = (profile_report.measurement_validity or {}).get("status", "valid") != "valid"
     sat = rec.saturation_point
     if sat is None:
-        out["bottleneck"] = rec.analysis.status  # not_reached | unresolved
+        out["bottleneck"] = "unresolved" if suspect else rec.analysis.status
         return out
     verdict = next((v for p, v in zip(profile_report.points, profile_report.verdicts) if p is sat), None)
     failed = sorted({c.name.split(".")[-1] for c in (verdict.checks if verdict else []) if c.verdict == FAIL})
@@ -290,16 +292,17 @@ def _diagnosis(rec: Recommendation, profile_report, ceiling) -> dict:
     throttled = "throttle_rate" in failed or ("success_rate" in failed and m.throttle_rate > 0 and other_errors == 0)
     slow = any(name in _LATENCY_CHECKS for name in failed)
     if throttled and slow:
-        bottleneck = "quota_and_latency"
+        bottleneck = "provider_throttling_and_latency"
     elif throttled:
-        bottleneck = f"{ceiling.binding}_quota" if ceiling is not None else "provider_throttling"
+        bottleneck = "provider_throttling"
     elif slow:
         bottleneck = "latency"
     else:
         bottleneck = "errors"
     attempted = round(m.n / m.measured_duration_s, 4) if m.measured_duration_s else None
     out.update({
-        "bottleneck": bottleneck,
+        "bottleneck": "unresolved" if suspect else bottleneck,
+        "observed_symptom": bottleneck,
         "saturation_at": _value(sat),
         "failed_checks": failed,
         "throttle_rate_at_saturation": m.throttle_rate,
@@ -525,10 +528,20 @@ def _slo_dict(slo) -> dict:
 
 def _envelope(entry: dict, profile_report, spec, report_results: List[RequestResult]) -> None:
     subject = profile_report.workload_name
+    control = entry.get("role") == "reference_control"
+    purpose = "characterization" if control else spec.purpose
+    if control:
+        entry["control_use"] = "reference control for interpreting this experiment; no admission calibration or recommendation"
     if subject in spec.provider_ceilings:
         entry["provider_constraints"] = spec.provider_ceilings[subject].to_dict()
     if spec.sweep.quota_fractions is not None:
         entry["sweep_values_rps"] = spec.sweep_values(subject)
+    if profile_report.history_comparison is not None:
+        entry["history_comparison"] = profile_report.history_comparison
+        entry["measurement_validity"] = profile_report.measurement_validity
+        entry["recommendation"] = {"admission_envelope": None,
+                                   "reason": "history comparison: descriptive time series, no capacity claim"}
+        return
     points = profile_report.points
     limited = [p.concurrency if p.concurrency is not None else p.rps for p in points if p.client_limited]
     if limited:
@@ -568,11 +581,11 @@ def _envelope(entry: dict, profile_report, spec, report_results: List[RequestRes
             entry["unstable_region"] = analysis.unstable_region
         else:
             entry["note"] = "no swept value met the configured SLO -- re-run with lower sweep values"
-        entry["recommendation"] = _no_recommendation(spec.purpose) if spec.purpose != "reference" else admission_envelope(
+        entry["recommendation"] = _no_recommendation(purpose) if purpose != "reference" else admission_envelope(
             spec.sweep.type, None, headroom=spec.provider_headroom,
             unconfirmed_reason=_unconfirmed_reason(profile_report, spec),
         )
-        if spec.purpose == "admission_calibration":
+        if purpose == "admission_calibration":
             entry["calibration_point"] = _calibration_point(spec, subject, None, spec.provider_ceilings.get(subject), None,
                                                             profile_report.measurement_validity)
         return
@@ -595,10 +608,10 @@ def _envelope(entry: dict, profile_report, spec, report_results: List[RequestRes
     # POLICY, kept apart from the measurement above: the confirmed point
     # after this benchmark's safety headroom (recommendation.py) -- only
     # from a reference experiment.
-    if spec.purpose == "admission_calibration":
+    if purpose == "admission_calibration":
         entry["calibration_point"] = _calibration_point(spec, subject, rec, ceiling, entry["diagnosis"],
                                                         profile_report.measurement_validity)
-    entry["recommendation"] = _no_recommendation(spec.purpose) if spec.purpose != "reference" else admission_envelope(
+    entry["recommendation"] = _no_recommendation(purpose) if purpose != "reference" else admission_envelope(
         spec.sweep.type, confirmed, headroom=spec.provider_headroom, quota_headroom=spec.quota_headroom,
         provider_ceiling_rps=ceiling_rps, scope=scope,
         unconfirmed_reason=None if confirmed is not None else _unconfirmed_reason(profile_report, spec),
@@ -788,6 +801,7 @@ def build_capacity_profile(report: ExperimentReport, run_metadata: Optional[dict
             },
         },
         "measurement": {
+            **({"history_protocol": vars(spec.history_protocol)} if spec.history_protocol is not None else {}),
             "warmup_s": spec.warmup_s,
             "window_s": spec.duration_s,
             "throttle_pause_s": spec.throttle_pause_s,  # concurrency sweeps: a worker's wait after a 429

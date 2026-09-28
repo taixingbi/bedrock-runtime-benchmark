@@ -69,6 +69,27 @@ class BuildCapacityProfileTests(unittest.TestCase):
         defaults.update(overrides)
         return ExperimentSpec(**defaults)
 
+    def test_reference_control_has_evidence_without_policy_outputs(self):
+        from bedrock_benchmark.models import load_models
+        from bedrock_benchmark.summary import summarize_entry
+        spec = load_experiment("experiments/workload-shape-calibration.yaml", load_models(names=["nova-micro"])[0])
+        rec = _rec(point=SweepPoint(concurrency=3, rps=None, metrics=_metrics()), saturation_point=None,
+                   confirmed_point=SweepPoint(concurrency=3, rps=None, metrics=_metrics(), phase="confirmation"))
+        for recommendation in (rec, None):
+            with self.subTest(confirmed=recommendation is not None):
+                report = ExperimentReport(spec=spec, profiles=[ProfileReport(
+                    workload_name="long_generation", recommendation=recommendation)])
+                profile = build_capacity_profile(report)
+                entry = profile["workload_classes"]["long_generation"]
+                self.assertEqual(entry["role"], "reference_control")
+                self.assertNotIn("calibration_point", entry)
+                self.assertIsNone(entry["recommendation"]["admission_envelope"])
+                self.assertIn("reference control", entry["control_use"])
+                self.assertIn("reference control", "\n".join(summarize_entry("long_generation", entry, profile)))
+                if recommendation:
+                    self.assertEqual(entry["concurrency"]["statistically_confirmed"], 3)
+                    self.assertIn("confirmed_evidence", entry)
+
     def test_schema_version_is_23(self):
         spec = self._spec()
         report = ExperimentReport(spec=spec, profiles=[ProfileReport(workload_name="short", recommendation=None)])
@@ -431,7 +452,13 @@ class BuildCapacityProfileTests(unittest.TestCase):
                          "violation seen, too few requests to prove the SLO; not shown unsafe) | saturation=6 (first FAIL in "
                          "discovery -- an observed edge, not confirmed)")
         d = entry["diagnosis"]
-        self.assertEqual((d["bottleneck"], d["saturation_at"]), ("rpm_quota", 6))
+        self.assertEqual((d["bottleneck"], d["saturation_at"]), ("provider_throttling", 6))
+        self.assertEqual(d["nominal_binding_constraint"], "rpm")
+        report.profiles[0].measurement_validity = {"status": "suspect_reproduced", "events": []}
+        suspect = build_capacity_profile(report)["workload_classes"]["short"]["diagnosis"]
+        self.assertEqual(suspect["bottleneck"], "unresolved")
+        self.assertEqual(suspect["observed_symptom"], "provider_throttling")
+        self.assertEqual(suspect["nominal_binding_constraint"], "rpm")
         self.assertEqual(d["failed_checks"], ["success_rate", "throttle_rate"])
         self.assertEqual((d["non_throttle_error_rate_at_saturation"], d["provider_ceiling_rps"]), (0.0, 6.6667))
         self.assertIsNone(d["latency_healthy_at_observed_nonfailing"])  # no latency gate in this fixture

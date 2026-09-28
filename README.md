@@ -144,7 +144,7 @@ there is no gateway config schema in this repo.
 | `rate-capacity` | reference | 0.25x-2.5x of the provider ceiling, one reference workload per tier (`short_chat` gold, `rag_answer` silver, `long_generation` bronze) -- the canonical envelope run | ~57 min |
 | `concurrency-sweep` | reference | each reference workload alone, concurrency 1..48 until 2 consecutive FAILs; confirms the top 2 non-failing concurrencies | ~1.5 h |
 | `mixed-capacity` | reference | mixed-rate calibration: 0.25x-2.5x ceiling for a workflow mix (`--mix`); default 60/30/10 is a reference example | ~32 min |
-| `workload-shape-calibration` | admission_calibration | the 4 non-reference shapes x concurrency 1..48 until 2 consecutive FAILs, each under its own SLO | ~1-2 h |
+| `workload-shape-calibration` | admission_calibration | the 4 non-reference shapes plus a long_generation reference control x concurrency 1..48 until 2 consecutive FAILs, each under its own SLO | ~1-2 h |
 
 Only **reference** experiments, on the three **reference** workloads (one
 per SLO tier), produce an admission-envelope recommendation.
@@ -319,3 +319,46 @@ Python 3.11 or 3.12 (`requires-python` in `pyproject.toml`);
 `.python-version` pins 3.11. All runner, metrics, statistics and
 recommendation logic is tested against a fake Bedrock client
 (`tests/fakes.py`) -- no network or AWS credentials needed.
+
+`workload-shape-calibration` also runs `long_generation` (4096 input / 1024 output, bronze)
+as an experiment-local `reference_control`. Its measurements help compare decode
+pressure with large-context behavior; it emits no calibration point or production
+admission recommendation in this experiment.
+
+### Follow-up experiments for provider-state behavior
+
+`long-context-history` compares `long_context_short_answer` and `very_large_context`
+at 0.25 of each workload's nominal rate ceiling (1.67 RPS for the recorded
+400-RPM configuration). Every arm starts with 300s idle and a healthy low-load
+probe. The overload arm then applies 2x nominal rate for 120s, waits 120s and
+requires another healthy probe. Each observation is one continuous 900s window;
+30s bins do not interrupt traffic. Two trials reverse arm order and use paired
+arrival seeds. Idle and healthy probes do not establish that the provider reset.
+Record any other traffic sharing the quota. A configured overload need not cause
+throttling: the artifact records whether it did. This is descriptive evidence,
+not a capacity recommendation or proof of a provider-internal mechanism.
+
+Bins report offered/scheduled/attempted/successful/throttled RPS, request-cohort
+success/throttle rates, TTFT, latency, peak inflight, and scheduling lag. Rate
+counts use scheduled arrivals, actual starts, or completions as named; the
+success/throttle proportions follow requests scheduled in the bin, including
+responses that finish later. The final bin may therefore show fewer completions
+than eventual successes. Raw JSONL keeps measurement, overload and probe phases.
+
+`medium-context-sustain` retests C=7 using a continuous 30-minute discovery window
+and fresh confirmation with at least 30 minutes of measured exposure. Confirmation
+may reject the candidate or require additional windows. Its measured RPS is not a
+validated rate envelope. Compare repeated runs before deriving an admission policy.
+
+```sh
+.venv/bin/bedrock-benchmark plan long-context-history --model nova-micro
+.venv/bin/bedrock-benchmark run long-context-history --model nova-micro
+.venv/bin/bedrock-benchmark run medium-context-sustain --model nova-micro
+```
+
+History comparison takes about three hours before recovery retries/drain; the
+sustain retest typically needs at least an hour if its candidate remains eligible.
+Run them separately to avoid contaminating their provider state with each other.
+Reports retain `nominal_binding_constraint`, but throttling is described as an
+observed symptom. Suspect measurements use `bottleneck: unresolved`; public quota
+ratios alone do not establish the actual cause of provider rejection.

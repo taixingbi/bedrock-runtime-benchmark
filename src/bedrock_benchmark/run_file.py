@@ -62,6 +62,11 @@ def estimated_duration_s(spec: ExperimentSpec) -> float:
     Real runs take longer when a look is spent on a stray bad event
     (up to the caps) and shorter on an early FAIL. Drain time on top
     depends on real latency, so it isn't counted."""
+    if spec.history_protocol is not None:
+        h = spec.history_protocol
+        probe = spec.recovery_probe.duration_s
+        return sum(len(spec.sweep_values(n)) for n in spec.subject_names) * spec.repetitions * (
+            2 * h.idle_s + h.overload_duration_s + h.recovery_s + 3 * probe + 2 * spec.duration_s)
     per_run = spec.warmup_s + spec.duration_s
     refine = spec.sweep.refinement.max_points if spec.sweep.refinement is not None else 0
     discovery = (spec.sweep.point_count + refine) * spec.repetitions * per_run

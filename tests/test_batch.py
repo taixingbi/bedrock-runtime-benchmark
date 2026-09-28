@@ -128,7 +128,7 @@ class SloProfileFilterBatchTests(unittest.TestCase):
         micro = load_models(names=["nova-micro"])
         planned = plan(paths, micro, only_slo_profiles={"gold"})
         skipped = {p.experiment: p.skip_reason for p in planned if p.skip_reason}
-        self.assertEqual(set(skipped), {"mixed-capacity"})
+        self.assertEqual(set(skipped), {"mixed-capacity", "long-context-history", "medium-context-sustain"})
         proc = subprocess.run(
             [sys.executable, "scripts/run_all.py", "--dry-run", "--model", "nova-micro", "--slo-profile", "gold"],
             capture_output=True, text=True,
@@ -164,12 +164,12 @@ class SloProfileFilterBatchTests(unittest.TestCase):
 class PlanTests(unittest.TestCase):
     def test_estimate_counts_subjects_points_repetitions_warmup_and_window(self):
         micro = load_models(names=["nova-micro"])[0]
-        spec = load_experiment("experiments/workload-shape-calibration.yaml", micro)  # 4 workloads x (10 + 4 refinement) points
+        spec = load_experiment("experiments/workload-shape-calibration.yaml", micro)  # 5 workloads x (10 + 4 refinement) points
         spec.confirmation = None
         # + per shape: 120 s recovery + a 20 s probe before each of up to 4 refinement points, a 20 s
         # probe at the start; 120 s between shapes
         self.assertEqual(estimated_duration_s(spec),
-                         4 * ((10 + 4) * 1 * (10 + 90) + 4 * (120 + 20) + 20) + 3 * 120)
+                         5 * ((10 + 4) * 1 * (10 + 90) + 4 * (120 + 20) + 20) + 4 * 120)
         mixed = load_experiment("experiments/mixed-capacity.yaml", micro)  # a mix is ONE subject
         mixed.confirmation = None
         self.assertEqual(estimated_duration_s(mixed), 20 + 1 * 8 * 1 * (10 + 90))  # + the start probe
@@ -185,8 +185,8 @@ class PlanTests(unittest.TestCase):
         micro = load_models(names=["nova-micro"])[0]
         spec = load_experiment("experiments/workload-shape-calibration.yaml", micro)
         self.assertEqual(estimated_duration_s(spec),
-                         4 * ((10 + 4) * 100 + 4 * (120 + 20) + 20) + (8 + 4 + 4 + 4) * 100
-                         + 4 * (120 + 20 + 60) + 3 * 120)
+                         5 * ((10 + 4) * 100 + 4 * (120 + 20) + 20) + (8 + 4 + 4 + 4 + 4) * 100
+                         + 5 * (120 + 20 + 60) + 4 * 120)
 
     def test_mix_confirmation_estimate_scales_each_class_by_its_share(self):
         """short_chat (gold) is 60% of the mix, so the first look is at

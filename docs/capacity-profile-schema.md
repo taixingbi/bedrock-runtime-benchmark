@@ -74,7 +74,8 @@ workload_classes:
         status: discovery_resolved          # discovery_not_reached / discovery_unresolved (+ unstable_region)
       summary: "statistically_confirmed=5.0 (the capacity) | observed_nonfailing=8.3333 (INCONCLUSIVE -- ...; not shown unsafe) | saturation=13.3333 (first FAIL in discovery -- an observed edge, not confirmed)"
     diagnosis:                              # MEASUREMENT interpretation: what limits the envelope
-      bottleneck: rpm_quota                 # tpm_quota | latency | quota_and_latency | errors | not_reached | unresolved
+      bottleneck: provider_throttling       # provider_throttling_and_latency | latency | errors | not_reached | unresolved
+      nominal_binding_constraint: rpm      # nominal quota context, not a causal diagnosis
       saturation_at: 13.3333
       failed_checks: [success_rate, throttle_rate]
       throttle_rate_at_saturation: 0.0464

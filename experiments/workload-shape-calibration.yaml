@@ -8,9 +8,10 @@
 #   medium_context             2048 / 128   silver  common app traffic
 #   long_context_short_answer  8192 / 64    silver  input-side (prefill) pressure
 #   very_large_context         16384 / 256  bronze  large prefill
-# The reference workloads (short_chat, rag_answer, long_generation) are
-# not repeated: their production envelopes come from concurrency-sweep
-# and rate-capacity.
+# long_generation (4096 / 1024, bronze, 60000ms) is also measured as a
+# reference_control to compare decode-heavy behavior with large prefill.
+# It produces evidence only here; its production envelopes still come
+# from concurrency-sweep and rate-capacity.
 #
 # Output per shape: a `calibration_point` (confirmed concurrency,
 # confirmed_rates -- attempted / successful / throttled / goodput rps --
@@ -55,12 +56,17 @@ name: workload-shape-calibration
 description: |
   Concurrency 1..48 (until two consecutive FAILs, then integer
   refinement and fixed-count plus minimum-time confirmation) across the four non-reference
-  catalog shapes, each under its own SLO. Produces statistically
+  catalog shapes plus long_generation as a reference control, each under
+  its own SLO. Produces statistically
   confirmed workload-shape capacity points -- workload-specific
   admission evidence for gateway policy derivation, not a production
   config.
 
-workloads: [tiny_request, medium_context, long_context_short_answer, very_large_context]
+workloads: [tiny_request, medium_context, long_context_short_answer, very_large_context, long_generation]
+
+# Experiment-local role; shape and SLO remain defined in catalog/workloads.yaml.
+workload_roles:
+  long_generation: reference_control
 
 warmup_s: 10
 duration_s: 90

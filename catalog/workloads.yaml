@@ -16,6 +16,10 @@
 #
 # Not every catalog workload gets a capacity recommendation: only the
 # reference ones, and only from a reference experiment.
+# An isolated non-reference experiment may set workload_roles:
+#   long_generation: reference_control
+# to reuse its shape as explanatory evidence without a calibration point
+# or production recommendation. This does not change its catalog role.
 
 workloads:
   # name                       in      out   slo     e2e ms   role                      typical use -- purpose

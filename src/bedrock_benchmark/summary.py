@@ -53,7 +53,16 @@ def _block(entry: dict) -> (Optional[str], dict):
 
 
 def summarize_entry(name: str, entry: dict, profile: dict) -> List[str]:
-    purpose = profile.get("purpose")
+    if "history_comparison" in entry:
+        arms = entry["history_comparison"]
+        lines = [f"{name} / history comparison", "  Descriptive observations; no confirmed capacity or admission recommendation"]
+        for arm in arms:
+            m = arm.get("aggregate", {})
+            lines.append(f"  {arm['scenario']} trial={arm['trial']} target={arm['target_rps']:.4g} rps: "
+                         f"{arm['status']}, throttle={m.get('throttle_rate')}, successful_rps={m.get('successful_rps')}")
+        return lines
+    control = entry.get("role") == "reference_control"
+    purpose = "characterization" if control else profile.get("purpose")
     kind, block = _block(entry)
     unit = "C" if kind == "concurrency" else "rps"
     confirmed = block.get("statistically_confirmed") if kind == "concurrency" \
@@ -80,7 +89,9 @@ def summarize_entry(name: str, entry: dict, profile: dict) -> List[str]:
                  if c.get("stop_reason") != "not_tested"]
         detail = "; ".join(tried) if tried else (why or rec.get("reason") or "see sweep_points")
         lines.append(f"  Confirmed                  none -- {detail}")
-    if purpose == "admission_calibration":
+    if control:
+        lines.append("  Single-run recommendation  none -- reference control for interpreting the experiment")
+    elif purpose == "admission_calibration":
         lines.append("  Single-run recommendation  none -- calibration evidence (calibration_point), not config")
     elif envelope:
         value = envelope.get("max_inflight") if envelope.get("max_inflight") is not None else envelope.get("sustained_rps")
@@ -95,6 +106,9 @@ def summarize_entry(name: str, entry: dict, profile: dict) -> List[str]:
                      + " -- no capacity conclusion from it")
         lines.append("  Next action                re-run once the provider / account is healthy "
                      "(bedrock-benchmark doctor first)")
+    elif control:
+        lines.append("  Reason                     explanatory reference control; no admission policy is derived")
+        lines.append("  Next action                compare with the other workload shapes and provider-state evidence")
     elif confirmed is None:
         lines.append("  Reason                     nothing statistically confirmed")
         lines.append("  Next action                see Confirmed above; re-run (plan / pilot first)")

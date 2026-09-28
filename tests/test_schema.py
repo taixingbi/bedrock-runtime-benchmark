@@ -44,8 +44,12 @@ class ShippedExperimentTests(unittest.TestCase):
         for path in sorted(Path("experiments").glob("*.yaml")):
             spec = load_experiment(str(path), MICRO)
             with self.subTest(path=path.name):
-                self.assertIsNotNone(spec.confirmation)
-                self.assertIsNone(spec.confirmation.max_repetitions)
+                if spec.history_protocol is not None:
+                    self.assertEqual(spec.purpose, "characterization")
+                    self.assertIsNone(spec.confirmation)
+                else:
+                    self.assertIsNotNone(spec.confirmation)
+                    self.assertIsNone(spec.confirmation.max_repetitions)
 
     def test_experiment_files_never_name_a_model(self):
         model_words = {m.name for m in load_models(include_disabled=True)} | {"nova", "llama", "qwen"}
@@ -55,13 +59,26 @@ class ShippedExperimentTests(unittest.TestCase):
                 self.assertFalse(any(w in spec.name for w in model_words), spec.name)
                 self.assertFalse(any(w in path.stem for w in model_words), path.stem)
 
-    def test_workload_shape_calibration_covers_only_non_reference_shapes(self):
-        """Reference workloads get their concurrency from concurrency-sweep;
-        workload-shape-calibration never repeats them."""
+    def test_workload_shape_calibration_includes_an_experiment_local_reference_control(self):
+        """The control reuses the reference shape without changing other experiments."""
         spec = load_experiment("experiments/workload-shape-calibration.yaml", MICRO)
         self.assertEqual([w.name for w in spec.workloads],
-                         ["tiny_request", "medium_context", "long_context_short_answer", "very_large_context"])
-        self.assertTrue(all(w.role == "characterization" for w in spec.workloads))
+                         ["tiny_request", "medium_context", "long_context_short_answer", "very_large_context", "long_generation"])
+        self.assertTrue(all(w.role == "characterization" for w in spec.workloads[:-1]))
+        control = spec.workloads[-1]
+        self.assertEqual((control.input_tokens, control.output_tokens, control.slo_profile,
+                          control.latency_p95_ms, control.role), (4096, 1024, "bronze", 60000, "reference_control"))
+        reference = load_experiment("experiments/rate-capacity.yaml", MICRO)
+        self.assertEqual(next(w.role for w in reference.workloads if w.name == "long_generation"), "reference")
+
+    def test_reference_control_override_cannot_change_production_experiments(self):
+        with self.assertRaisesRegex(ValueError, "non-reference experiment"):
+            _load_text(MINIMAL + "workload_roles: {short_chat: reference_control}\n")
+        with self.assertRaisesRegex(ValueError, "reference -> reference_control"):
+            _load_text(MINIMAL.replace("purpose: reference", "purpose: characterization")
+                       + "workload_roles: {short_chat: characterization}\n")
+        with self.assertRaisesRegex(ValueError, "selected workload"):
+            _load_text(MINIMAL + "workload_roles: {missing: reference_control}\n")
 
     def test_concurrency_sweep_covers_the_three_reference_workloads(self):
         spec = load_experiment("experiments/concurrency-sweep.yaml", MICRO)

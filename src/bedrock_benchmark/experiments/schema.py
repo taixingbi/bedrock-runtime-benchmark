@@ -58,6 +58,15 @@ class QuotaSnapshot:
 
 
 @dataclass
+class HistoryProtocol:
+    idle_s: float = 300.0
+    overload_quota_fraction: float = 2.0
+    overload_duration_s: float = 120.0
+    recovery_s: float = 120.0
+    bin_s: float = 30.0
+
+
+@dataclass
 class RecoveryProbe:
     """`isolation.recovery_probe` -- turns provider recovery into a checked
     experiment state instead of an assumption. After each fixed recovery
@@ -295,6 +304,7 @@ class ExperimentSpec:
     seed: Optional[int] = None
     transport: TransportConfig = field(default_factory=TransportConfig)
     mix: Optional[MixConfig] = None
+    history_protocol: Optional[HistoryProtocol] = None
     # `isolation: {inter_subject_cooldown_s}` -- a fixed recovery interval
     # between sweep subjects (workloads) to reduce carry-over: all subjects
     # share one model's quota, and a subject's overload points otherwise
@@ -413,6 +423,16 @@ def load_experiment(
     sweep = raw["sweep"]
     transport = raw.get("transport") or {}
     workloads = _resolve_workloads(raw.get("workloads"), path, workloads_file)
+    roles = raw.get("workload_roles") or {}
+    if not isinstance(roles, dict) or set(roles) - {w.name for w in workloads}:
+        raise ValueError(f"{path}: workload_roles must map selected workload names to reference_control")
+    for w in workloads:
+        if w.name in roles and (roles[w.name] != "reference_control" or w.role != "reference"):
+            raise ValueError(f"{path}: workload_roles only permits reference -> reference_control")
+    if roles and (raw.get("purpose") == "reference" or mix_config is not None):
+        raise ValueError(f"{path}: reference controls require an isolated non-reference experiment")
+    workloads = [replace(w, role=roles.get(w.name, w.role)) for w in workloads]
+
     if only_slo_profiles is not None:
         workloads = _filter_by_slo_profile(workloads, raw, set(only_slo_profiles), slos.profiles, slo_file)
 
@@ -436,6 +456,7 @@ def load_experiment(
         seed=raw.get("seed"),
         transport=TransportConfig(**transport),
         mix=mix_config,
+        history_protocol=HistoryProtocol(**raw["history_protocol"]) if raw.get("history_protocol") else None,
         inter_subject_cooldown_s=_isolation(raw, path),
         recovery_probe=_recovery_probe(raw, path),
         workload_validation_tolerance_pct=raw.get("workload_validation_tolerance_pct", 10.0),
@@ -586,6 +607,18 @@ def _validate(spec: ExperimentSpec) -> None:
     for name in ("provider_headroom", "quota_headroom"):
         if not 0 <= getattr(spec, name) < 1:
             raise ValueError(f"{name} must be in [0, 1)")
+    h = spec.history_protocol
+    if h is not None:
+        if (spec.purpose != "characterization" or spec.sweep.type != "rate" or spec.mix is not None
+                or spec.confirmation is not None or spec.recovery_probe is None
+                or spec.sweep.stop_after_fails is not None or spec.sweep.refinement is not None or spec.warmup_s != 0):
+            raise ValueError("history_protocol requires isolated characterization rate measurements, recovery probes, "
+                             "zero warmup, no confirmation/refinement/early-stop")
+        for name, value in vars(h).items():
+            if not isinstance(value, (float, int)) or not math.isfinite(value) or value <= 0:
+                raise ValueError(f"history_protocol.{name} must be finite and > 0")
+        if h.overload_quota_fraction <= 1 or h.bin_s > spec.duration_s:
+            raise ValueError("history_protocol requires overload > 1x nominal ceiling and bin_s <= duration_s")
     c = spec.confirmation
     def bad_cap(value, low) -> bool:
         return (value != AUTO if isinstance(value, str) else

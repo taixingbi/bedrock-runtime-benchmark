@@ -56,6 +56,7 @@ class ProfileReport:
     # valid | suspect_* | invalid, the suspect events and every
     # recovery probe (see ExperimentSpec.recovery_probe).
     measurement_validity: Optional[dict] = None
+    history_comparison: Optional[list] = None
 
 
 @dataclass
@@ -435,6 +436,13 @@ async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress:
                 client_limited=state["peak"] > target.executor_workers,
                 phase=phase,
             )
+
+        if spec.history_protocol is not None:
+            from .history import run_history_comparison
+            history = await run_history_comparison(spec, target, subject, report.all_results, recover, on_progress)
+            report.profiles.append(ProfileReport(workload_name=subject.name, measurement_validity=validity,
+                                                 history_comparison=history))
+            continue
 
         # Start of the subject: a recovery interval after the previous
         # subject (all share one model's quota), then -- with a probe --

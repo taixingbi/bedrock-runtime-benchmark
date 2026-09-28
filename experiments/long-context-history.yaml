@@ -1,0 +1,41 @@
+# Descriptive comparison, not a production capacity/recommendation experiment.
+# Run on a quiet account; record any other traffic sharing the model quota.
+# Each arm: idle -> healthy probe; overload arm additionally applies >nominal
+# traffic -> recovery interval -> healthy probe. Recovery is not assumed to reset
+# provider state. Two trials reverse arm order; both arms use the same target rate.
+purpose: characterization
+name: long-context-history
+description: |
+  Compare large-context open-loop traffic after idle and after offered overload
+  plus verified low-load recovery. Continuous 15-minute observations with 30s
+  descriptive bins; paired arrival seeds and reversed arm order on trial two.
+  Does not produce a safe capacity or identify an internal quota mechanism.
+workloads: [long_context_short_answer, very_large_context]
+warmup_s: 0
+duration_s: 900
+repetitions: 2
+stream: true
+seed: 7
+sweep:
+  type: rate
+  quota_fractions: [0.25]
+history_protocol:
+  idle_s: 300
+  overload_quota_fraction: 2.0
+  overload_duration_s: 120
+  recovery_s: 120
+  bin_s: 30
+isolation:
+  recovery_probe:
+    duration_s: 20
+    concurrency: 1
+    max_throttle_rate: 0.0
+    min_success_rate: 0.9
+    max_ttft_ratio: 2.0
+    max_attempts: 5
+    retry_cooldown_s: 120
+transport:
+  max_connections: 128
+  total_max_attempts: 1
+  connect_timeout_s: 5
+  read_timeout_s: 60

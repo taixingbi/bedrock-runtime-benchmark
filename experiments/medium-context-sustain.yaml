@@ -1,0 +1,39 @@
+# Retest the previously confirmed candidate; no rate envelope or headroom.
+# One continuous 30-minute measurement per repetition avoids the gaps between
+# the original 90s windows. C=7 is a tested candidate, never a pre-approved limit.
+purpose: admission_calibration
+name: medium-context-sustain
+description: |
+  Long observation of medium_context at C=7. Thirty-minute continuous windows
+  and independent confirmation requiring at least thirty minutes of measured
+  exposure. Successful RPS may exceed the nominal ceiling within a finite run;
+  the result is workload-specific evidence, not a tested rate admission limit.
+workloads: [medium_context]
+warmup_s: 10
+duration_s: 1800
+stream: true
+sweep:
+  type: concurrency
+  values: [7]
+confirmation:
+  max_looks: 2
+  max_requests: auto
+  max_duration_s: auto
+  min_steady_state_duration_s: 1800
+  candidates: 1
+  cooldown_s: 120
+  warmup_s: 60
+isolation:
+  recovery_probe:
+    duration_s: 20
+    concurrency: 1
+    max_throttle_rate: 0.0
+    min_success_rate: 0.9
+    max_ttft_ratio: 2.0
+    max_attempts: 5
+    retry_cooldown_s: 120
+transport:
+  max_connections: 128
+  total_max_attempts: 1
+  connect_timeout_s: 5
+  read_timeout_s: 60
