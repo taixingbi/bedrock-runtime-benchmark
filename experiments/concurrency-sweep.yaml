@@ -51,7 +51,14 @@ sweep:
     strategy: integer_bisection
     stop_when_adjacent: true
     max_points: 4
+    cooldown_s: 120      # refinement starts right after the coarse sweep's overload points
 
+# Provider-state isolation: the three classes share one model's quota, so
+# each waits out the previous class's overload -- C_safe(W_i), not
+# C_safe(W_i | history). confirmation.cooldown_s below rests before EVERY
+# candidate, including a lower one after a higher one FAILed.
+isolation:
+  inter_subject_cooldown_s: 120
 
 # The whole experiment, per class:
 #
@@ -83,7 +90,8 @@ sweep:
 #                   candidate FAILing and the lower one confirming (e.g.
 #                   C=2 at ~3.5 rps: ~1,430 s to reach 4,380)
 # Reaching a cap without a PASS is INCONCLUSIVE, never a looser SLO.
-# cooldown_s lets the saturation point's overload clear first.
+# cooldown_s runs before each tested candidate (not counted against
+# max_duration_s), so none inherits the overload that ran before it.
 confirmation:
   max_looks: 2
   max_requests: 8000

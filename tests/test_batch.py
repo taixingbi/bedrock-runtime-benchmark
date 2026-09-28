@@ -166,7 +166,8 @@ class PlanTests(unittest.TestCase):
         micro = load_models(names=["nova-micro"])[0]
         spec = load_experiment("experiments/workload-shape-calibration.yaml", micro)  # 4 workloads x (10 + 4 refinement) points
         spec.confirmation = None
-        self.assertEqual(estimated_duration_s(spec), 4 * (10 + 4) * 1 * (10 + 90))
+        # + a 120 s refinement cooldown per shape, 120 s between shapes
+        self.assertEqual(estimated_duration_s(spec), 4 * ((10 + 4) * 1 * (10 + 90) + 120) + 3 * 120)
         mixed = load_experiment("experiments/mixed-capacity.yaml", micro)  # a mix is ONE subject
         mixed.confirmation = None
         self.assertEqual(estimated_duration_s(mixed), 1 * 8 * 1 * (10 + 90))
@@ -181,7 +182,7 @@ class PlanTests(unittest.TestCase):
         micro = load_models(names=["nova-micro"])[0]
         spec = load_experiment("experiments/workload-shape-calibration.yaml", micro)
         self.assertEqual(estimated_duration_s(spec),
-                         4 * (10 + 4) * 100 + (8 + 2 + 2 + 1) * 100 + 4 * (120 + 60))
+                         4 * ((10 + 4) * 100 + 120) + (8 + 2 + 2 + 1) * 100 + 4 * (120 + 60) + 3 * 120)
 
     def test_mix_confirmation_estimate_scales_each_class_by_its_share(self):
         """short_chat (gold) is 60% of the mix, so the first look is at
@@ -189,16 +190,18 @@ class PlanTests(unittest.TestCase):
         raised max_repetitions (16)."""
         micro = load_models(names=["nova-micro"])[0]
         mixed = load_experiment("experiments/mixed-capacity.yaml", micro)
-        self.assertEqual(estimated_duration_s(mixed), 8 * 100 + 11 * 100)
+        self.assertEqual(estimated_duration_s(mixed), 8 * 100 + 11 * 100 + 120 + 60)  # + cooldown, conditioning
 
     def test_rate_capacity_confirmation_estimate_uses_each_tiers_first_look(self):
         """Per workload: 8 discovery points x 100s, plus the repetitions to
         reach the first look at the 6.67 rps candidate (~600 req/rep):
-        gold 3,688 -> 7, silver 736 -> 2, bronze 368 -> 1."""
+        gold 3,688 -> 7, silver 736 -> 2, bronze 368 -> 1 -- plus, per
+        workload, 120 s cooldown + 60 s conditioning, and 120 s between workloads."""
         micro = load_models(names=["nova-micro"])[0]
         spec = load_experiment("experiments/rate-capacity.yaml", micro)
         self.assertEqual([w.slo_profile for w in spec.workloads], ["gold", "silver", "bronze"])
-        self.assertEqual(estimated_duration_s(spec), 3 * 8 * 100 + (7 + 2 + 1) * 100)
+        self.assertEqual(estimated_duration_s(spec),
+                         3 * 8 * 100 + (7 + 2 + 1) * 100 + 3 * (120 + 60) + 2 * 120)
 
     def test_plan_is_every_experiment_for_every_enabled_model_grouped_by_model(self):
         paths = sorted(str(p) for p in Path("experiments").glob("*.yaml"))

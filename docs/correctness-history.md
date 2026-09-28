@@ -442,3 +442,24 @@ artifact was ever used to actually inform a gateway config:
     tiny_request C=2, both served at ~6.4-6.7 rps). `use` and docs now
     say: workload-specific admission evidence -> policy derivation ->
     mixed validation, never a weight or config value.
+
+## Schema v22 fixes
+
+69. **Provider state leaked between phases.** A nova-micro
+    `workload-shape-calibration` run: `very_large_context` C=4 FAILed in
+    confirmation (98.5% throttled), then C=2 -- ~1 rps with 0 throttles
+    in discovery -- started immediately and was 96.8% throttled: history,
+    not C=2. The shape also ran last, after three shapes' overload, and
+    its refinement point C=5 ran right after C=8's 59 rps overload.
+    Now every phase starts rested: `confirmation.cooldown_s` before EVERY
+    tested candidate (it ran once before the first), new
+    `isolation.inter_subject_cooldown_s` and `sweep.refinement.cooldown_s`;
+    concurrency-sweep, rate-capacity (whose sweep ends at 2.5x before
+    confirming at ~1.0x) and workload-shape-calibration use 120 s each.
+    Cooldown and conditioning no longer count against `max_duration_s`
+    (conditioning did before, contrary to the docs).
+70. **"Nothing confirmed" could read as "unsafe".** Candidates throttled
+    >= 10% while served < 0.5x the nominal ceiling are flagged
+    `throttled_below_ceiling`, and the reason says to re-run before
+    reading it as unsafe. workload-shape-calibration.yaml no longer
+    quotes past run results as design facts.

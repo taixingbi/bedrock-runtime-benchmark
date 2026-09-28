@@ -181,12 +181,32 @@ first `workload-shape-calibration` run: every candidate was at 8.3-9.1
 rps and throttled 64-81% in confirmation). Refinement treats an
 above-ceiling point as the upper bound of its bracket too.
 
-**Steady state before the looks.** `confirmation.cooldown_s` idles after
-discovery (its overload drains the provider's burst / rolling quota), and
-`confirmation.warmup_s` then runs load at each candidate with the data
-DISCARDED (`phase: conditioning`, never measured) -- a rested bucket
-hands out burst credit at first, which fixed-N looks must not read.
-Neither counts against `max_duration_s`.
+**Provider-state isolation.** A managed provider's quota state carries
+over between phases: an overload point drains the burst / rolling
+bucket, and whatever runs next is measured conditional on that history --
+C_safe(W_i | history) instead of C_safe(W_i). So every phase starts
+rested:
+
+| Gap | Setting |
+|---|---|
+| between sweep subjects (workloads share one model's quota) | `isolation.inter_subject_cooldown_s` |
+| before refinement (it always follows the coarse sweep's overload) | `sweep.refinement.cooldown_s` |
+| before EVERY tested candidate -- incl. a lower one after a higher one FAILed | `confirmation.cooldown_s` |
+
+and each candidate then gets `confirmation.warmup_s` of conditioning
+load with the data DISCARDED (`phase: conditioning`, never measured) --
+a rested bucket hands out burst credit at first, which fixed-N looks must
+not read. So every candidate follows the same procedure: cooldown ->
+conditioning -> looks. None of it counts against `max_duration_s`.
+Without the per-candidate cooldown, a run on nova-micro saw
+`very_large_context` C=2 (~1 rps, 0 throttles in discovery) 97%
+throttled in confirmation straight after C=4 FAILed -- history, not C=2.
+
+A candidate throttled >= 10% while served below 0.5x the nominal ceiling
+is flagged `throttled_below_ceiling`: its own load can't produce that, so
+it points at provider state (preceding overload, other traffic on the
+account), and the unconfirmed `reason` says to re-run before reading the
+result as unsafe.
 
 **Several candidates: highest first, alpha split.** With `candidates: K
 > 1` they're tested HIGHEST first and stop at the first PASS; a FAIL (or

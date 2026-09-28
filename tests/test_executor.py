@@ -172,11 +172,17 @@ class RunExperimentTests(unittest.IsolatedAsyncioTestCase):
             if point.phase == "discovery" and value == 8:
                 client._limit = 5
 
+        spec.confirmation.cooldown_s = 0.3
         report = await run_experiment(spec, target=target, on_progress=tighten_after_discovery)
 
         results = report.profiles[0].confirmations
         self.assertEqual([(r.value, r.verdict) for r in results], [(8, "FAIL"), (4, "PASS")])
         self.assertEqual(report.profiles[0].recommendation.confirmed_point.concurrency, 4)
+        # The lower candidate starts rested: a full cooldown after the FAILing one.
+        conf = [r for r in report.all_results if r.tags.get("phase") == "confirmation"]
+        high_end = max(r.completed_at for r in conf if r.tags["sweep_value"] == 8)
+        low_start = min(r.scheduled_at for r in conf if r.tags["sweep_value"] == 4)
+        self.assertGreaterEqual(low_start - high_end, 0.3)
 
     async def test_concurrency_sweep_confirms_its_candidate_with_fresh_data(self):
         from bedrock_benchmark.experiments.schema import ConfirmationConfig
@@ -305,6 +311,26 @@ class RunExperimentTests(unittest.IsolatedAsyncioTestCase):
         conditioning = [r for r in report.all_results if r.tags.get("phase") == "conditioning"]
         self.assertTrue(conditioning and not any(r.tags["measured"] for r in conditioning))
         self.assertEqual(candidate.decision_n, profile.confirmation_plan.look_schedule[0])
+
+    async def test_isolation_rests_between_subjects_and_before_refinement(self):
+        from bedrock_benchmark.experiments.schema import RefinementConfig
+        from .fakes import ConcurrencyLimitedClient
+        target = BedrockConverseTarget(model_id="m", client=ConcurrencyLimitedClient(limit=5, call_s=0.05))
+        spec = _spec(workloads=[WorkloadProfile(name="a", input_tokens=100, output_tokens=16),
+                                WorkloadProfile(name="b", input_tokens=100, output_tokens=16)],
+                     sweep=SweepConfig(type="concurrency", values=[2, 4, 8],
+                                       refinement=RefinementConfig(cooldown_s=0.3)),
+                     repetitions=1, slo=self.LOOSE, inter_subject_cooldown_s=0.4)
+
+        report = await run_experiment(spec, target=target)
+
+        res = report.all_results
+        a_end = max(r.completed_at for r in res if r.tags["subject"] == "a")
+        b_start = min(r.scheduled_at for r in res if r.tags["subject"] == "b")
+        self.assertGreaterEqual(b_start - a_end, 0.4)                     # inter-subject cooldown
+        coarse_end = max(r.completed_at for r in res if r.tags["subject"] == "a" and r.tags["phase"] == "discovery")
+        refine_start = min(r.scheduled_at for r in res if r.tags["subject"] == "a" and r.tags["phase"] == "refinement")
+        self.assertGreaterEqual(refine_start - coarse_end, 0.3)           # rested before refinement
 
     async def test_without_confirmation_discovery_is_a_fixed_sequence_test(self):
         target = BedrockConverseTarget(model_id="m", client=FakeBedrockRuntimeClient())

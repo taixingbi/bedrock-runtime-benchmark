@@ -2,20 +2,20 @@
 
 > Docs: [methodology](methodology.md) · [SLO statistics](slo-statistics.md) · [quota model](quota-model.md) · [capacity-profile schema](capacity-profile-schema.md) · [experiment design](experiment-design.md) · [correctness history](correctness-history.md) · [README](../README.md)
 
-The benchmark's one deliverable and its contract with consumers. Schema version 21.
+The benchmark's one deliverable and its contract with consumers. Schema version 22.
 
 ## The profile
 
 Each run writes raw per-request JSONL and a `capacity-profile.yaml`
 artifact under `results/` (gitignored -- these are real measurement outputs, not
-checked-in fixtures). The `capacity-profile.yaml` schema (v21 -- see
+checked-in fixtures). The `capacity-profile.yaml` schema (v22 -- see
 [correctness history](correctness-history.md) for why `rate` and `concurrency` are always
 kept in separate blocks, why the rate block separates offered load
 from goodput, and why there's no `global_max_concurrency`). A
 rate-capacity result:
 
 ```yaml
-schema_version: 21
+schema_version: 22
 experiment: rate-capacity
 purpose: reference                                 # admission_calibration | characterization -- then recommendation is always null
 environment:                                       # provenance -- see methodology.md, "Provenance and temporal validation"
@@ -46,7 +46,8 @@ measurement:
   clock: monotonic_durations__wall_clock_timestamps
   gate: pass_fail_inconclusive              # every check is PASS / FAIL / INCONCLUSIVE
   confidence: 0.95
-  confirmation: {max_looks: 2, max_repetitions: null, max_requests: 8000, max_duration_s: 1800, candidates: 1, cooldown_s: 0.0}  # null = no repetition cap (shipped default)
+  confirmation: {max_looks: 2, max_repetitions: null, max_requests: 8000, max_duration_s: 1800, candidates: 1, cooldown_s: 120, warmup_s: 60}  # null = no repetition cap (shipped default)
+  isolation: {inter_subject_cooldown_s: 120, refinement_cooldown_s: null, per_candidate_cooldown_s: 120}  # provider-state isolation
   min_requests_to_resolve_throttle_slo: 2995
 sweep: {type: rate, quota_fractions: [0.25, ...], relative_to: provider_ceiling}
 workload_classes:
@@ -115,7 +116,9 @@ saturation, observed_slo_goodput_rps, provider_ceiling_rps,
 observed_nonfailing_above_provider_ceiling, scope, summary}` instead of
 `rate` (its `sweep_points` carry attempted / successful / throttled /
 goodput rps and `ceiling_ratio`, and
-`above_provider_ceiling: true` for points that ran on burst), and its
+`above_provider_ceiling: true` for points that ran on burst; confirmation
+candidates carry `ceiling_ratio` and, when throttled while served far
+below the ceiling, `throttled_below_ceiling: true`), and its
 recommendation sets `max_inflight` instead of `sustained_rps` --
 likewise from the confirmed point only. A sweep with
 `stop_after_fails` records the values it never ran:

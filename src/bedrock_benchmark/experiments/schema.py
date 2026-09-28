@@ -73,6 +73,11 @@ class RefinementConfig:
     # Extra points per sweep subject. 4 resolves a 16-wide gap
     # (32 -> 48: 40, 44, 46, 47), the widest in the shipped grids.
     max_points: int = 4
+    # Idle seconds before the first refinement point. Refinement always
+    # starts right after the coarse sweep's overload points (two
+    # consecutive FAILs), so without this its first point inherits a
+    # drained provider bucket.
+    cooldown_s: float = 0.0
 
 
 @dataclass
@@ -123,10 +128,11 @@ class ConfirmationConfig:
     # tested highest-first, stopping at the first PASS, with alpha split
     # over them (analysis/confirmation.py).
     candidates: int = 1
-    # Idle seconds between discovery and confirmation, so a discovery
-    # point that overran quota (e.g. the saturation point) doesn't leave
-    # the provider's token bucket drained for the first confirmation rep.
-    # Not counted against max_duration_s.
+    # Idle seconds before EACH tested candidate, so every candidate starts
+    # from the same procedure -- cooldown -> conditioning -> measurement --
+    # and none inherits the overload of what ran before it (discovery's
+    # saturation points, or a higher candidate that just FAILed under
+    # heavy throttling). Not counted against max_duration_s.
     cooldown_s: float = 0.0
     # Conditioning before each candidate's first confirmation repetition:
     # this many seconds of load at the candidate whose data is DISCARDED
@@ -189,6 +195,12 @@ class ExperimentSpec:
     seed: Optional[int] = None
     transport: TransportConfig = field(default_factory=TransportConfig)
     mix: Optional[MixConfig] = None
+    # `isolation: {inter_subject_cooldown_s}` -- idle seconds between sweep
+    # subjects (workloads) so each starts from a rested provider: all
+    # subjects share one model's quota, and a subject's overload points
+    # otherwise shape the next one's results -- C_safe(W_i | history)
+    # instead of C_safe(W_i).
+    inter_subject_cooldown_s: float = 0.0
     # Post-run check: Bedrock-REPORTED input_tokens p50 vs requested.
     # Outside this, the class's workload_validation is valid: false
     # (the 4-chars/token padding estimate missed for this model).
@@ -308,6 +320,7 @@ def load_experiment(
         seed=raw.get("seed"),
         transport=TransportConfig(**transport),
         mix=MixConfig(**raw["mix"]) if raw.get("mix") else None,
+        inter_subject_cooldown_s=_isolation(raw, path),
         workload_validation_tolerance_pct=raw.get("workload_validation_tolerance_pct", 10.0),
         output_validation_tolerance_pct=raw.get("output_validation_tolerance_pct", 25.0),
         slo_profiles=dict(slos.profiles),
@@ -322,6 +335,17 @@ def load_experiment(
     spec.provider_ceilings = _ceilings(spec, model)
     _validate_sweep(spec, model, path)
     return spec
+
+
+def _isolation(raw: dict, path: str) -> float:
+    isolation = raw.get("isolation") or {}
+    unknown = sorted(set(isolation) - {"inter_subject_cooldown_s"})
+    if unknown:
+        raise ValueError(f"{path}: isolation takes only inter_subject_cooldown_s, got {unknown}")
+    value = float(isolation.get("inter_subject_cooldown_s", 0.0))
+    if value < 0:
+        raise ValueError(f"{path}: isolation.inter_subject_cooldown_s must be >= 0")
+    return value
 
 
 def _filter_by_slo_profile(workloads, raw, only, defined, slo_file: str) -> List[WorkloadProfile]:
@@ -453,6 +477,8 @@ def _validate(spec: ExperimentSpec) -> None:
             raise ValueError("sweep.refinement.stop_when_adjacent must be true -- adjacent integers are already resolved")
         if r.max_points < 1:
             raise ValueError(f"sweep.refinement.max_points must be >= 1, got {r.max_points}")
+        if r.cooldown_s < 0:
+            raise ValueError(f"sweep.refinement.cooldown_s must be >= 0, got {r.cooldown_s}")
     if spec.sweep.stop_after_fails is not None and spec.sweep.stop_after_fails < 1:
         raise ValueError(f"sweep.stop_after_fails must be >= 1, got {spec.sweep.stop_after_fails}")
     if spec.repetitions < 1:

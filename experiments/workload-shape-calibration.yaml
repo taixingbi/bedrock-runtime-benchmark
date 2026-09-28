@@ -21,9 +21,9 @@
 #   calibration_point -> workload-specific admission evidence
 #          -> policy derivation (gateway) -> mixed validation (eval-bedrock-platform)
 #
-# C_safe mostly reflects request service time while RPM binds, so it is
-# not a cost weight: very_large_context C=12 vs tiny_request C=2 does not
-# make the large shape cheaper -- both are served at the RPM ceiling.
+# Different workload shapes may require different concurrency to reach
+# the same provider rate ceiling; therefore concurrency must not be
+# interpreted as a workload cost weight.
 #
 # It is NOT a production config: no admission envelope, no headroom.
 # Calibration points are isolated-workload measurements; per-shape
@@ -74,7 +74,15 @@ sweep:
     strategy: integer_bisection
     stop_when_adjacent: true
     max_points: 4
+    cooldown_s: 120      # refinement starts right after the coarse sweep's overload points
 
+# Provider-state isolation: every phase starts rested, so each result is
+# C_safe(W_i) -- not C_safe(W_i | the overload that ran just before it).
+# All shapes share one model's quota, so the next shape waits out the
+# previous one's overload; confirmation.cooldown_s below does the same
+# before EVERY candidate, including a lower one after a higher one FAILed.
+isolation:
+  inter_subject_cooldown_s: 120
 
 # Confirmation at each shape's candidates (fresh data, never pooled with
 # discovery -- see docs/slo-statistics.md). Looks at fixed sample sizes;
@@ -84,22 +92,21 @@ sweep:
 # (With a single eligible candidate the looks are the unsplit
 # 3,688 / 5,570, 736 / 1,113, 368 / 555.)
 #
-# The first run (2026-09-27) confirmed nothing: every candidate had
-# achieved 8.3-9.1 rps in discovery -- above the 6.67 rps ceiling, i.e.
-# on burst allowance -- and throttled 64-81% once the bucket drained.
-# Hence:
+# Design (the runs behind it: docs/correctness-history.md):
 #   - candidates are only points SERVED within 10% of the nominal
 #     provider ceiling (ceiling_ratio <= 1.10; a code rule, like rate
-#     sweeps' -- the ceiling is nominal, not a hard wall), and refinement
-#     treats an above-ceiling point as the upper bound of the bracket;
-#   - cooldown_s: 120 lets discovery's overload clear first;
-#   - warmup_s: 60 conditions each candidate (data discarded) so the
-#     fixed-N looks read steady state, not a rested bucket's burst credit;
+#     sweeps' -- the ceiling is nominal, not a hard wall): a point served
+#     above it ran on burst allowance. Refinement treats an above-ceiling
+#     point as the upper bound of the bracket;
+#   - every tested candidate: cooldown_s (overload from discovery or a
+#     higher candidate clears) -> warmup_s of conditioning (data
+#     discarded, so the fixed-N looks read steady state, not a rested
+#     bucket's burst credit) -> the looks;
 #   - candidates: 2 -- tested highest first, stop at the first PASS; if
 #     the higher one FAILs, the lower one can still confirm. alpha is split
-#     over both (gold looks 4,380 / 6,379); max_duration_s 3000 fits the
-#     higher FAILing and a slow lower one confirming (C=1 at ~2.2 rps
-#     needs ~2,300 s for 4,380).
+#     over both; max_duration_s 3000 (cooldown and conditioning not
+#     counted) fits the higher FAILing and a slow lower gold candidate
+#     (~2 rps) collecting 4,380.
 confirmation:
   max_looks: 2
   max_requests: 8000

@@ -52,11 +52,11 @@ class BuildCapacityProfileTests(unittest.TestCase):
         defaults.update(overrides)
         return ExperimentSpec(**defaults)
 
-    def test_schema_version_is_21(self):
+    def test_schema_version_is_22(self):
         spec = self._spec()
         report = ExperimentReport(spec=spec, profiles=[ProfileReport(workload_name="short", recommendation=None)])
         profile = build_capacity_profile(report)
-        self.assertEqual(profile["schema_version"], 21)
+        self.assertEqual(profile["schema_version"], 22)
 
     def test_concurrency_sweep_writes_a_concurrency_block_not_rate(self):
         spec = self._spec(sweep_type="concurrency")
@@ -447,6 +447,36 @@ class BuildCapacityProfileTests(unittest.TestCase):
                 self.assertEqual(gen["valid"], valid)
                 self.assertEqual(gen["worst_point"]["value"], 2.0)
                 self.assertLessEqual(gen["scheduling_lag_p50_ms"], 2.0)  # pooled median hides the bad point
+
+
+    def test_candidate_throttled_far_below_the_ceiling_is_flagged_as_provider_state(self):
+        """A lower candidate at ~1 rps can't drive 97% throttling under a
+        6.67 rps quota by itself -- flag it and say so in the reason
+        instead of letting 'nothing confirmed' read as 'unsafe'."""
+        from bedrock_benchmark.analysis.capacity import point_verdict, recommend
+        from bedrock_benchmark.analysis.confirmation import ConfirmationResult, RateLimit, plan_looks
+        from bedrock_benchmark.ceiling import ProviderCeiling
+        spec = self._spec()
+        spec.provider_ceilings = {"short": ProviderCeiling(tokens_per_request=576, rpm_rps=6.6667, tpm_rps=None)}
+        points = [SweepPoint(concurrency=2, rps=None, metrics=_metrics(n=100)),
+                  SweepPoint(concurrency=4, rps=None, metrics=_metrics(n=200, throttle_rate=0.5))]
+        rec = recommend(points, throttle_rate_max=0.001)
+        starved = SweepPoint(concurrency=2, rps=None, phase="confirmation", metrics=_metrics(
+            n=813, n_throttled=787, throttle_rate=0.968, success_rate=0.032, request_throughput_rps=0.29,
+            measured_duration_s=90.0))
+        plan = plan_looks([RateLimit("throttle_rate", 0.001)], confidence=0.95, max_looks=2, max_repetitions=None,
+                          max_requests=8000, max_duration_s=3000)
+        report = ExperimentReport(spec=spec, profiles=[ProfileReport(
+            workload_name="short", points=points, recommendation=rec, confirmation_plan=plan,
+            confirmations=[ConfirmationResult(2, "FAIL", "observed_violation", repetitions=1, n=813, point=starved)],
+            verdicts=[point_verdict(p, None, throttle_rate_max=0.001) for p in points])])
+
+        entry = build_capacity_profile(report)["workload_classes"]["short"]
+
+        [cand] = entry["confirmation"]["candidates"]
+        self.assertTrue(cand["throttled_below_ceiling"])
+        self.assertLess(cand["ceiling_ratio"], 0.5)
+        self.assertIn("provider state", entry["recommendation"]["reason"])
 
 
 if __name__ == "__main__":

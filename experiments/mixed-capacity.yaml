@@ -68,11 +68,16 @@ sweep:
 # 368 for look 1). At 60% short_chat that's ~6,150 mix requests (~9,300
 # for look 2, ~1,400 s of windows at the ~6.67 rps ceiling) -- hence
 # max_requests above rate-capacity's: more SAMPLES, never a looser SLO.
+# The sweep ENDS at 2.5x the ceiling: cooldown_s rests before the
+# candidate and warmup_s conditions it (data discarded), so the looks read
+# steady state -- not a drained bucket, nor a rested one's burst credit.
 confirmation:
   max_looks: 2
   max_requests: 10000
   max_duration_s: 1800
   candidates: 1
+  cooldown_s: 120
+  warmup_s: 60
 
 transport:
   max_connections: 64

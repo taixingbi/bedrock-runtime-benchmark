@@ -367,6 +367,32 @@ def _calibration_point(spec, subject: str, rec: Optional[Recommendation], ceilin
     return point
 
 
+# A candidate throttled this hard while SERVED this far below the nominal
+# ceiling isn't hitting its own quota share -- its own load can't produce
+# that. It points at provider state (a preceding overload that drained the
+# bucket, other traffic on the account), so its FAIL says little about
+# the candidate itself.
+_SUSPECT_THROTTLE_RATE = 0.10
+_SUSPECT_CEILING_RATIO = 0.50
+
+
+def _throttled_below_ceiling(result, ceiling_rps: Optional[float]) -> bool:
+    if result.point is None or not ceiling_rps:
+        return False
+    ratio = ceiling_ratio(result.point, ceiling_rps)
+    return (result.point.metrics.throttle_rate >= _SUSPECT_THROTTLE_RATE
+            and ratio is not None and ratio < _SUSPECT_CEILING_RATIO)
+
+
+def _candidate_dict(result, ceiling_rps: Optional[float]) -> dict:
+    out = result.to_dict()
+    if result.point is not None and ceiling_rps:
+        out["ceiling_ratio"] = ceiling_ratio(result.point, ceiling_rps)
+        if _throttled_below_ceiling(result, ceiling_rps):
+            out["throttled_below_ceiling"] = True  # provider state suspect -- see _unconfirmed_reason
+    return out
+
+
 def _unconfirmed_reason(profile_report, spec) -> str:
     """WHY nothing was statistically confirmed, from what actually ran --
     a confirmation phase's stop reason, or (discovery only) the point
@@ -388,8 +414,15 @@ def _unconfirmed_reason(profile_report, spec) -> str:
                 part += f", next look at n={c.next_look_n}"
             parts.append(part + ")")
         hint = _STOP_HINTS.get(tried[-1].stop_reason)
-        return (prefix + "confirmation (highest first) at " + "; ".join(parts) + (f"; {hint}" if hint else "")
+        text = (prefix + "confirmation (highest first) at " + "; ".join(parts) + (f"; {hint}" if hint else "")
                 + " -- see `confirmation.candidates`")
+        sub_ceiling = spec.provider_ceilings.get(profile_report.workload_name)
+        suspect = [c for c in tried if _throttled_below_ceiling(c, sub_ceiling.rps if sub_ceiling else None)]
+        if suspect:
+            text += ("; NOTE: " + ", ".join(f"{c.value:g}" for c in suspect) + " throttled while served far below "
+                     "the nominal ceiling (throttled_below_ceiling) -- that points at provider state (a preceding "
+                     "overload, other traffic), not the candidate's own load: re-run before reading it as unsafe")
+        return text
     ordered = sorted(zip(profile_report.points, profile_report.verdicts), key=lambda pv: _value(pv[0]))
     stop = next(((p, v) for p, v in ordered if v.verdict != PASS), None)
     text = prefix + ("discovery only (no `confirmation:` phase), a fixed-sequence test that stops at the first "
@@ -492,9 +525,11 @@ def _envelope(entry: dict, profile_report, spec, report_results: List[RequestRes
     if profile_report.confirmation_plan is not None:
         # Independent data at the candidates; the only source of
         # statistically_confirmed when present.
+        sub_ceiling = spec.provider_ceilings.get(subject)
         entry["confirmation"] = {
             "plan": profile_report.confirmation_plan.to_dict(),
-            "candidates": [c.to_dict() for c in profile_report.confirmations],
+            "candidates": [_candidate_dict(c, sub_ceiling.rps if sub_ceiling else None)
+                           for c in profile_report.confirmations],
         }
     rec = profile_report.recommendation
     if rec is None:
@@ -649,7 +684,7 @@ def build_capacity_profile(report: ExperimentReport) -> dict:
 
     confidence = spec.slo.confidence or DEFAULT_CONFIDENCE
     return {
-        "schema_version": 21,
+        "schema_version": 22,
         "experiment": spec.name,
         # reference: carries production admission envelopes;
         # admission_calibration: confirmed calibration_point per workload
@@ -710,6 +745,14 @@ def build_capacity_profile(report: ExperimentReport) -> dict:
             "warmup_s": spec.warmup_s,
             "window_s": spec.duration_s,
             "throttle_pause_s": spec.throttle_pause_s,  # concurrency sweeps: a worker's wait after a 429
+            # Provider-state isolation: idle time so no phase is measured
+            # conditional on the overload before it (confirmation.cooldown_s
+            # separates every candidate).
+            "isolation": {
+                "inter_subject_cooldown_s": spec.inter_subject_cooldown_s,
+                "refinement_cooldown_s": spec.sweep.refinement.cooldown_s if spec.sweep.refinement else None,
+                "per_candidate_cooldown_s": spec.confirmation.cooldown_s if spec.confirmation else None,
+            },
             "repetitions": spec.repetitions,
             # rates/percentiles over requests scheduled in the window
             # (drain included); throughput over completions in it.

@@ -45,11 +45,25 @@ sweep:
 # 0.1%, exact Clopper-Pearson bounds) the looks are at N = 3,688 and
 # 5,570 requests; at the 6.67 rps ceiling that takes ~560 s / ~840 s of
 # windows -- inside max_duration_s.
+#
+# The discovery sweep ENDS at 2.5x the ceiling, so confirmation at ~1.0x
+# would otherwise start on a bucket that overload just drained: cooldown_s
+# rests first, and warmup_s conditions the candidate (data discarded) so
+# the looks read steady state, not a rested bucket's burst credit. Neither
+# counts against max_duration_s.
 confirmation:
   max_looks: 2
   max_requests: 8000
   max_duration_s: 1800
   candidates: 1
+  cooldown_s: 120
+  warmup_s: 60
+
+# Provider-state isolation: the three workloads share one model's quota,
+# and each one's sweep ends in overload -- the next waits it out, so each
+# result is C_safe(W_i), not C_safe(W_i | history).
+isolation:
+  inter_subject_cooldown_s: 120
 
 transport:
   # 128, not 64: long_generation (1024 output tokens, ~4s each) has ~67

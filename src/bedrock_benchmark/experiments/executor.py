@@ -199,7 +199,12 @@ async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress:
     else:
         subjects = [profiles[w.name] for w in spec.workloads]
 
-    for subject in subjects:
+    for index, subject in enumerate(subjects):
+        if index > 0 and spec.inter_subject_cooldown_s > 0:
+            # All subjects share one model's quota: let the previous
+            # subject's overload points clear so this one isn't measured
+            # conditional on that history.
+            await asyncio.sleep(spec.inter_subject_cooldown_s)
         is_mix = isinstance(subject, WorkloadMix)
         shares = subject.shares if is_mix else None
         # SLOs: an isolated workload uses its own profile. A mix judges
@@ -356,9 +361,14 @@ async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress:
                     hi = _value(p)
                     break
                 lo = _value(p)
+            rested = False
             for _ in range(spec.sweep.refinement.max_points):
                 if lo is None or hi is None or hi - lo <= 1:
                     break
+                if not rested and spec.sweep.refinement.cooldown_s > 0:
+                    # Refinement follows the coarse sweep's overload points.
+                    await asyncio.sleep(spec.sweep.refinement.cooldown_s)
+                    rested = True
                 mid = (int(lo) + int(hi)) // 2
                 await measure(mid, spec.repetitions, "refinement")
                 point = build(mid, "refinement")
@@ -393,8 +403,6 @@ async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress:
             class_look = None if class_gate is None else {
                 n: {**kw, "confidence": plan.per_test_confidence} for n, kw in class_gate.items()
             }
-            if candidates and cfg.cooldown_s > 0:
-                await asyncio.sleep(cfg.cooldown_s)  # let discovery's overload (e.g. saturation) clear
             per_rep_s = spec.warmup_s + spec.duration_s
             started = time.perf_counter()
             stopped = False
@@ -406,8 +414,16 @@ async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress:
                 est_per_rep = disc.metrics.n / max(1, len(disc.repetitions))
                 result = None
                 looks_used = 0
+                # Every tested candidate: cooldown -> conditioning -> looks,
+                # so none inherits what ran before it (discovery's overload,
+                # or a higher candidate that just FAILed under throttling).
+                # Neither counts against max_duration_s: shift its clock.
+                paused_from = time.perf_counter()
+                if cfg.cooldown_s > 0:
+                    await asyncio.sleep(cfg.cooldown_s)
                 if cfg.warmup_s > 0:
                     await condition(value, cfg.warmup_s)  # discarded: steady state before the looks
+                started += time.perf_counter() - paused_from
                 if not reachable(plan, est_requests_per_rep=est_per_rep, per_rep_s=per_rep_s,
                                  remaining_duration_s=cfg.max_duration_s - (time.perf_counter() - started)):
                     result = ConfirmationResult(value, INCONCLUSIVE, "unreachable_within_caps",
