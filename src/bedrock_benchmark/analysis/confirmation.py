@@ -115,6 +115,7 @@ class ConfirmationPlan:
     look_requirements: List[Dict[str, int]] = field(default_factory=list)
     # K: the candidates alpha is split over (tested highest-first).
     candidates: int = 1
+    min_steady_state_duration_s: float = 0.0
 
     def look_sizes(self, j: int) -> Dict[str, int]:
         """The exact sample for look j: {"total": N} or, in a mix, {class: N_c}."""
@@ -130,6 +131,7 @@ class ConfirmationPlan:
         out = {
             "confidence": self.confidence, "max_looks": self.max_looks,
             "candidates": self.candidates, "order": "highest_first",
+            "min_steady_state_duration_s": self.min_steady_state_duration_s,
             # 1 - (1 - confidence) / (max_looks x candidates), Bonferroni
             "per_test_confidence": round(self.per_test_confidence, 6),
             "look_schedule_requests": self.look_schedule,
@@ -145,7 +147,8 @@ TOTAL = "total"  # the look-requirement group of blend (non-class) checks
 
 
 def plan_looks(limits: List[RateLimit], *, confidence: float, max_looks: int, max_repetitions: Optional[int],
-               max_requests: Union[int, str], max_duration_s: Union[float, str], candidates: int = 1) -> ConfirmationPlan:
+               max_requests: Union[int, str], max_duration_s: Union[float, str], candidates: int = 1,
+               min_steady_state_duration_s: float = 0.0) -> ConfirmationPlan:
     """Look j (1-based) is where every rate check could still PASS with
     j - 1 bad events of its own -- fixed before any confirmation data
     exists. Requirements are per group (the blend's total, and each
@@ -171,6 +174,7 @@ def plan_looks(limits: List[RateLimit], *, confidence: float, max_looks: int, ma
         confidence=confidence, max_looks=max_looks, per_test_confidence=per_test, look_schedule=schedule,
         max_repetitions=max_repetitions, max_requests=max_requests, max_duration_s=max_duration_s,
         look_requirements=requirements, candidates=max(1, candidates),
+        min_steady_state_duration_s=min_steady_state_duration_s,
     )
 
 
@@ -180,7 +184,7 @@ class ConfirmationResult:
     verdict: str                 # PASS | FAIL | INCONCLUSIVE
     stop_reason: str             # confirmed | violation_demonstrated (both at a look) | looks_exhausted |
                                  # stopped_severe_throttling | max_repetitions | max_requests | max_duration |
-                                 # unreachable_within_caps | provider_state_invalid | not_tested
+                                 # unreachable_within_caps | provider_state_invalid | not_tested | post_look_violation
     repetitions: int = 0
     n: int = 0
     looks_used: int = 0
@@ -192,12 +196,15 @@ class ConfirmationResult:
     decision_metrics: Optional["RunMetrics"] = None
     # The caps this candidate ran under -- per candidate when `auto`.
     caps: Optional[dict] = None
+    steady_state: Optional[dict] = None
 
     def to_dict(self) -> dict:
         out = {"value": self.value, "verdict": self.verdict, "stop_reason": self.stop_reason,
                "repetitions": self.repetitions, "n": self.n, "looks_used": self.looks_used}
         if self.next_look_n is not None and self.verdict != PASS:
             out["next_look_n"] = self.next_look_n
+        if self.steady_state is not None:
+            out["steady_state"] = self.steady_state
         if self.caps is not None:
             out["caps"] = self.caps
         if self.decision_metrics is not None:
@@ -235,7 +242,9 @@ def step(verdict: Verdict, n: int, looks_used: int, plan: ConfirmationPlan,
     `look_verdict(j)` -- the verdict (bounds at plan.per_test_confidence)
     on EXACTLY the first N_j requests (fixed-count; `verdict`, the
     all-data one, when not given -- simulations whose n is exact
-    already). PASS -> confirmed, FAIL -> violation_demonstrated, else the
+    already). PASS -> statistical sample condition met (the executor also
+    requires minimum exposure and no collected-data veto),
+    FAIL -> violation_demonstrated, else the
     look is spent and measuring continues. Returns (verdict, stop_reason,
     looks_used) to stop, or None to keep measuring."""
     while looks_used < plan.max_looks and plan.look_reached(looks_used, n, class_n):
@@ -268,15 +277,18 @@ AUTO_MARGIN = 1.25  # `auto` caps: the last look's need x this, for a stray look
 
 
 def candidate_caps(plan: ConfirmationPlan, max_requests, max_duration_s, *, est_requests_per_rep: float,
-                   per_rep_s: float) -> dict:
+                   per_rep_s: float, measured_per_rep_s: Optional[float] = None) -> dict:
     """Numeric caps for one candidate. `auto` max_requests = the last
-    look's sample size x AUTO_MARGIN; `auto` max_duration_s = the time
+    look's sample size (or minimum exposure need, whichever is larger)
+    x AUTO_MARGIN; `auto` max_duration_s = the time
     to collect that many at THIS candidate's request rate (offered RPS for rate sweeps; discovery's
     measured requests per repetition for concurrency sweeps) x AUTO_MARGIN -- per candidate, so
     a slow (low-RPM) candidate gets the time its looks need instead of
     being INCONCLUSIVE by construction. Fixed numbers pass through
     (max_duration_s then stays a cap on the whole subject's phase)."""
-    need = plan.look_schedule[-1]
+    measured_s = measured_per_rep_s if measured_per_rep_s is not None else per_rep_s
+    time_reps = math.ceil(plan.min_steady_state_duration_s / measured_s) if measured_s > 0 else 0
+    need = max(plan.look_schedule[-1], math.ceil(time_reps * est_requests_per_rep))
     requests = math.ceil(need * AUTO_MARGIN) if max_requests == "auto" else int(max_requests)
     if max_duration_s != "auto":
         return {"max_requests": requests, "max_duration_s": float(max_duration_s), "per_candidate": False}

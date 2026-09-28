@@ -131,13 +131,17 @@ class SweepConfig:
 class ConfirmationConfig:
     """Adaptive confirmation (analysis/confirmation.py): after discovery
     picks candidates, fresh independent repetitions at each candidate
-    until a pre-planned look PASSes or FAILs it (exact bounds), severe
+    until a pre-planned look passes and minimum exposure/sanity checks
+    permit confirmation, or a look FAILs it (exact bounds), severe
     throttling stops it early, or a cap is reached (both -> INCONCLUSIVE).
     Discovery data never counts."""
     # PASS may be declared only at this many pre-planned sample sizes;
     # each test runs at 1 - alpha / (max_looks x K) for K candidates
     # (Bonferroni over looks and candidates).
     max_looks: int = 2
+    # Measured load exposure required in addition to a fixed-count PASS.
+    # Excludes cooldown, conditioning, per-window warmup and drain.
+    min_steady_state_duration_s: float = 0.0
     # Per-candidate caps. The statistics are SAMPLE-COUNT driven (fixed-
     # count looks at pre-planned N); repetitions are only how data is
     # collected. max_repetitions is an optional extra cap -- None (the
@@ -589,10 +593,12 @@ def _validate(spec: ExperimentSpec) -> None:
 
     if c is not None and (c.max_looks < 1 or (c.max_repetitions is not None and c.max_repetitions < 1)
                           or bad_cap(c.max_requests, 1) or bad_cap(c.max_duration_s, 1e-9)
-                          or c.candidates < 1 or c.cooldown_s < 0 or c.warmup_s < 0):
+                          or c.candidates < 1 or c.cooldown_s < 0 or c.warmup_s < 0
+                          or bad_cap(c.min_steady_state_duration_s, 0)
+                          or isinstance(c.min_steady_state_duration_s, str)):
         raise ValueError("confirmation: max_looks, max_repetitions, max_requests, candidates must be >= 1, "
                          "max_duration_s > 0 (max_requests / max_duration_s may be `auto`), cooldown_s >= 0 "
-                         "and warmup_s >= 0")
+                         "and warmup_s / min_steady_state_duration_s >= 0")
     if spec.throttle_pause_s < 0:
         raise ValueError(f"throttle_pause_s must be >= 0, got {spec.throttle_pause_s}")
     if spec.throttle_pause_s > 0 and spec.sweep.type != "concurrency":

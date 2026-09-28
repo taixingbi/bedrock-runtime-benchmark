@@ -179,12 +179,13 @@ class PlanTests(unittest.TestCase):
         it's assumed to run at the 6.67 rps ceiling (~600 req per 90s rep).
         2 candidates, tested highest-first with alpha split over both:
         first looks gold 4,380 -> 8 reps, silver 875 -> 2 (x2 workloads),
-        bronze 437 -> 1, for the highest candidate only (assumed to PASS)
+        bronze 437 -> 1; the 300s minimum raises silver/bronze to 4 windows,
+        for the highest candidate only (assumed to PASS)
         -- plus, per shape, the 120 s cooldown and 60 s of conditioning."""
         micro = load_models(names=["nova-micro"])[0]
         spec = load_experiment("experiments/workload-shape-calibration.yaml", micro)
         self.assertEqual(estimated_duration_s(spec),
-                         4 * ((10 + 4) * 100 + 4 * (120 + 20) + 20) + (8 + 2 + 2 + 1) * 100
+                         4 * ((10 + 4) * 100 + 4 * (120 + 20) + 20) + (8 + 4 + 4 + 4) * 100
                          + 4 * (120 + 20 + 60) + 3 * 120)
 
     def test_mix_confirmation_estimate_scales_each_class_by_its_share(self):

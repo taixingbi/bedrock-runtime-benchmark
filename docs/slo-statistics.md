@@ -364,12 +364,39 @@ Numeric caps remain available. More samples, never a looser SLO.
 
 A candidate stops only on:
 
-1. a pre-planned sample-count look PASSes -> **PASS**
+1. a pre-planned sample-count look PASSes, minimum measured duration is met,
+   and the collected-data sanity checks do not veto it -> **PASS**
 2. a pre-planned sample-count look FAILs (lower bound beyond the limit) -> **FAIL**
 3. every look spent, neither -> **INCONCLUSIVE** (`looks_exhausted`)
 4. severe throttling (early stop, operational) -> **INCONCLUSIVE** (`stopped_severe_throttling`)
 5. `max_requests` reached -> **INCONCLUSIVE**
 6. `max_duration_s` reached -> **INCONCLUSIVE**
+7. a passing look contradicts the collected evidence -> **INCONCLUSIVE** (`post_look_violation`)
+
+`confirmation.min_steady_state_duration_s` is a minimum measured load exposure
+(default 0 for compatibility; workload-shape-calibration explicitly uses 300s).
+It excludes cooldown, conditioning, per-window warmup, and drain. A passing
+fixed-count look is retained while more windows are collected; it is never
+retested on a growing sample. If a cap stops collection before the minimum,
+there is no confirmed capacity, even when that look passed. Auto budgets include
+both the sample requirement and this minimum exposure.
+
+Before accepting PASS, check all collected requests, the latest measurement
+window, and requests outside the passing look. A demonstrated SLO violation or
+severe throttling (including any mix class) vetoes confirmation. These extra
+checks are operational vetoes: they produce INCONCLUSIVE, never statistical FAIL,
+and do not claim a new multiple-testing confidence guarantee. Empty tails or
+absent classes in a partial window supply no violation evidence. Candidate
+`steady_state` records required/measured duration, whether the minimum was met,
+the fixed look's PASS, and any violations. `measurement_validity` records
+`suspect_steady_state`; discovery with no single monotonic boundary records
+`suspect_non_monotonic` (preserving stronger existing recovery/invalid statuses).
+
+300s is an observation policy to tune experimentally, not a claim about a Bedrock
+quota window. Measurement windows may have drain/warmup gaps; their summed load
+time is finite evidence, not proof of uninterrupted or indefinite sustainability.
+Time-correlated provider behavior also limits the interpretation of request-level
+binomial bounds. Validate across longer runs and provider states before deployment.
 
 Never on a number of repetitions: no shipped experiment sets
 `max_repetitions` (it stays in the schema, default none, as an optional
@@ -381,7 +408,7 @@ from discovery's requests per repetition -- stops as
 at 1.67 rps collects ~150 requests per 90 s window: 3,688 doesn't fit in
 1,800 s).
 Each candidate reports `verdict`, `stop_reason` (`confirmed`,
-`violation_demonstrated`, `looks_exhausted`, `stopped_severe_throttling`,
+`violation_demonstrated`, `looks_exhausted`, `stopped_severe_throttling`, `post_look_violation`,
 `max_repetitions`, `max_requests`, `max_duration`,
 `unreachable_within_caps`, `provider_state_invalid`, `not_tested`), `n`, `looks_used` and `next_look_n` under the subject's
 `confirmation` block, next to the `plan` (confidence, candidates, order,

@@ -53,7 +53,7 @@ class ProfileReport:
     confirmation_plan: Optional["ConfirmationPlan"] = None
     confirmations: List["ConfirmationResult"] = field(default_factory=list)
     # Provider-state validity of this subject's measurement: status
-    # valid | suspect_reproduced | invalid, the suspect events and every
+    # valid | suspect_* | invalid, the suspect events and every
     # recovery probe (see ExperimentSpec.recovery_probe).
     measurement_validity: Optional[dict] = None
 
@@ -379,7 +379,8 @@ async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress:
             validity["events"].append({
                 "phase": phase, "value": value, "throttle_rate": point.metrics.throttle_rate,
                 "ceiling_ratio": ceiling_ratio(point, ceiling_rps), "outcome": outcome})
-            if outcome == "reproduced_after_recovery" and validity["status"] == "valid":
+            if outcome == "reproduced_after_recovery" and validity["status"] in (
+                    "valid", "suspect_steady_state", "suspect_non_monotonic"):
                 validity["status"] = "suspect_reproduced"
 
         async def measure_valid(value: float, phase: str) -> Optional[SweepPoint]:
@@ -517,7 +518,7 @@ async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress:
                 limits_for(gate_kwargs, class_gate, shares), confidence=gate_kwargs["confidence"],
                 max_looks=cfg.max_looks, max_repetitions=cfg.max_repetitions,
                 max_requests=cfg.max_requests, max_duration_s=cfg.max_duration_s,
-                candidates=len(candidates),
+                candidates=len(candidates), min_steady_state_duration_s=cfg.min_steady_state_duration_s,
             )
             gate_look = {**gate_kwargs, "confidence": plan.per_test_confidence}
             class_look = None if class_gate is None else {
@@ -535,6 +536,8 @@ async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress:
                                else disc.metrics.n / max(1, len(disc.repetitions)))
                 result = None
                 looks_used = 0
+                passed_look = None
+                last_look = None
                 # Every tested candidate: recovery (interval + verified
                 # healthy probe) -> conditioning -> looks, so none inherits
                 # what ran before it and conditioning never starts on a
@@ -549,7 +552,7 @@ async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress:
                     await condition(value, cfg.warmup_s)  # discarded: steady state before the looks
                 started += time.perf_counter() - paused_from
                 caps = candidate_caps(plan, cfg.max_requests, cfg.max_duration_s, est_requests_per_rep=est_per_rep,
-                                      per_rep_s=per_rep_s)
+                                      per_rep_s=per_rep_s, measured_per_rep_s=spec.duration_s)
                 if caps["per_candidate"]:
                     started = time.perf_counter()  # an `auto` budget is this candidate's own
                 requests_cap, duration_cap = caps["max_requests"], caps["max_duration_s"]
@@ -581,6 +584,7 @@ async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress:
                             await condition(value, cfg.warmup_s)
                         started += time.perf_counter() - paused_from
                         looks_used = 0
+                        passed_look = last_look = None
                         continue
                     verdict = point_verdict(point, class_look, **gate_look)
                     n, reps = point.metrics.n, len(state["windows"])
@@ -597,16 +601,60 @@ async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress:
                         looked[j] = (look_point, v_look, len(sample))
                         return v_look
 
-                    decision = step(verdict, n, looks_used, plan, class_n, look_verdict)
+                    # A fixed-count PASS is retained while the candidate finishes
+                    # its minimum exposure. No repeated statistical tests on a
+                    # growing sample: the additional checks can only veto PASS.
+                    decision = None if passed_look is not None else step(
+                        verdict, n, looks_used, plan, class_n, look_verdict)
+                    if looked:
+                        looks_used = max(looked) + 1
+                        last_look = looked[max(looked)]
+                    v, reason = INCONCLUSIVE, None
                     if decision is not None:
                         v, reason, looks_used = decision
-                    else:
-                        v, reason = INCONCLUSIVE, None
+                        if v == PASS:
+                            passed_look = last_look
+                    measured_s = point.metrics.measured_duration_s
+                    sanity = []
+                    if passed_look is not None:
+                        measured = [r for r in state["results"] if r.tags.get("measured")]
+                        sample_ids = {id(r) for r in look_sample(measured, plan.look_sizes(looks_used - 1))}
+                        subsets = {
+                            "all_collected": measured,
+                            "latest_window": [r for r in measured if r.tags["repetition"] == reps - 1],
+                            "post_look": [r for r in measured if id(r) not in sample_ids],
+                        }
+                        for scope, rows in subsets.items():
+                            if not rows:
+                                continue
+                            check_point = build(value, "confirmation", conf=plan.per_test_confidence, subset=rows)
+                            # An absent class in a tail/window is not evidence
+                            # of a violation; its full fixed-count look still gates PASS.
+                            check_point.class_metrics = {name: m for name, m in check_point.class_metrics.items()
+                                                         if m.n > 0}
+                            check = point_verdict(check_point, class_look, **gate_look)
+                            severe = any(severe_throttling(m) for m in
+                                         [check_point.metrics, *check_point.class_metrics.values()])
+                            if check.verdict == FAIL or severe:
+                                sanity.append({"scope": scope, "n": check_point.metrics.n,
+                                               "n_throttled": check_point.metrics.n_throttled,
+                                               "throttle_rate": check_point.metrics.throttle_rate,
+                                               "failed_checks": [c.name for c in check.checks if c.verdict == FAIL],
+                                               "severe_throttling": severe})
+                        if sanity:
+                            v, reason = INCONCLUSIVE, "post_look_violation"
+                            validity["events"].append({"phase": "confirmation", "value": value,
+                                                       "outcome": reason, "violations": sanity})
+                            if validity["status"] == "valid":
+                                validity["status"] = "suspect_steady_state"
+                        elif measured_s + 1e-9 >= cfg.min_steady_state_duration_s:
+                            v, reason = PASS, "confirmed"
+                        else:
+                            v, reason = INCONCLUSIVE, None
+                    if reason is None:
                         remaining = duration_cap - (time.perf_counter() - started)
                         rep_cap = cfg.max_repetitions if cfg.max_repetitions is not None else math.inf
                         if severe_throttling(point.metrics):
-                            # Operational guard, not a test: spare the
-                            # provider. Not a FAIL, not a saturation edge.
                             reason = "stopped_severe_throttling"
                         elif reps >= rep_cap:
                             reason = "max_repetitions"
@@ -614,20 +662,17 @@ async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress:
                             reason = "max_requests"
                         elif remaining < per_rep_s:
                             reason = "max_duration"
-                        else:
-                            # Requests still collectable within the caps,
-                            # at this candidate's observed rate per rep.
+                        elif passed_look is None:
                             more_reps = min(rep_cap - reps, int(remaining // per_rep_s))
                             max_n = min(requests_cap, n + (n / reps) * more_reps)
                             if max_n < plan.look_schedule[looks_used]:
                                 reason = "unreachable_within_caps"
                     if reason is not None:
-                        if rp is not None and reason in ("violation_demonstrated", "stopped_severe_throttling") \
+                        if rp is not None and reason in ("violation_demonstrated", "stopped_severe_throttling", "post_look_violation") \
                                 and suspect_point(point, ceiling_rps):
                             # Still throttled far below the ceiling after a
                             # verified recovery: accepted as a real result.
                             note_suspect("confirmation", value, point, "reproduced_after_recovery")
-                        last_look = looked.get(max(looked)) if looked else None
                         result = ConfirmationResult(
                             value, v, reason, repetitions=reps, n=n, looks_used=looks_used,
                             next_look_n=plan.look_schedule[looks_used] if looks_used < plan.max_looks else None,
@@ -638,6 +683,13 @@ async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress:
                             decision_n=last_look[2] if last_look else None,
                             decision_metrics=last_look[0].metrics if last_look else None,
                             caps=caps,
+                            steady_state={
+                                "required_duration_s": cfg.min_steady_state_duration_s,
+                                "measured_duration_s": measured_s,
+                                "minimum_duration_met": measured_s + 1e-9 >= cfg.min_steady_state_duration_s,
+                                "statistical_look_passed": passed_look is not None,
+                                "violations": sanity,
+                            },
                         )
                 confirmations.append(result)
                 stopped = result.verdict == PASS or result.stop_reason == "provider_state_invalid"
@@ -645,10 +697,16 @@ async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress:
             recommendation.confirmed_point = confirmed.point if confirmed is not None else None
             recommendation.confirmation_source = "confirmation"
 
+        analysis = analyze_sweep(points, class_gate, **gate_kwargs)
+        if analysis.status == "unresolved":
+            validity["events"].append({"phase": "discovery", "outcome": "non_monotonic",
+                                       "unstable_region": analysis.unstable_region})
+            if validity["status"] == "valid":
+                validity["status"] = "suspect_non_monotonic"
         report.profiles.append(ProfileReport(
             workload_name=subject.name, points=points, mix_shares=shares,
             recommendation=recommendation,
-            analysis=analyze_sweep(points, class_gate, **gate_kwargs),
+            analysis=analysis,
             confirmation_plan=plan,
             confirmations=confirmations,
             verdicts=[point_verdict(p, class_gate, **gate_kwargs) for p in points],

@@ -536,3 +536,17 @@ artifact was ever used to actually inform a gateway config:
     unchanged. `observed_violation` is renamed `violation_demonstrated`;
     checks gain `bad_events` / `bad_rate_lower`, and
     `measurement.fail_rule` records the rule. Additive -- schema stays 23.
+
+76. **A clean prefix confirmed a throttled candidate.** In the 2026-09-28
+    workload-shape-calibration run, medium_context C=8 passed on its first
+    875 requests with zero throttles, while the same candidate had already
+    collected 2,162 requests with 713 throttles (32.98%). Confirmation
+    returned PASS before considering this contradictory evidence. A fixed
+    look now only establishes the sample condition: minimum measured load
+    exposure must also be met, and full/latest-window/post-look evidence
+    can veto confirmation as INCONCLUSIVE / post_look_violation. No
+    confirmed concurrency or calibration point is emitted for that
+    candidate. workload-shape-calibration uses a configurable 300s minimum,
+    an observation policy rather than an assumed provider quota window.
+    The original artifact remains historical evidence; its medium_context
+    C=8 capacity must not be used. Re-run to establish a replacement.

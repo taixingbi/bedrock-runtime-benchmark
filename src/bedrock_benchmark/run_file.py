@@ -119,9 +119,11 @@ def _confirmation_estimate_s(spec: ExperimentSpec, subject: str, per_run: float)
     # and the estimate assumes the highest PASSes at its first look.
     plan = plan_looks(limits_for(gate, class_gate, shares), confidence=gate["confidence"],
                       max_looks=c.max_looks, max_repetitions=c.max_repetitions, max_requests=c.max_requests,
-                      max_duration_s=c.max_duration_s, candidates=max(1, k))
+                      max_duration_s=c.max_duration_s, candidates=max(1, k),
+                      min_steady_state_duration_s=c.min_steady_state_duration_s)
     per_rep = top_rps * spec.duration_s
     reps = math.ceil(plan.look_schedule[0] / per_rep) if per_rep > 0 else math.inf
+    reps = max(reps, math.ceil(c.min_steady_state_duration_s / spec.duration_s))
     max_requests = plan.look_schedule[-1] if c.max_requests == "auto" else c.max_requests
     if reps > rep_cap or plan.look_schedule[0] > max_requests:
         return 0.0

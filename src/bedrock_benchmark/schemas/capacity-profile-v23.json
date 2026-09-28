@@ -186,6 +186,8 @@
                 "enum": [
                   "valid",
                   "suspect_reproduced",
+                  "suspect_steady_state",
+                  "suspect_non_monotonic",
                   "invalid"
                 ]
               },
@@ -357,6 +359,8 @@
                 "enum": [
                   "valid",
                   "suspect_reproduced",
+                  "suspect_steady_state",
+                  "suspect_non_monotonic",
                   "invalid"
                 ]
               },

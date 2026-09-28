@@ -226,6 +226,8 @@ def _sweep_points(profile_report, ceiling_rps: Optional[float] = None) -> List[d
 
 
 _STOP_HINTS = {
+    "post_look_violation": "a fixed-count look passed, but collected evidence violated the steady-state checks; "
+                           "candidate not confirmed",
     "violation_demonstrated": "fresh data at a planned look demonstrated an SLO violation there (lower bound "
                               "over the limit) -- a lower candidate may confirm (candidates > 1)",
     "looks_exhausted": "every planned look was neither a demonstrated PASS nor a demonstrated FAIL",
@@ -545,8 +547,8 @@ def _envelope(entry: dict, profile_report, spec, report_results: List[RequestRes
     if skipped and spec.sweep.stop_after_fails is not None:
         entry["sweep_stopped_early"] = {"after_consecutive_fails": spec.sweep.stop_after_fails, "skipped_values": skipped}
     if profile_report.measurement_validity is not None:
-        # valid | suspect_reproduced | invalid -- a consumer takes a capacity
-        # conclusion only from a valid (or knowingly suspect_reproduced) one.
+        # valid | suspect_* | invalid -- suspect measurements carry
+        # explicit caveats even when a lower candidate confirms.
         entry["measurement_validity"] = profile_report.measurement_validity
     if profile_report.confirmation_plan is not None:
         # Independent data at the candidates; the only source of
@@ -815,7 +817,8 @@ def build_capacity_profile(report: ExperimentReport, run_metadata: Optional[dict
                 {"max_looks": spec.confirmation.max_looks, "max_repetitions": spec.confirmation.max_repetitions,
                  "max_requests": spec.confirmation.max_requests, "max_duration_s": spec.confirmation.max_duration_s,
                  "candidates": spec.confirmation.candidates, "cooldown_s": spec.confirmation.cooldown_s,
-                 "warmup_s": spec.confirmation.warmup_s}
+                 "warmup_s": spec.confirmation.warmup_s,
+                 "min_steady_state_duration_s": spec.confirmation.min_steady_state_duration_s}
                 if spec.confirmation is not None else None
             ),
             "min_requests_to_resolve_throttle_slo": min_samples_to_resolve_rate(

@@ -54,7 +54,7 @@ purpose: admission_calibration
 name: workload-shape-calibration
 description: |
   Concurrency 1..48 (until two consecutive FAILs, then integer
-  refinement and fixed-count confirmation) across the four non-reference
+  refinement and fixed-count plus minimum-time confirmation) across the four non-reference
   catalog shapes, each under its own SLO. Produces statistically
   confirmed workload-shape capacity points -- workload-specific
   admission evidence for gateway policy derivation, not a production
@@ -123,12 +123,17 @@ isolation:
 #     higher candidate clears) -> warmup_s of conditioning (data
 #     discarded, so the fixed-N looks read steady state, not a rested
 #     bucket's burst credit) -> the looks;
-#   - candidates: 2 -- tested highest first, stop at the first PASS; if
+#   - a fixed-count PASS also needs minimum measured exposure and clean
+#     collected-data sanity checks; later violations veto confirmation;
+#   - candidates: 2 -- tested highest first, stop at the first confirmed PASS; if
 #     the higher one FAILs, the lower one can still confirm. alpha is split
 #     over both; max_duration_s 3000 (cooldown and conditioning not
 #     counted) fits the higher FAILing and a slow lower gold candidate
 #     (~2 rps) collecting 4,380.
 confirmation:
+  # Observation policy, not an assumed Bedrock quota/reset window.
+  # Only measured load time counts; a sample-count PASS alone is insufficient.
+  min_steady_state_duration_s: 300
   max_looks: 2
   max_requests: 8000
   max_duration_s: 3000

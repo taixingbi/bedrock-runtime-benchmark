@@ -22,6 +22,10 @@ def _trust(entry: dict) -> (str, List[str]):
         return "NO", ["provider never passed a recovery probe (measurement_validity: invalid)"]
     if validity == "suspect_reproduced":
         issues.append("throttling far below the quota ceiling reproduced after a verified recovery")
+    if validity == "suspect_steady_state":
+        issues.append("a confirmation look passed but later collected evidence violated the SLO")
+    if validity == "suspect_non_monotonic":
+        issues.append("discovery was non-monotonic; no single saturation edge is established")
     if (entry.get("workload_validation") or {}).get("valid") is False:
         issues.append("workload shape differs from its target (workload_validation)")
     if (entry.get("load_generator") or {}).get("valid") is False:
