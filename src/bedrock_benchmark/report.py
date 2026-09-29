@@ -801,6 +801,7 @@ def build_capacity_profile(report: ExperimentReport, run_metadata: Optional[dict
             },
         },
         "measurement": {
+            **({"retest": spec.retest} if spec.retest is not None else {}),
             **({"history_protocol": vars(spec.history_protocol)} if spec.history_protocol is not None else {}),
             "warmup_s": spec.warmup_s,
             "window_s": spec.duration_s,

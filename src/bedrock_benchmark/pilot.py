@@ -81,7 +81,7 @@ class PilotReport:
 
 def pilot_workloads(
     paths: List[str], model: ModelConfig, *, slo_file: str = DEFAULT_SLO_FILE,
-    workloads_file: str = DEFAULT_WORKLOADS_FILE, only_slo_profiles: Optional[Collection[str]] = None, mix: Optional[str] = None,
+    workloads_file: str = DEFAULT_WORKLOADS_FILE, only_slo_profiles: Optional[Collection[str]] = None, mix: Optional[str] = None, retest: Optional[dict] = None,
 ) -> Optional[ExperimentSpec]:
     """One spec for `model` whose workloads are the union of what the
     planned experiments would send (after any --slo-profile filter), in
@@ -90,7 +90,7 @@ def pilot_workloads(
     for path in paths:
         try:
             spec = load_experiment(path, model, slo_file=slo_file, workloads_file=workloads_file,
-                                   only_slo_profiles=only_slo_profiles, mix=mix)
+                                   only_slo_profiles=only_slo_profiles, mix=mix, retest=retest)
         except NoMatchingWorkloads:
             continue
         base = base or spec
@@ -161,13 +161,13 @@ def evaluate(model: str, workload: WorkloadProfile, slo: SloConfig, results: Lis
 async def run_pilot(
     paths: List[str], models: List[ModelConfig], *, requests_per_workload: int = 3,
     slo_file: str = DEFAULT_SLO_FILE, workloads_file: str = DEFAULT_WORKLOADS_FILE,
-    only_slo_profiles: Optional[Collection[str]] = None, mix: Optional[str] = None, target_factory: Optional[TargetFactory] = None,
+    only_slo_profiles: Optional[Collection[str]] = None, mix: Optional[str] = None, retest: Optional[dict] = None, target_factory: Optional[TargetFactory] = None,
     on_check: Optional[Callable[[PilotCheck], None]] = None,
 ) -> PilotReport:
     report = PilotReport()
     for model in models:
         spec = pilot_workloads(paths, model, slo_file=slo_file, workloads_file=workloads_file,
-                               only_slo_profiles=only_slo_profiles, mix=mix)
+                               only_slo_profiles=only_slo_profiles, mix=mix, retest=retest)
         if spec is None:
             continue
         target = target_factory(spec) if target_factory else BedrockConverseTarget(

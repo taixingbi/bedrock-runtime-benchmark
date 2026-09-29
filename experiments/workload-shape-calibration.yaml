@@ -1,3 +1,10 @@
+# Focused long retest (same engine; no separate experiment YAML):
+#   bedrock-benchmark run workload-shape-calibration --model <model> \
+#     --workload medium_context --candidate-concurrency 7 --steady-state-duration-s 1800
+# These three options select one candidate, disable refinement, use continuous
+# long windows and independent confirmation with automatic sample/time budgets.
+# Without the options, the normal multi-workload sweep below applies.
+#
 # Admission calibration: the statistically confirmed safe concurrency of
 # each workload SHAPE under its real business SLO, the quota and the
 # measured provider environment --

@@ -345,7 +345,8 @@ success/throttle proportions follow requests scheduled in the bin, including
 responses that finish later. The final bin may therefore show fewer completions
 than eventual successes. Raw JSONL keeps measurement, overload and probe phases.
 
-`medium-context-sustain` retests C=7 using a continuous 30-minute discovery window
+`workload-shape-calibration` supports a focused retest using `--workload`,
+`--candidate-concurrency`, and `--steady-state-duration-s` together. For example, retest C=7 using a continuous 30-minute discovery window
 and fresh confirmation with at least 30 minutes of measured exposure. Confirmation
 may reject the candidate or require additional windows. Its measured RPS is not a
 validated rate envelope. Compare repeated runs before deriving an admission policy.
@@ -353,7 +354,8 @@ validated rate envelope. Compare repeated runs before deriving an admission poli
 ```sh
 .venv/bin/bedrock-benchmark plan long-context-history --model nova-micro
 .venv/bin/bedrock-benchmark run long-context-history --model nova-micro
-.venv/bin/bedrock-benchmark run medium-context-sustain --model nova-micro
+.venv/bin/bedrock-benchmark run workload-shape-calibration --model nova-micro \
+  --workload medium_context --candidate-concurrency 7 --steady-state-duration-s 1800
 ```
 
 History comparison takes about three hours before recovery retries/drain; the
@@ -362,3 +364,8 @@ Run them separately to avoid contaminating their provider state with each other.
 Reports retain `nominal_binding_constraint`, but throttling is described as an
 observed symptom. Suspect measurements use `bottleneck: unresolved`; public quota
 ratios alone do not establish the actual cause of provider rejection.
+
+Focused retests have an artifact experiment name ending in `-sustain` and record
+all retest parameters under `measurement.retest`, keeping them distinct from the
+normal shape sweep during temporal comparison. The same options work for plan,
+pilot and run. Without these options the original shape sweep is unchanged.

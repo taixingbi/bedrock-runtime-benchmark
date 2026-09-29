@@ -305,6 +305,7 @@ class ExperimentSpec:
     transport: TransportConfig = field(default_factory=TransportConfig)
     mix: Optional[MixConfig] = None
     history_protocol: Optional[HistoryProtocol] = None
+    retest: Optional[dict] = None
     # `isolation: {inter_subject_cooldown_s}` -- a fixed recovery interval
     # between sweep subjects (workloads) to reduce carry-over: all subjects
     # share one model's quota, and a subject's overload points otherwise
@@ -380,7 +381,7 @@ _POLICY_KEYS = ("provider_headroom", "quota_headroom")
 def load_experiment(
     path: str, model: ModelConfig, *, slo_file: str = DEFAULT_SLO_FILE, workloads_file: str = DEFAULT_WORKLOADS_FILE,
     only_slo_profiles: Optional[Collection[str]] = None, policy_file: str = DEFAULT_POLICY_FILE,
-    mix: Optional[str] = None, mixes_file: str = DEFAULT_MIXES_FILE,
+    mix: Optional[str] = None, mixes_file: str = DEFAULT_MIXES_FILE, retest: Optional[dict] = None,
 ) -> ExperimentSpec:
     """only_slo_profiles (e.g. {"gold"}) keeps just the workloads bound to
     those profiles. An isolated sweep keeps its matching workloads; a mix
@@ -468,6 +469,32 @@ def load_experiment(
         calibration_tolerance_pct=raw.get("calibration_tolerance_pct", 2.0),
         model_name=model.name,
     )
+    if retest is not None:
+        if spec.purpose != "admission_calibration" or spec.sweep.type != "concurrency" or spec.mix is not None:
+            raise ValueError("retest requires an isolated admission_calibration concurrency experiment")
+        if set(retest) != {"workload", "concurrency", "duration_s"}:
+            raise ValueError("retest requires workload, concurrency and duration_s")
+        c, seconds = retest["concurrency"], retest["duration_s"]
+        if (not isinstance(c, int) or isinstance(c, bool) or c < 1
+                or not isinstance(seconds, (int, float)) or not math.isfinite(seconds) or seconds <= 0):
+            raise ValueError("retest concurrency must be a positive integer and duration_s finite and > 0")
+        selected = [w for w in spec.workloads if w.name == retest["workload"]]
+        if not selected:
+            raise ValueError(f"retest workload {retest['workload']!r} is not selected by this experiment / SLO filter")
+        if spec.confirmation is None:
+            raise ValueError("retest requires a confirmation configuration")
+        spec.workloads = selected
+        spec.name += "-sustain"
+        spec.retest = dict(retest)
+        spec.description = (f"Focused retest of {selected[0].name} at C={c}: continuous {seconds:g}s "
+                            "discovery windows followed by independent confirmation; finite-duration evidence.")
+        spec.sweep = SweepConfig(type="concurrency", values=[c])
+        spec.duration_s = seconds
+        spec.repetitions = 1
+        spec.inter_subject_cooldown_s = 0
+        spec.transport = replace(spec.transport, max_connections=max(128, spec.transport.max_connections))
+        spec.confirmation = replace(spec.confirmation, candidates=1, max_requests="auto", max_duration_s="auto",
+                                    max_repetitions=None, min_steady_state_duration_s=seconds)
     _validate(spec)
     spec.slo = _strictest_gate([spec.slo_profiles[w.slo_profile] for w in spec.workloads])
     spec.provider_ceilings = _ceilings(spec, model)

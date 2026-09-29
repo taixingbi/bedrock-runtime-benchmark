@@ -98,6 +98,16 @@ def cmd_list(args, root: Path) -> int:
     return 0
 
 
+def _retest(args):
+    values = {"workload": args.workload, "concurrency": args.candidate_concurrency,
+              "duration_s": args.steady_state_duration_s}
+    if not any(v is not None for v in values.values()):
+        return None
+    if any(v is None for v in values.values()):
+        raise ValueError("retest requires --workload, --candidate-concurrency and --steady-state-duration-s together")
+    return values
+
+
 def cmd_plan(args, root: Path, paths: List[str]) -> int:
     """Validate config + quota and estimate runtime. No requests sent."""
     from .batch import format_plan, plan
@@ -106,7 +116,7 @@ def cmd_plan(args, root: Path, paths: List[str]) -> int:
     for model in models:
         for path in paths:
             try:
-                spec = load_experiment(path, model, only_slo_profiles=args.slo_profiles, mix=args.mix)
+                spec = load_experiment(path, model, only_slo_profiles=args.slo_profiles, mix=args.mix, retest=_retest(args))
             except NoMatchingWorkloads as skip:
                 print(f"\n{model.name} / {Path(path).stem}: skipped -- {skip}")
                 continue
@@ -127,7 +137,7 @@ def cmd_plan(args, root: Path, paths: List[str]) -> int:
             print(f"Estimated duration: ~{estimated_duration_s(spec) / 60:.0f} min"
                   + (" (upper bound: stops after consecutive FAILs)" if spec.sweep.stop_after_fails else ""))
     print()
-    print(format_plan(plan(paths, models, only_slo_profiles=args.slo_profiles, mix=args.mix)))
+    print(format_plan(plan(paths, models, only_slo_profiles=args.slo_profiles, mix=args.mix, retest=_retest(args))))
     print("\nNo requests sent.")
     return 0
 
@@ -139,7 +149,7 @@ def cmd_pilot(args, root: Path, paths: List[str], target_factory=None) -> int:
     models = _models(args)
     print(f"PILOT: {args.pilot_requests} sequential requests per model x workload")
     report = run_pilot_sync(paths, models, requests_per_workload=args.pilot_requests,
-                            only_slo_profiles=args.slo_profiles, mix=args.mix, target_factory=target_factory,
+                            only_slo_profiles=args.slo_profiles, mix=args.mix, retest=_retest(args), target_factory=target_factory,
                             on_check=lambda c: print(format_check(c), flush=True))
     out = Path(args.results_dir or f"results/pilot-{time.strftime('%Y%m%d-%H%M%S')}")
     out.mkdir(parents=True, exist_ok=True)
@@ -156,10 +166,10 @@ def cmd_run(args, root: Path, paths: List[str], target_factory=None) -> int:
         return cmd_pilot(args, root, paths, target_factory=target_factory)
     from .batch import format_plan, format_summary, plan, run_batch
     models = _models(args)
-    print(format_plan(plan(paths, models, only_slo_profiles=args.slo_profiles, mix=args.mix)))
+    print(format_plan(plan(paths, models, only_slo_profiles=args.slo_profiles, mix=args.mix, retest=_retest(args))))
     results_dir = Path(args.results_dir or f"results/run-all-{time.strftime('%Y%m%d-%H%M%S')}")
     batch = run_batch(paths, models, results_dir=results_dir, fail_fast=args.fail_fast,
-                      only_slo_profiles=args.slo_profiles, mix=args.mix, target_factory=target_factory,
+                      only_slo_profiles=args.slo_profiles, mix=args.mix, retest=_retest(args), target_factory=target_factory,
                       run_metadata=run_metadata(args))
     print(f"\n{'=' * 78}\nSUMMARY\n{'=' * 78}")
     print(format_summary(batch))
@@ -275,6 +285,10 @@ def _parser() -> argparse.ArgumentParser:
         sp.add_argument("--slo-profile", action="append", dest="slo_profiles", metavar="NAME",
                         help="only workloads bound to this SLO profile, e.g. gold (repeatable)")
         sp.add_argument("--mix", metavar="NAME", help="workflow mix from catalog/mixes.yaml")
+        sp.add_argument("--workload", metavar="NAME", help="workload for a focused admission calibration retest")
+        sp.add_argument("--candidate-concurrency", type=int, metavar="C", help="single concurrency to retest")
+        sp.add_argument("--steady-state-duration-s", type=float, metavar="SECONDS",
+                        help="continuous window and minimum confirmation exposure for the retest")
         sp.add_argument("--account", help="AWS account whose quotas apply (default: the live account)")
         return sp
 

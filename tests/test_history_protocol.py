@@ -101,7 +101,8 @@ def test_history_executor_emits_descriptive_artifact_without_capacity(monkeypatc
 
 
 def test_medium_retest_uses_continuous_long_windows():
-    spec = load_experiment('experiments/medium-context-sustain.yaml', MODEL)
+    spec = load_experiment('experiments/workload-shape-calibration.yaml', MODEL,
+                           retest={'workload': 'medium_context', 'concurrency': 7, 'duration_s': 1800})
     assert spec.subject_names == ['medium_context']
     assert spec.sweep.values == [7]
     assert spec.duration_s == spec.confirmation.min_steady_state_duration_s == 1800
