@@ -58,22 +58,22 @@ class CliTests(unittest.TestCase):
             code, out = self._main("list")
         self.assertEqual(code, 0)
         self.assertIn("nova-micro", out)
-        for name in ("rate-capacity", "concurrency-sweep", "mixed-capacity", "workload-shape-calibration"):
+        for name in ("capacity-reference-rate", "capacity-reference-concurrency", "capacity-mix-rate", "capacity-shape-concurrency"):
             self.assertIn(name, out)
 
     def test_experiments_are_named_not_pathed(self):
-        self.assertEqual(cli.experiment_paths(["rate-capacity"], REPO), [str(REPO / "experiments/rate-capacity.yaml")])
+        self.assertEqual(cli.experiment_paths(["capacity-reference-rate"], REPO), [str(REPO / "experiments/capacity-reference-rate.yaml")])
         self.assertEqual(len(cli.experiment_paths(["all"], REPO)), len(cli.experiment_names(REPO)))
         with self.assertRaises(SystemExit) as ctx:
-            cli.experiment_paths(["experiments/rate-capacity.yaml"], REPO)
+            cli.experiment_paths(["experiments/capacity-reference-rate.yaml"], REPO)
         self.assertIn("unknown experiment", str(ctx.exception))
 
     def test_plan_validates_and_sends_nothing(self):
-        code, out = self._main("plan", "workload-shape-calibration", "--model", "nova-micro")
+        code, out = self._main("plan", "capacity-shape-concurrency", "--model", "nova-micro")
         self.assertEqual(code, 0)
         for text in ("Model:       nova-micro", "Region: us-east-1", "RPM 400", "Estimated duration", "No requests sent."):
             self.assertIn(text, out)
-        self.assertEqual(self._main("run", "rate-capacity", "--model", "nova-micro", "--dry-run")[0], 0)
+        self.assertEqual(self._main("run", "capacity-reference-rate", "--model", "nova-micro", "--dry-run")[0], 0)
 
     def test_run_produces_the_existing_artifacts(self):
         """A throwaway checkout (BEDROCK_BENCHMARK_HOME) with one tiny
@@ -104,9 +104,9 @@ class CliTests(unittest.TestCase):
     def test_expensive_commands_need_an_explicit_model_scope(self):
         for command in ("plan", "pilot", "run"):
             with self.assertRaises(SystemExit) as ctx:
-                self._main(command, "rate-capacity")
+                self._main(command, "capacity-reference-rate")
             self.assertIn("--all-models", str(ctx.exception))
-        code, out = self._main("plan", "rate-capacity", "--all-models")
+        code, out = self._main("plan", "capacity-reference-rate", "--all-models")
         self.assertEqual(code, 0)
         self.assertIn("No requests sent.", out)
 

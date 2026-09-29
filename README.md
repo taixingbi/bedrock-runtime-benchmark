@@ -13,15 +13,15 @@ bedrock-benchmark doctor --model nova-micro
 ```
 
 ```bash
-bedrock-benchmark plan concurrency-sweep --model nova-micro
+bedrock-benchmark plan capacity-reference-concurrency --model nova-micro
 ```
 
 ```bash
-bedrock-benchmark pilot concurrency-sweep --model nova-micro
+bedrock-benchmark pilot capacity-reference-concurrency --model nova-micro
 ```
 
 ```bash
-caffeinate -i bedrock-benchmark run concurrency-sweep --model nova-micro --ticket CAP-123 --purpose "model onboarding"
+caffeinate -i bedrock-benchmark run capacity-reference-concurrency --model nova-micro --ticket CAP-123 --purpose "model onboarding"
 ```
 
 ```bash
@@ -141,14 +141,14 @@ there is no gateway config schema in this repo.
 
 | Experiment | Purpose | Sweep | Per model |
 |---|---|---|---|
-| `rate-capacity` | reference | 0.25x-2.5x of the provider ceiling, one reference workload per tier (`short_chat` gold, `rag_answer` silver, `long_generation` bronze) -- the canonical envelope run | ~57 min |
-| `concurrency-sweep` | reference | each reference workload alone, concurrency 1..48 until 2 consecutive FAILs; confirms the top 2 non-failing concurrencies | ~1.5 h |
-| `mixed-capacity` | reference | mixed-rate calibration: 0.25x-2.5x ceiling for a workflow mix (`--mix`); default 60/30/10 is a reference example | ~32 min |
-| `workload-shape-calibration` | admission_calibration | the 4 non-reference shapes plus a long_generation reference control x concurrency 1..48 until 2 consecutive FAILs, each under its own SLO | ~1-2 h |
+| `capacity-reference-rate` | reference | 0.25x-2.5x of the provider ceiling, one reference workload per tier (`short_chat` gold, `rag_answer` silver, `long_generation` bronze) -- the canonical envelope run | ~57 min |
+| `capacity-reference-concurrency` | reference | each reference workload alone, concurrency 1..48 until 2 consecutive FAILs; confirms the top 2 non-failing concurrencies | ~1.5 h |
+| `capacity-mix-rate` | reference | mixed-rate calibration: 0.25x-2.5x ceiling for a workflow mix (`--mix`); default 60/30/10 is a reference example | ~32 min |
+| `capacity-shape-concurrency` | admission_calibration | the 4 non-reference shapes plus a long_generation reference control x concurrency 1..48 until 2 consecutive FAILs, each under its own SLO | ~1-2 h |
 
 Only **reference** experiments, on the three **reference** workloads (one
 per SLO tier), produce an admission-envelope recommendation.
-`workload-shape-calibration` is **admission calibration**: for the other four catalog
+`capacity-shape-concurrency` is **admission calibration**: for the other four catalog
 shapes it produces statistically confirmed `calibration_point`s --
 C_safe = f(input/output tokens, SLO, quota, provider conditions):
 
@@ -157,28 +157,28 @@ calibration_point -> workload-specific admission evidence -> policy derivation (
 ```
 
 A calibration point is evidence, not a config value: no admission
-envelope, no headroom. Different workload shapes may require different concurrency to reach the same provider rate ceiling; therefore concurrency must not be interpreted as a workload cost weight. Rates are kept apart -- `attempted_rps` (inflated by fast 429s under overload), `successful_rps` (served), `throttled_rps`, `slo_goodput_rps` -- plus `ceiling_ratio` (served / nominal ceiling); all are observations of what concurrency and latency produced, not a tested rate like `rate-capacity`'s `sustained_rps`. Calibration points are isolated-workload measurements; per-shape C_safe values don't combine mathematically into a global policy, and any policy derived from them must be validated under representative mixed traffic through the deployed gateway (`eval-bedrock-platform`) before production use -- this repo calls Bedrock directly and never validates gateway policy.
+envelope, no headroom. Different workload shapes may require different concurrency to reach the same provider rate ceiling; therefore concurrency must not be interpreted as a workload cost weight. Rates are kept apart -- `attempted_rps` (inflated by fast 429s under overload), `successful_rps` (served), `throttled_rps`, `slo_goodput_rps` -- plus `ceiling_ratio` (served / nominal ceiling); all are observations of what concurrency and latency produced, not a tested rate like `capacity-reference-rate`'s `sustained_rps`. Calibration points are isolated-workload measurements; per-shape C_safe values don't combine mathematically into a global policy, and any policy derived from them must be validated under representative mixed traffic through the deployed gateway (`eval-bedrock-platform`) before production use -- this repo calls Bedrock directly and never validates gateway policy.
 
 Each reference workload ends up with both an isolated concurrency and an
 isolated rate envelope:
 
-| Class | `max_inflight` (`concurrency-sweep`) | `sustained_rps` (`rate-capacity`) |
+| Class | `max_inflight` (`capacity-reference-concurrency`) | `sustained_rps` (`capacity-reference-rate`) |
 |---|---|---|
 | `short_chat` (gold) | ✓ | ✓ |
 | `rag_answer` (silver) | ✓ | ✓ |
 | `long_generation` (bronze) | ✓ | ✓ |
-| the 60/30/10 mix | -- | ✓ (`mixed-capacity`) |
+| the 60/30/10 mix | -- | ✓ (`capacity-mix-rate`) |
 
-Per-class `max_inflight` (and `sustained_rps`) values are **isolated** limits -- each holds for that class running alone (`scope: isolated_workload_class`). They are not additive across classes and are not a global limit; only `mixed-capacity` (`scope: workload_mix`) measures classes together.
+Per-class `max_inflight` (and `sustained_rps`) values are **isolated** limits -- each holds for that class running alone (`scope: isolated_workload_class`). They are not additive across classes and are not a global limit; only `capacity-mix-rate` (`scope: workload_mix`) measures classes together.
 
 What each experiment gives a gateway:
 
 | Experiment | Produces | Gateway use |
 |---|---|---|
-| `concurrency-sweep` | per-class isolated `max_inflight` for the three reference workloads | reference workload `C_admission` |
-| `rate-capacity` | per-class isolated `sustained_rps` for the same three | reference workload `R_admission` |
-| `workload-shape-calibration` | confirmed `calibration_point` per non-reference workload shape (no envelope, no headroom) | extra workload-shape admission calibration points |
-| `mixed-capacity` | `sustained_rps` for ONE explicit mix (`scope: workload_mix`) | mix-scoped total-rate `R_admission(mix)` |
+| `capacity-reference-concurrency` | per-class isolated `max_inflight` for the three reference workloads | reference workload `C_admission` |
+| `capacity-reference-rate` | per-class isolated `sustained_rps` for the same three | reference workload `R_admission` |
+| `capacity-shape-concurrency` | confirmed `calibration_point` per non-reference workload shape (no envelope, no headroom) | extra workload-shape admission calibration points |
+| `capacity-mix-rate` | `sustained_rps` for ONE explicit mix (`scope: workload_mix`) | mix-scoped total-rate `R_admission(mix)` |
 
 None of these validates gateway policy: every call goes straight to
 Bedrock. The benchmark produces backend admission evidence; the gateway
@@ -190,8 +190,8 @@ production traffic in `catalog/mixes.yaml`, with `source: production_traffic_pro
 and `observed_from` identifying the data and time range. Measure each workflow separately:
 
 ```sh
-bedrock-benchmark plan mixed-capacity --model nova-micro --mix <workflow-name>
-bedrock-benchmark run mixed-capacity --model nova-micro --mix <workflow-name>
+bedrock-benchmark plan capacity-mix-rate --model nova-micro --mix <workflow-name>
+bedrock-benchmark run capacity-mix-rate --model nova-micro --mix <workflow-name>
 ```
 
 The shipped 60/30/10 mix is a reference example only. Every class must meet its
@@ -257,7 +257,7 @@ profile. Results go to `results/run-all-<timestamp>/<model>/`.
 ## Output example
 
 Per workload class, measurement and recommendation are separate blocks.
-Abridged, from the 2026-09-26 nova-micro `rate-capacity` run (full schema:
+Abridged, from the 2026-09-26 nova-micro `capacity-reference-rate` run (full schema:
 [docs/capacity-profile-schema.md](docs/capacity-profile-schema.md)):
 
 ```yaml
@@ -320,14 +320,14 @@ Python 3.11 or 3.12 (`requires-python` in `pyproject.toml`);
 recommendation logic is tested against a fake Bedrock client
 (`tests/fakes.py`) -- no network or AWS credentials needed.
 
-`workload-shape-calibration` also runs `long_generation` (4096 input / 1024 output, bronze)
+`capacity-shape-concurrency` also runs `long_generation` (4096 input / 1024 output, bronze)
 as an experiment-local `reference_control`. Its measurements help compare decode
 pressure with large-context behavior; it emits no calibration point or production
 admission recommendation in this experiment.
 
 ### Follow-up experiments for provider-state behavior
 
-`long-context-history` compares `long_context_short_answer` and `very_large_context`
+`diagnostic-context-history` compares `long_context_short_answer` and `very_large_context`
 at 0.25 of each workload's nominal rate ceiling (1.67 RPS for the recorded
 400-RPM configuration). Every arm starts with 300s idle and a healthy low-load
 probe. The overload arm then applies 2x nominal rate for 120s, waits 120s and
@@ -345,16 +345,16 @@ success/throttle proportions follow requests scheduled in the bin, including
 responses that finish later. The final bin may therefore show fewer completions
 than eventual successes. Raw JSONL keeps measurement, overload and probe phases.
 
-`workload-shape-calibration` supports a focused retest using `--workload`,
+`capacity-shape-concurrency` supports a focused retest using `--workload`,
 `--candidate-concurrency`, and `--steady-state-duration-s` together. For example, retest C=7 using a continuous 30-minute discovery window
 and fresh confirmation with at least 30 minutes of measured exposure. Confirmation
 may reject the candidate or require additional windows. Its measured RPS is not a
 validated rate envelope. Compare repeated runs before deriving an admission policy.
 
 ```sh
-.venv/bin/bedrock-benchmark plan long-context-history --model nova-micro
-.venv/bin/bedrock-benchmark run long-context-history --model nova-micro
-.venv/bin/bedrock-benchmark run workload-shape-calibration --model nova-micro \
+.venv/bin/bedrock-benchmark plan diagnostic-context-history --model nova-micro
+.venv/bin/bedrock-benchmark run diagnostic-context-history --model nova-micro
+.venv/bin/bedrock-benchmark run capacity-shape-concurrency --model nova-micro \
   --workload medium_context --candidate-concurrency 7 --steady-state-duration-s 1800
 ```
 
@@ -365,7 +365,37 @@ Reports retain `nominal_binding_constraint`, but throttling is described as an
 observed symptom. Suspect measurements use `bottleneck: unresolved`; public quota
 ratios alone do not establish the actual cause of provider rejection.
 
-Focused retests have an artifact experiment name ending in `-sustain` and record
-all retest parameters under `measurement.retest`, keeping them distinct from the
-normal shape sweep during temporal comparison. The same options work for plan,
-pilot and run. Without these options the original shape sweep is unchanged.
+Focused retests keep the base experiment name and set `mode: sustain`; regular
+capacity sweeps use `mode: sweep`, and history diagnostics use `mode: history`.
+Retest parameters are recorded under `measurement.retest`. Temporal comparison
+groups by experiment, model, workload/mix, mode, candidate concurrency and
+measurement duration (including minimum confirmation exposure). Historical
+experiment names remain distinct; result files are never renamed or rewritten.
+The retest options work for plan, pilot and run. Without them the original shape
+sweep applies.
+
+### Experiment names
+
+| Previous name | Current name |
+|---|---|
+| `concurrency-sweep` | `capacity-reference-concurrency` |
+| `rate-capacity` | `capacity-reference-rate` |
+| `mixed-capacity` | `capacity-mix-rate` |
+| `workload-shape-calibration` | `capacity-shape-concurrency` |
+| `long-context-history` | `diagnostic-context-history` |
+
+Use the current names in commands. `purpose` defines how results can be used;
+workload roles such as `reference_control` remain explicit configuration fields.
+
+### Streaming measurements
+
+All five experiments use a shared descriptive metrics structure with latency
+p50/p95/p99 and sample counts, request/token throughput, reliability and load state.
+Capacity reports expose each repetition under `measurement_windows`, with 30-second
+bins and per-class breakdowns for mixed traffic. History reports use
+`history_comparison[].aggregate.metrics` and `bins[].metrics`.
+
+Raw JSONL also preserves submission and last-text timing, including partial-stream
+failures. Existing TPOT SLO checks keep their definition; the additional
+`text_decode_tpot_ms` excludes trailing metadata time and is descriptive only.
+See [metric definitions](docs/capacity-profile-schema.md#common-descriptive-metrics-metrics_version-1).

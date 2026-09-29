@@ -12,11 +12,12 @@ checked-in fixtures). The `capacity-profile.yaml` schema (v23 -- see
 [correctness history](correctness-history.md) for why `rate` and `concurrency` are always
 kept in separate blocks, why the rate block separates offered load
 from goodput, and why there's no `global_max_concurrency`). A
-rate-capacity result:
+capacity-reference-rate result:
 
 ```yaml
 schema_version: 23
-experiment: rate-capacity
+experiment: capacity-reference-rate
+mode: sweep  # sweep | sustain | history; focused retests retain the base experiment name
 run: {run_id: 3f2a..., owner: alice, purpose: model onboarding, ticket: CAP-123, environment: dev}   # who ran it and why (bedrock-benchmark run --owner/--purpose/--ticket/--environment)
 purpose: reference                                 # admission_calibration | characterization -- then recommendation is always null
 environment:                                       # provenance -- see methodology.md, "Provenance and temporal validation"
@@ -130,7 +131,7 @@ likewise from the confirmed point only. A sweep with
 
 **Scope.** Every measurement block and admission envelope states
 `scope`: `isolated_workload_class` (the class swept ALONE) or
-`workload_mix` (a `mixed_workloads` entry). Per-class `max_inflight` (and `sustained_rps`) values are **isolated** limits -- each holds for that class running alone (`scope: isolated_workload_class`). They are not additive across classes and are not a global limit; only `mixed-capacity` (`scope: workload_mix`) measures classes together.
+`workload_mix` (a `mixed_workloads` entry). Per-class `max_inflight` (and `sustained_rps`) values are **isolated** limits -- each holds for that class running alone (`scope: isolated_workload_class`). They are not additive across classes and are not a global limit; only `capacity-mix-rate` (`scope: workload_mix`) measures classes together.
 
 This is the actual deliverable -- not an HTML report. A gateway's own
 config review reads this file, and decides its own global/tenant/AIMD
@@ -245,7 +246,7 @@ Contract rules a consumer can rely on:
   slo_profile, tokens_per_request, statistically_confirmed_concurrency,
   confirmed_rates: {attempted_rps, successful_rps, throttled_rps,
   slo_goodput_rps}, ceiling_ratio, observed_saturation_edge, bottleneck,
-  scope, use}` -- statistically confirmed, no headroom. Rates are kept apart -- `attempted_rps` (inflated by fast 429s under overload), `successful_rps` (served), `throttled_rps`, `slo_goodput_rps` -- plus `ceiling_ratio` (served / nominal ceiling); all are observations of what concurrency and latency produced, not a tested rate like `rate-capacity`'s `sustained_rps`. Different workload shapes may require different concurrency to reach the same provider rate ceiling; therefore concurrency must not be interpreted as a workload cost weight.
+  scope, use}` -- statistically confirmed, no headroom. Rates are kept apart -- `attempted_rps` (inflated by fast 429s under overload), `successful_rps` (served), `throttled_rps`, `slo_goodput_rps` -- plus `ceiling_ratio` (served / nominal ceiling); all are observations of what concurrency and latency produced, not a tested rate like `capacity-reference-rate`'s `sustained_rps`. Different workload shapes may require different concurrency to reach the same provider rate ceiling; therefore concurrency must not be interpreted as a workload cost weight.
   It is workload-specific admission evidence (calibration_point -> workload-specific admission evidence -> policy derivation (gateway) -> mixed validation (eval-bedrock-platform)),
   not a limit to compare a config against (the gateway's review skips
   these profiles).
@@ -277,3 +278,51 @@ Contract rules a consumer can rely on:
   ever emitted.
 - `schema_version` increases on any change to these fields; see
   [correctness history](correctness-history.md).
+
+## Common descriptive metrics (metrics_version 1)
+
+All experiments expose the same `metrics` structure:
+- `latency`: TTFT, TPOT and E2E, each with p50/p95/p99 and valid sample count.
+  These describe successful requests scheduled within the window, including
+  those finishing during drain. Missing distributions are null with n=0.
+- `throughput`: scheduled and actual SDK-start RPS, successful completion RPS,
+  SLO goodput, and input/output/total tokens per second. Completions inside the
+  window count, including requests scheduled earlier. Token counts come from
+  provider usage; missing usage makes the affected total null, with coverage
+  counts reported. Zero completions means zero throughput.
+- `reliability`: scheduled-cohort success, throttle, non-throttle error and timeout
+  rates, plus counts of stream failures before/after first text. Timeout overlaps
+  the error category. Legacy rows without stream metadata are explicitly counted
+  as unknown. No scheduled requests means null rates.
+- `load_state`: configured concurrency or offered RPS, scheduling-lag
+  p50/p95/p99, and peak/time-weighted average outstanding. SDK calls use
+  started_at→completed_at; queue-inclusive outstanding uses
+  submitted_at→completed_at. Both are clipped to the measurement window.
+  Queue-inclusive values are null for legacy data without submission timestamps.
+  Open-loop rate runs have no explicit max_inflight cap (null); executor_workers
+  is a worker-pool size, not a cap on queued requests.
+
+Capacity experiments store these under each subject's `measurement_windows`,
+with phase, candidate value, repetition, aggregate metrics and continuous 30s bins.
+Empty windows and final partial bins are retained. Mixed windows additionally
+contain `classes`, each with the same structure, including classes with no samples.
+Class load settings are null because only the overall mix has a configured load.
+Recovery attempts remain separate windows; diagnostic windows cannot confer PASS.
+
+History experiments expose the same structure at
+`history_comparison[].aggregate.metrics` and `history_comparison[].bins[].metrics`,
+using their configured bin duration. Existing summary fields remain available.
+
+TPOT retains its existing SLO definition:
+(stream completion − first non-empty text delta) / (output_tokens − 1).
+The additive `text_decode_tpot_ms` distribution instead ends at the last
+non-empty text delta, excluding trailing metadata time. Neither metric measures
+individual token gaps: a stream delta may contain multiple tokens.
+The new raw `last_text_at` and `last_text_latency_ms` fields preserve that boundary.
+On stream errors, first/last text timestamps are retained and
+`stream_failure_stage` identifies before/after first text; partial usage is never
+invented. Latency durations use the existing monotonic clock.
+
+Bins and p99 are descriptive and introduce no new SLO gates. Small sample counts
+do not establish stable tail latency. Historical artifacts are unchanged; the
+existing schema version accepts these additive fields.

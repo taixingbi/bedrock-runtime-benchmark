@@ -130,6 +130,7 @@ def summarize_profile(profile: dict) -> str:
     run = profile.get("run") or {}
     model = (profile.get("model") or {}).get("name")
     head = [f"RESULT  {model} / {profile.get('experiment')}  [{profile.get('purpose')}]"
+            + (f"  mode={profile['mode']}" if profile.get("mode") else "")
             + (f"  run {run['run_id']}" if run.get("run_id") else "")]
     body = []
     entries = {**(profile.get("workload_classes") or {}), **(profile.get("mixed_workloads") or {})}

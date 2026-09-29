@@ -72,7 +72,7 @@ class BuildCapacityProfileTests(unittest.TestCase):
     def test_reference_control_has_evidence_without_policy_outputs(self):
         from bedrock_benchmark.models import load_models
         from bedrock_benchmark.summary import summarize_entry
-        spec = load_experiment("experiments/workload-shape-calibration.yaml", load_models(names=["nova-micro"])[0])
+        spec = load_experiment("experiments/capacity-shape-concurrency.yaml", load_models(names=["nova-micro"])[0])
         rec = _rec(point=SweepPoint(concurrency=3, rps=None, metrics=_metrics()), saturation_point=None,
                    confirmed_point=SweepPoint(concurrency=3, rps=None, metrics=_metrics(), phase="confirmation"))
         for recommendation in (rec, None):
@@ -367,7 +367,7 @@ class BuildCapacityProfileTests(unittest.TestCase):
         """Profiles carry only TTFT/TPOT; the E2E cap comes from the
         catalog entry, so the artifact must record that entry too."""
         from bedrock_benchmark.models import load_models
-        spec = load_experiment("experiments/concurrency-sweep.yaml", load_models(names=["nova-micro"])[0])
+        spec = load_experiment("experiments/capacity-reference-concurrency.yaml", load_models(names=["nova-micro"])[0])
         report = ExperimentReport(spec=spec, profiles=[])
 
         c = build_capacity_profile(report)["constraints"]
@@ -379,12 +379,12 @@ class BuildCapacityProfileTests(unittest.TestCase):
 
 
     def test_admission_calibration_emits_a_confirmed_calibration_point_not_an_envelope(self):
-        """workload-shape-calibration: C_safe per workload shape under its own SLO (and the
+        """capacity-shape-concurrency: C_safe per workload shape under its own SLO (and the
         measured provider environment), for
         a gateway to derive admission classes from -- no envelope, no
         headroom."""
         from bedrock_benchmark.models import load_models
-        spec = load_experiment("experiments/workload-shape-calibration.yaml", load_models(names=["nova-micro"])[0])
+        spec = load_experiment("experiments/capacity-shape-concurrency.yaml", load_models(names=["nova-micro"])[0])
         self.assertEqual(spec.purpose, "admission_calibration")
         rec = _rec(point=SweepPoint(concurrency=4, rps=None, metrics=_metrics(request_throughput_rps=6.2)),
                    saturation_point=SweepPoint(concurrency=6, rps=None, metrics=_metrics(throttle_rate=0.05)))
@@ -411,7 +411,7 @@ class BuildCapacityProfileTests(unittest.TestCase):
 
     def test_characterization_experiment_never_recommends(self):
         from bedrock_benchmark.models import load_models
-        spec = load_experiment("experiments/workload-shape-calibration.yaml", load_models(names=["nova-micro"])[0])
+        spec = load_experiment("experiments/capacity-shape-concurrency.yaml", load_models(names=["nova-micro"])[0])
         spec.purpose = "characterization"
         rec = _rec(point=SweepPoint(concurrency=2, rps=None, metrics=_metrics()), saturation_point=None)
         report = ExperimentReport(spec=spec, profiles=[ProfileReport(workload_name="tiny_request", recommendation=rec)])

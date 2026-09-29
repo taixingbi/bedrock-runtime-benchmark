@@ -9,7 +9,7 @@ How a sweep turns requests into metrics: core abstractions, the capacity definit
 - **`WorkloadProfile`** (`workload.py`) -- a named input/output token
   shape (e.g. `short_chat` = 512 in / 64 out), defined once in the
   catalog `catalog/workloads.yaml`. Capacity depends heavily on
-  this; see `workload-shape-calibration.yaml` (admission calibration). Input padding is calibrated per model
+  this; see `capacity-shape-concurrency.yaml` (admission calibration). Input padding is calibrated per model
   from the provider's own token count (`calibration.py`).
 - **`WorkloadMix`** (`workload.py`) -- weighted classes for a mixed-
   workload sweep; each request draws its class independently.
@@ -154,7 +154,7 @@ ending `end_turn`. The prompt therefore asks for ~2x the budget and
 forbids wrapping up, so generation ends on `max_tokens` -- measured
 after the fix: 100% of requests hit exactly 64 / 64 / 256 / 1024 output
 tokens across the four shapes then in token-sweep (now
-workload-shape-calibration). Every result records
+capacity-shape-concurrency). Every result records
 Bedrock's `stop_reason` (`max_tokens` vs `end_turn`) in the raw JSONL.
 
 Each class's `workload_validation` still checks BOTH sides against what
@@ -177,7 +177,7 @@ models legitimately stop a little early).
 
 ## Mixed workloads
 
-`experiments/mixed-capacity.yaml` sweeps ONE offered rate where each
+`experiments/capacity-mix-rate.yaml` sweeps ONE offered rate where each
 arrival draws its class by weight (60% short_chat / 30% rag_answer /
 10% long_generation), so
 classes genuinely overlap in flight. A point passes only if **every

@@ -25,6 +25,9 @@
     "experiment": {
       "type": "string"
     },
+    "mode": {
+      "enum": ["sweep", "sustain", "history"]
+    },
     "purpose": {
       "enum": [
         "reference",

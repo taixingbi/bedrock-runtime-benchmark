@@ -65,6 +65,8 @@ class ExperimentReport:
     profiles: List[ProfileReport] = field(default_factory=list)
     all_results: List[RequestResult] = field(default_factory=list)
     calibrations: Dict[str, CalibrationResult] = field(default_factory=dict)
+    # Preserve even a measurement window with no arrivals.
+    measurement_windows: List[dict] = field(default_factory=list)
 
 
 def calibrate_workloads(spec: ExperimentSpec, target: BedrockConverseTarget) -> Dict[str, CalibrationResult]:
@@ -289,6 +291,10 @@ async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress:
                 results = await runner.run()
                 state["peak"] = max(state["peak"], target.peak_outstanding)
                 window = runner.window
+                report.measurement_windows.append({
+                    "subject": subject.name, "phase": phase, "value": value, "repetition": rep,
+                    "start": window.start, "end": window.end,
+                })
                 for r in results:
                     r.tags.update({
                         # The runner already tagged the drawn class;

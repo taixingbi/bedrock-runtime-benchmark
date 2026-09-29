@@ -7,7 +7,7 @@ from bedrock_benchmark.pilot import pilot_workloads
 from bedrock_benchmark.run_file import estimated_duration_s
 
 MODEL = ModelConfig(name='test', model_id='m', quota_rpm=400, quota_tpm=8000000)
-PATH = 'experiments/workload-shape-calibration.yaml'
+PATH = 'experiments/capacity-shape-concurrency.yaml'
 RETEST = {'workload': 'medium_context', 'concurrency': 7, 'duration_s': 1800}
 
 
@@ -15,7 +15,8 @@ def test_retest_isolated_from_default_sweep_and_preserves_confirmation():
     spec = load_experiment(PATH, MODEL, retest=RETEST)
     baseline = load_experiment(PATH, MODEL)
     assert spec.subject_names == ['medium_context']
-    assert spec.name == 'workload-shape-calibration-sustain'
+    assert spec.name == 'capacity-shape-concurrency'
+    assert spec.mode == "sustain"
     assert spec.retest == RETEST
     assert spec.sweep.values == [7] and spec.sweep.refinement is None
     assert spec.sweep.stop_after_fails is None
@@ -37,24 +38,24 @@ def test_invalid_retest_parameters_fail_before_execution(changes):
 
 
 def test_reference_and_history_experiments_cannot_be_retested_as_calibration():
-    for path in ('experiments/concurrency-sweep.yaml', 'experiments/long-context-history.yaml'):
+    for path in ('experiments/capacity-reference-concurrency.yaml', 'experiments/diagnostic-context-history.yaml'):
         with pytest.raises(ValueError, match='isolated admission_calibration'):
             load_experiment(path, MODEL, retest=RETEST)
 
 
 def test_cli_plan_uses_retest_parameters(monkeypatch, capsys):
     monkeypatch.setattr(cli, '_models', lambda args: [MODEL])
-    assert cli.main(['plan', 'workload-shape-calibration', '--model', 'test',
+    assert cli.main(['plan', 'capacity-shape-concurrency', '--model', 'test',
                      '--workload', 'medium_context', '--candidate-concurrency', '7',
                      '--steady-state-duration-s', '1800']) == 0
     output = capsys.readouterr().out
-    assert 'workload-shape-calibration-sustain' in output
+    assert 'capacity-shape-concurrency' in output
     assert 'concurrency [7]' in output
     assert 'tiny_request' not in output
 
 
 def test_partial_cli_retest_is_rejected():
-    args = cli._parser().parse_args(['plan', 'workload-shape-calibration', '--workload', 'medium_context'])
+    args = cli._parser().parse_args(['plan', 'capacity-shape-concurrency', '--workload', 'medium_context'])
     with pytest.raises(ValueError, match='together'):
         cli._retest(args)
 
@@ -73,7 +74,8 @@ def test_batch_run_persists_effective_retest_spec(monkeypatch, tmp_path):
     result = run_batch([PATH], [MODEL], results_dir=tmp_path, retest=RETEST)
     assert result.exit_code == 0
     artifact = yaml.safe_load(open(result.results[0].profile_path))
-    assert artifact['experiment'] == 'workload-shape-calibration-sustain'
+    assert artifact['experiment'] == 'capacity-shape-concurrency'
+    assert artifact['mode'] == 'sustain'
     assert artifact['measurement']['retest'] == RETEST
     assert artifact['measurement']['window_s'] == 1800
     assert artifact['sweep']['values'] == [7]

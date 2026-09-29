@@ -1,6 +1,6 @@
 # The canonical "give me the production operating envelope" run: an
 # open-loop Poisson RATE sweep straddling the model's own RPM quota --
-# separates latency saturation (concurrency-sweep's job) from
+# separates latency saturation (capacity-reference-concurrency's job) from
 # RPM/throttling saturation (this one's).
 #
 # Rates are quota_fractions of each workload's PROVIDER CEILING from
@@ -13,7 +13,7 @@
 # ~1.0x and ~1.9x quota, so the sweep extends to 2.5x to find the edge.
 # reference: THE production envelope run -- one reference workload per SLO tier.
 purpose: reference
-name: rate-capacity
+name: capacity-reference-rate
 description: |
   Poisson rate sweep at 0.25x..2.5x of each workload's provider ceiling,
   one workload per SLO tier (short_chat gold, rag_answer silver,

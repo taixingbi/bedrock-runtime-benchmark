@@ -64,8 +64,8 @@ The benchmark determines the backend capacity envelope; the gateway enforces tha
 `max_inflight` and `sustained_rps` are two **independently confirmed
 guardrails**:
 
-- `concurrency-sweep` controls concurrency C and lets the rate emerge;
-- `rate-capacity` controls offered rate R and lets concurrency emerge.
+- `capacity-reference-concurrency` controls concurrency C and lets the rate emerge;
+- `capacity-reference-rate` controls offered rate R and lets concurrency emerge.
 
 Neither experiment tested (C, R) combinations, so the benchmark has
 **not** shown that `C <= max_inflight AND R <= sustained_rps` is safe as

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Run ONE experiment against the models in catalog/models.yaml:
 
-    python scripts/run.py experiments/concurrency-sweep.yaml                    # every enabled model
-    python scripts/run.py experiments/concurrency-sweep.yaml --model nova-micro # one model
+    python scripts/run.py experiments/capacity-reference-concurrency.yaml                    # every enabled model
+    python scripts/run.py experiments/capacity-reference-concurrency.yaml --model nova-micro # one model
 
 Prints per-point progress and the recommendation, and writes the raw
 per-request JSONL + capacity-profile.yaml to results/<model>/. To run

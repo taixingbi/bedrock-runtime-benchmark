@@ -1,6 +1,6 @@
-# Workload-mix catalog -- the traffic compositions mixed-capacity measures.
+# Workload-mix catalog -- the traffic compositions capacity-mix-rate measures.
 #
-# A mixed-capacity result is R_safe(mix): the confirmed total offered rate
+# A capacity-mix-rate result is R_safe(mix): the confirmed total offered rate
 # at which EVERY class meets its own SLO, for THIS composition only. It is
 # never a global R_safe, and isolated per-class capacities never add up to
 # it. So each real workflow gets its own mix here and its own measurement:
@@ -22,7 +22,7 @@
 #   weights     workload (catalog/workloads.yaml) -> relative weight (normalized)
 #
 # Measure one with:
-#   bedrock-benchmark run mixed-capacity --model <model> --mix <name>
+#   bedrock-benchmark run capacity-mix-rate --model <model> --mix <name>
 #
 # Template for a real workflow (copy, fill in from traffic data):
 #   support_rag_workflow:

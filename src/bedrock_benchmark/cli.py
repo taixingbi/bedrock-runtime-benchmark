@@ -1,9 +1,9 @@
 """bedrock-benchmark -- the public command line. The paved road:
 
     bedrock-benchmark doctor   --model nova-micro                         # ready? (identity, access, quota, config)
-    bedrock-benchmark plan     workload-shape-calibration --model nova-micro   # what will run, how long; no requests
-    bedrock-benchmark pilot    workload-shape-calibration --model nova-micro   # a few requests per workload
-    bedrock-benchmark run      workload-shape-calibration --model nova-micro --ticket CAP-123
+    bedrock-benchmark plan     capacity-shape-concurrency --model nova-micro   # what will run, how long; no requests
+    bedrock-benchmark pilot    capacity-shape-concurrency --model nova-micro   # a few requests per workload
+    bedrock-benchmark run      capacity-shape-concurrency --model nova-micro --ticket CAP-123
     bedrock-benchmark summary  results/run-all-<ts>                        # can I trust it / what did we learn
     bedrock-benchmark validate results/                                    # temporal validation across runs
     bedrock-benchmark publish  results/run-all-<ts> --destination s3://bucket/prefix
@@ -93,7 +93,7 @@ def cmd_list(args, root: Path) -> int:
             if weights is None:
                 weights = load_mixes(str(root / "catalog/mixes.yaml"))[mix["name"]]["weights"]
             workloads = list(weights)
-        print(f"  {name:<28} {spec.get('purpose', ''):<22} workloads: {', '.join(workloads)}")
+        print(f"  {name:<32} {spec.get('purpose', ''):<22} workloads: {', '.join(workloads)}")
     print("\nStart with: bedrock-benchmark doctor --model <model>, then plan / pilot / run <experiment> --model <model>")
     return 0
 
@@ -122,7 +122,7 @@ def cmd_plan(args, root: Path, paths: List[str]) -> int:
                 continue
             from .run_file import estimated_duration_s
             print(f"\nModel:       {model.name} ({model.model_id})")
-            print(f"Experiment:  {spec.name}  [{spec.purpose}]")
+            print(f"Experiment:  {spec.name}  [{spec.purpose}; mode={spec.mode}]")
             print(f"AWS account: {model.account}   Region: {model.region}")
             print(f"Quota:       RPM {model.quota_rpm:,.0f}   TPM {model.quota_tpm:,.0f}"
                   if model.quota_rpm and model.quota_tpm else "Quota:       unknown")
@@ -279,7 +279,7 @@ def _parser() -> argparse.ArgumentParser:
 
     def with_target(sp):
         sp.add_argument("experiments", nargs="+", metavar="EXPERIMENT",
-                        help="experiment name(s), e.g. workload-shape-calibration, or `all`")
+                        help="experiment name(s), e.g. capacity-shape-concurrency, or `all`")
         sp.add_argument("--model", action="append", dest="models", metavar="NAME", help="model name (repeatable)")
         sp.add_argument("--all-models", action="store_true", help="every enabled model -- never the implicit default")
         sp.add_argument("--slo-profile", action="append", dest="slo_profiles", metavar="NAME",

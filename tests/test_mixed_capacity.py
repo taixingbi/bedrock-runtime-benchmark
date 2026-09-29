@@ -17,7 +17,7 @@ MODEL = ModelConfig(name="slow", model_id="m", quota_rpm=10, quota_tpm=10000000)
 
 
 def test_low_rpm_confirmation_gets_enough_time():
-    spec = load_experiment("experiments/mixed-capacity.yaml", MODEL)
+    spec = load_experiment("experiments/capacity-mix-rate.yaml", MODEL)
     shares = spec.mix.weights
     limits = limits_for({}, {w.name: {"throttle_rate_max": spec.slo_for(w.name).throttle_rate_max,
                                      "success_rate_min": spec.slo_for(w.name).success_rate_min}
@@ -56,16 +56,16 @@ def test_workflow_catalog_override(tmp_path, monkeypatch):
         "source": "production_traffic_profile", "observed_from": "workflow logs, September",
         "weights": {"rag_answer": .8, "short_chat": .2},
     }}}))
-    spec = load_experiment("experiments/mixed-capacity.yaml", MODEL, mix="support", mixes_file=str(catalog))
+    spec = load_experiment("experiments/capacity-mix-rate.yaml", MODEL, mix="support", mixes_file=str(catalog))
     assert spec.mix.name == "support"
     assert spec.mix.source == "production_traffic_profile"
     assert {w.name for w in spec.workloads} == {"rag_answer", "short_chat"}
     assert spec.transport.max_connections == 128
     assert spec.subject_names == ["support"]
-    args = _parser().parse_args(["plan", "mixed-capacity", "--model", "slow", "--mix", "support"])
+    args = _parser().parse_args(["plan", "capacity-mix-rate", "--model", "slow", "--mix", "support"])
     assert args.mix == "support"
     # Batch planning must forward the CLI override to the loader.
     import bedrock_benchmark.batch as batch
     original = batch.load_experiment
     monkeypatch.setattr(batch, "load_experiment", lambda *a, **kw: original(*a, **kw, mixes_file=str(catalog)))
-    assert plan(["experiments/mixed-capacity.yaml"], [MODEL], mix="support")[0].estimated_s > 1800
+    assert plan(["experiments/capacity-mix-rate.yaml"], [MODEL], mix="support")[0].estimated_s > 1800

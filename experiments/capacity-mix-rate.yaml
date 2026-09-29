@@ -1,5 +1,5 @@
 # Mixed-workload rate calibration. Isolated workload envelopes from
-# rate-capacity and calibration points from workload-shape-calibration cannot be
+# capacity-reference-rate and calibration points from capacity-shape-concurrency cannot be
 # combined mathematically into one global cross-class rate -- a real mix
 # of short and long traffic can exceed safe capacity before any class's
 # isolated measurement would predict.
@@ -24,11 +24,11 @@
 # class assignment, and a point PASSes only if EACH class meets its
 # own SLO profile (catalog/workloads.yaml) -- the blend is reported,
 # never gated. Rates are quota_fractions of the mix's provider ceiling --
-# min(RPM, TPM / avg tokens per request), see rate-capacity.yaml.
+# min(RPM, TPM / avg tokens per request), see capacity-reference-rate.yaml.
 #
 #   actual workflow traffic mix  (catalog/mixes.yaml)
 #           |
-#   mixed-capacity: every class individually meets its own SLO
+#   capacity-mix-rate: every class individually meets its own SLO
 #           |
 #   R_safe(mix) -> headroom -> R_admission(mix)
 #
@@ -38,14 +38,14 @@
 #   generation-heavy -> R_safe(generation-heavy)
 # -- with weights taken from that workflow's real traffic
 # (`source: production_traffic_profile` in catalog/mixes.yaml):
-#   bedrock-benchmark run mixed-capacity --model <model> --mix <workflow mix>
+#   bedrock-benchmark run capacity-mix-rate --model <model> --mix <workflow mix>
 # The default, 60/30/10, is a REFERENCE EXAMPLE kept fixed for comparing
 # runs over time -- never a global production assumption. Never add up
 # isolated per-class capacities instead.
 # reference: produces the admission envelope (scope: workload_mix) for
 # this mix of reference workloads.
 purpose: reference
-name: mixed-capacity
+name: capacity-mix-rate
 description: |
   Mixed-workload rate calibration: Poisson rate sweep at 0.25x..2.5x of
   the provider ceiling for ONE mix from catalog/mixes.yaml (default: the
@@ -115,7 +115,7 @@ isolation:
     retry_cooldown_s: 120
 
 transport:
-  # Same as rate-capacity: 2.5x the ceiling with long_generation's
+  # Same as capacity-reference-rate: 2.5x the ceiling with long_generation's
   # minute-long streams in flight must not queue on the client pool.
   max_connections: 128
   total_max_attempts: 1

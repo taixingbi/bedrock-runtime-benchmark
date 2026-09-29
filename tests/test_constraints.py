@@ -95,9 +95,9 @@ class SloFileTests(unittest.TestCase):
     def test_custom_slo_file_is_used_by_experiments(self):
         path = _write("profiles:\n  gold: {tpot_p95_ms: 5}\n  silver: {tpot_p95_ms: 6}\n  bronze: {tpot_p95_ms: 7}\n")
         try:
-            self.assertEqual(load_experiment("experiments/workload-shape-calibration.yaml", MICRO, slo_file=path)
+            self.assertEqual(load_experiment("experiments/capacity-shape-concurrency.yaml", MICRO, slo_file=path)
                              .slo_for("long_context_short_answer").tpot_p95_ms, 6)
-            spec = load_experiment("experiments/concurrency-sweep.yaml", MICRO, slo_file=path)
+            spec = load_experiment("experiments/capacity-reference-concurrency.yaml", MICRO, slo_file=path)
             self.assertEqual(spec.slo_for("short_chat").tpot_p95_ms, 5)
             self.assertEqual(spec.slo_for("rag_answer").tpot_p95_ms, 6)
             self.assertEqual(spec.slo_for("long_generation").tpot_p95_ms, 7)
@@ -108,7 +108,7 @@ class SloFileTests(unittest.TestCase):
         path = _write("profiles: {gold: {tpot_p95_ms: 1}}\n")
         try:
             with self.assertRaisesRegex(ValueError, "bronze"):
-                load_experiment("experiments/workload-shape-calibration.yaml", MICRO, slo_file=path)
+                load_experiment("experiments/capacity-shape-concurrency.yaml", MICRO, slo_file=path)
         finally:
             Path(path).unlink()
 
@@ -120,7 +120,7 @@ class SloFileTests(unittest.TestCase):
             "  bronze: {tpot_p95_ms: 70, success_rate_min: 0.999, throttle_rate_max: 0.001, confidence: 0.95}\n"
         )
         try:
-            gate = load_experiment("experiments/mixed-capacity.yaml", MICRO, slo_file=path).slo
+            gate = load_experiment("experiments/capacity-mix-rate.yaml", MICRO, slo_file=path).slo
             self.assertEqual((gate.success_rate_min, gate.throttle_rate_max, gate.confidence), (0.999, 0.001, 0.95))
             self.assertIsNone(gate.tpot_p95_ms)  # latency components always from each class's own profile
         finally:

@@ -61,14 +61,14 @@ class ShippedExperimentTests(unittest.TestCase):
 
     def test_workload_shape_calibration_includes_an_experiment_local_reference_control(self):
         """The control reuses the reference shape without changing other experiments."""
-        spec = load_experiment("experiments/workload-shape-calibration.yaml", MICRO)
+        spec = load_experiment("experiments/capacity-shape-concurrency.yaml", MICRO)
         self.assertEqual([w.name for w in spec.workloads],
                          ["tiny_request", "medium_context", "long_context_short_answer", "very_large_context", "long_generation"])
         self.assertTrue(all(w.role == "characterization" for w in spec.workloads[:-1]))
         control = spec.workloads[-1]
         self.assertEqual((control.input_tokens, control.output_tokens, control.slo_profile,
                           control.latency_p95_ms, control.role), (4096, 1024, "bronze", 60000, "reference_control"))
-        reference = load_experiment("experiments/rate-capacity.yaml", MICRO)
+        reference = load_experiment("experiments/capacity-reference-rate.yaml", MICRO)
         self.assertEqual(next(w.role for w in reference.workloads if w.name == "long_generation"), "reference")
 
     def test_reference_control_override_cannot_change_production_experiments(self):
@@ -81,7 +81,7 @@ class ShippedExperimentTests(unittest.TestCase):
             _load_text(MINIMAL + "workload_roles: {missing: reference_control}\n")
 
     def test_concurrency_sweep_covers_the_three_reference_workloads(self):
-        spec = load_experiment("experiments/concurrency-sweep.yaml", MICRO)
+        spec = load_experiment("experiments/capacity-reference-concurrency.yaml", MICRO)
         self.assertEqual([(w.name, w.slo_profile) for w in spec.workloads],
                          [("short_chat", "gold"), ("rag_answer", "silver"), ("long_generation", "bronze")])
         self.assertEqual(spec.sweep.stop_after_fails, 2)
@@ -91,19 +91,19 @@ class ShippedExperimentTests(unittest.TestCase):
                          (None, 8000, 3000, 2, 120))
 
     def test_mixed_capacity_defines_a_valid_mix(self):
-        spec = load_experiment("experiments/mixed-capacity.yaml", MICRO)
+        spec = load_experiment("experiments/capacity-mix-rate.yaml", MICRO)
         self.assertEqual(spec.mix.weights, {"short_chat": 0.6, "rag_answer": 0.3, "long_generation": 0.1})
 
 
 class ModelBindingTests(unittest.TestCase):
     def test_target_and_quota_come_from_the_model(self):
-        spec = load_experiment("experiments/concurrency-sweep.yaml", PRO)
+        spec = load_experiment("experiments/capacity-reference-concurrency.yaml", PRO)
         self.assertEqual((spec.target.model_id, spec.target.region), ("us.amazon.nova-pro-v1:0", "us-east-1"))
         self.assertEqual((spec.quota_snapshot.rpm, spec.quota_snapshot.tpm), (50, 2_000_000))
 
     def test_quota_fractions_resolve_against_each_models_own_quota(self):
-        micro = load_experiment("experiments/rate-capacity.yaml", MICRO)
-        pro = load_experiment("experiments/rate-capacity.yaml", PRO)
+        micro = load_experiment("experiments/capacity-reference-rate.yaml", MICRO)
+        pro = load_experiment("experiments/capacity-reference-rate.yaml", PRO)
         self.assertEqual(micro.sweep.quota_fractions, pro.sweep.quota_fractions)
         i = micro.sweep.quota_fractions.index(1.0)
         self.assertAlmostEqual(micro.sweep_values("short_chat")[i], 400 / 60, places=3)  # 1.0x ceiling (RPM-bound)
@@ -111,10 +111,10 @@ class ModelBindingTests(unittest.TestCase):
 
     def test_quota_relative_sweep_without_a_quota_fails_clearly(self):
         with self.assertRaisesRegex(ValueError, "quota.rpm"):
-            load_experiment("experiments/rate-capacity.yaml", NO_QUOTA)
+            load_experiment("experiments/capacity-reference-rate.yaml", NO_QUOTA)
 
     def test_concurrency_sweep_needs_no_quota(self):
-        load_experiment("experiments/concurrency-sweep.yaml", NO_QUOTA)
+        load_experiment("experiments/capacity-reference-concurrency.yaml", NO_QUOTA)
 
     def test_experiment_files_with_a_model_are_rejected(self):
         for key in ("target: {model_id: m}\n", "quota_snapshot: {rpm: 1}\n"):
@@ -124,7 +124,7 @@ class ModelBindingTests(unittest.TestCase):
 
 class SloProfileTests(unittest.TestCase):
     def test_workloads_resolve_the_slo_profile_the_catalog_binds(self):
-        spec = load_experiment("experiments/concurrency-sweep.yaml", MICRO)
+        spec = load_experiment("experiments/capacity-reference-concurrency.yaml", MICRO)
         self.assertEqual(spec.slo_for("short_chat").tpot_p95_ms, 40)        # gold
         self.assertEqual(spec.slo_for("rag_answer").tpot_p95_ms, 70)        # silver
         self.assertEqual(spec.slo_for("long_generation").tpot_p95_ms, 120)  # bronze
@@ -132,7 +132,7 @@ class SloProfileTests(unittest.TestCase):
 
 class WorkloadE2ECapTests(unittest.TestCase):
     def test_workload_latency_cap_is_applied_over_its_profile(self):
-        spec = load_experiment("experiments/workload-shape-calibration.yaml", MICRO)
+        spec = load_experiment("experiments/capacity-shape-concurrency.yaml", MICRO)
         for w in spec.workloads:
             with self.subTest(workload=w.name):
                 slo = spec.slo_for(w.name)
@@ -150,16 +150,16 @@ class WorkloadE2ECapTests(unittest.TestCase):
 
 class SloProfileFilterTests(unittest.TestCase):
     def test_isolated_sweep_keeps_only_matching_workloads(self):
-        spec = load_experiment("experiments/concurrency-sweep.yaml", MICRO, only_slo_profiles={"gold"})
+        spec = load_experiment("experiments/capacity-reference-concurrency.yaml", MICRO, only_slo_profiles={"gold"})
         self.assertEqual([w.name for w in spec.workloads], ["short_chat"])
         self.assertEqual(set(spec.provider_ceilings), {"short_chat"})
 
     def test_several_profiles(self):
-        spec = load_experiment("experiments/concurrency-sweep.yaml", MICRO, only_slo_profiles={"gold", "bronze"})
+        spec = load_experiment("experiments/capacity-reference-concurrency.yaml", MICRO, only_slo_profiles={"gold", "bronze"})
         self.assertEqual([w.name for w in spec.workloads], ["short_chat", "long_generation"])
 
     def test_silver_selects_both_silver_shapes(self):
-        spec = load_experiment("experiments/workload-shape-calibration.yaml", MICRO, only_slo_profiles={"silver"})
+        spec = load_experiment("experiments/capacity-shape-concurrency.yaml", MICRO, only_slo_profiles={"silver"})
         self.assertEqual([w.name for w in spec.workloads], ["medium_context", "long_context_short_answer"])
 
     def test_nothing_matching_is_a_skip_not_an_error(self):
@@ -173,14 +173,14 @@ class SloProfileFilterTests(unittest.TestCase):
 
     def test_partial_mix_is_skipped_whole_mix_runs(self):
         with self.assertRaisesRegex(NoMatchingWorkloads, "partial mix"):
-            load_experiment("experiments/mixed-capacity.yaml", MICRO, only_slo_profiles={"gold"})
-        spec = load_experiment("experiments/mixed-capacity.yaml", MICRO,
+            load_experiment("experiments/capacity-mix-rate.yaml", MICRO, only_slo_profiles={"gold"})
+        spec = load_experiment("experiments/capacity-mix-rate.yaml", MICRO,
                                only_slo_profiles={"gold", "silver", "bronze"})
         self.assertEqual(len(spec.workloads), 3)
 
     def test_unknown_profile_is_an_error(self):
         with self.assertRaisesRegex(ValueError, "gld"):
-            load_experiment("experiments/rate-capacity.yaml", MICRO, only_slo_profiles={"gld"})
+            load_experiment("experiments/capacity-reference-rate.yaml", MICRO, only_slo_profiles={"gld"})
 
 
 class ValidationTests(unittest.TestCase):

@@ -11,7 +11,7 @@ from bedrock_benchmark.workload import WorkloadProfile
 from .fakes import FakeBedrockRuntimeClient
 
 MICRO = ModelConfig(name="nova-micro", model_id="us.amazon.nova-micro-v1:0", quota_rpm=400, quota_tpm=8_000_000)
-SPEC = load_experiment("experiments/rate-capacity.yaml", MICRO)
+SPEC = load_experiment("experiments/capacity-reference-rate.yaml", MICRO)
 CHAT = WorkloadProfile(name="short_chat", input_tokens=512, output_tokens=64, slo_profile="gold", latency_p95_ms=3000)
 GOLD = SloConfig(ttft_p95_ms=800, tpot_p95_ms=40, latency_p95_ms=3000, success_rate_min=0.995, throttle_rate_max=0.001)
 
@@ -59,7 +59,7 @@ class EvaluateTests(unittest.TestCase):
 
 class PilotRunTests(unittest.TestCase):
     def test_union_of_planned_workloads_respects_the_slo_filter(self):
-        paths = ["experiments/rate-capacity.yaml", "experiments/workload-shape-calibration.yaml", "experiments/mixed-capacity.yaml"]
+        paths = ["experiments/capacity-reference-rate.yaml", "experiments/capacity-shape-concurrency.yaml", "experiments/capacity-mix-rate.yaml"]
         all_ = pilot_workloads(paths, MICRO)
         self.assertEqual([w.name for w in all_.workloads],
                          ["short_chat", "rag_answer", "long_generation", "tiny_request", "medium_context",
@@ -71,7 +71,7 @@ class PilotRunTests(unittest.TestCase):
         """The fake returns 5 output tokens without a stop reason -- the
         pilot must catch that before any long run."""
         factory = lambda spec: BedrockConverseTarget(model_id="m", client=FakeBedrockRuntimeClient())
-        report = run_pilot_sync(["experiments/concurrency-sweep.yaml"], [MICRO], requests_per_workload=2,
+        report = run_pilot_sync(["experiments/capacity-reference-concurrency.yaml"], [MICRO], requests_per_workload=2,
                                 target_factory=factory)
         self.assertEqual([(c.workload, c.requests, c.status) for c in report.checks],
                          [(w, 2, FAIL) for w in ("short_chat", "rag_answer", "long_generation")])

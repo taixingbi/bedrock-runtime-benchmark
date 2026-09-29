@@ -4,7 +4,7 @@
 # traffic -> recovery interval -> healthy probe. Recovery is not assumed to reset
 # provider state. Two trials reverse arm order; both arms use the same target rate.
 purpose: characterization
-name: long-context-history
+name: diagnostic-context-history
 description: |
   Compare large-context open-loop traffic after idle and after offered overload
   plus verified low-load recovery. Continuous 15-minute observations with 30s

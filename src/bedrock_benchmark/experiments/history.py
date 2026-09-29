@@ -8,6 +8,7 @@ from __future__ import annotations
 import math
 
 from ..analysis.capacity import SweepPoint
+from ..analysis.observability import describe_metrics
 from ..analysis.metrics import MeasurementWindow, compute_run_metrics
 from ..runners.rate import RateRunner
 
@@ -25,7 +26,12 @@ def describe_window(rows, window, slo, offered_rps):
     for _, delta in events:
         active += delta
         peak = max(peak, active)
+    common = describe_metrics(
+        rows, window, configured_offered_rps=offered_rps,
+        slo_by_workload={name: (slo.ttft_p95_ms, slo.latency_p95_ms, slo.tpot_p95_ms)
+                         for name in ({r.tags.get("workload") for r in rows} or {None})})
     return {
+        "metrics": common,
         "start": window.start, "end": window.end, "duration_s": window.duration_s,
         "offered_rps": offered_rps, "n": m.n,
         "scheduled_rps": len(cohort) / window.duration_s,

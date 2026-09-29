@@ -206,3 +206,63 @@ class ScheduledAtTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StreamingObservationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_empty_delta_is_not_first_text_and_metadata_is_not_last_text(self):
+        class Clock:
+            wall_start = 100
+            def __init__(self):
+                self.values = iter([.2, .6, 1.0])
+            def elapsed(self):
+                return next(self.values)
+            def wall_at(self, elapsed):
+                return self.wall_start + elapsed
+
+        client = FakeBedrockRuntimeClient(stream_events=[
+            {"contentBlockDelta": {"delta": {"text": ""}}},
+            {"contentBlockDelta": {"delta": {"text": "a"}}},
+            {"contentBlockDelta": {"delta": {"text": "b"}}},
+            {"metadata": {"usage": {"inputTokens": 20, "outputTokens": 3}}},
+        ])
+        target = BedrockConverseTarget(model_id="m", client=client)
+        try:
+            with patch("bedrock_benchmark.client._Clock", Clock):
+                result = await target.invoke(InvokeRequest(prompt="hello", max_tokens=3))
+            self.assertEqual(result.ttft_ms, 200)
+            self.assertEqual(result.last_text_latency_ms, 600)
+            self.assertEqual(result.latency_ms, 1000)
+            self.assertEqual(result.last_text_at, 100.6)
+            self.assertTrue(result.stream)
+            self.assertIsNotNone(result.submitted_at)
+        finally:
+            target.close()
+
+    async def test_stream_failure_preserves_partial_text_timing(self):
+        class Client:
+            def converse_stream(self, **kw):
+                def events():
+                    yield {"contentBlockDelta": {"delta": {"text": "partial"}}}
+                    raise RuntimeError("connection lost")
+                return {"stream": events()}
+        target = BedrockConverseTarget(model_id="m", client=Client())
+        try:
+            result = await target.invoke(InvokeRequest(prompt="hello", max_tokens=10))
+            self.assertFalse(result.success)
+            self.assertEqual(result.stream_failure_stage, "after_first_text")
+            self.assertIsNotNone(result.first_token_at)
+            self.assertIsNotNone(result.ttft_ms)
+            self.assertEqual(result.last_text_at, result.first_token_at)
+            self.assertIsNone(result.output_tokens)  # no invented usage for partial output
+        finally:
+            target.close()
+
+    async def test_pre_text_failure_records_stage(self):
+        target = BedrockConverseTarget(model_id="m", client=FakeBedrockRuntimeClient(error=ThrottlingError()))
+        try:
+            result = await target.invoke(InvokeRequest(prompt="hello", max_tokens=10))
+            self.assertEqual(result.stream_failure_stage, "before_first_text")
+            self.assertIsNone(result.last_text_at)
+            self.assertTrue(result.throttled)
+        finally:
+            target.close()

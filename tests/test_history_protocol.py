@@ -13,7 +13,7 @@ MODEL = ModelConfig(name="test", model_id="m", quota_rpm=400, quota_tpm=8000000)
 
 
 def test_history_pairs_rate_and_seed_reverses_order_and_does_not_restart_bins(monkeypatch):
-    spec = load_experiment("experiments/long-context-history.yaml", MODEL)
+    spec = load_experiment("experiments/diagnostic-context-history.yaml", MODEL)
     runs, recoveries, raw = [], [], []
 
     class Target:
@@ -51,10 +51,14 @@ def test_history_pairs_rate_and_seed_reverses_order_and_does_not_restart_bins(mo
     assert all(not r.tags['measured'] for r in raw if r.tags['phase'] == 'history_overload')
     assert sum(b['n'] for b in arms[0]['bins']) == arms[0]['aggregate']['n']
     assert estimated_duration_s(spec) == 10800
+    for arm in arms:
+        assert "load_state" in arm["aggregate"]["metrics"]
+        assert "tpot_ms" in arm["bins"][0]["metrics"]["latency"]
+        assert sum(b["metrics"]["reliability"]["n"] for b in arm["bins"]) == arm["aggregate"]["metrics"]["reliability"]["n"]
 
 
 def test_unhealthy_baseline_does_not_send_observation_traffic():
-    spec = load_experiment("experiments/long-context-history.yaml", MODEL)
+    spec = load_experiment("experiments/diagnostic-context-history.yaml", MODEL)
     async def unhealthy(*args): return False
     arms = asyncio.run(history.run_history_comparison(spec, None, spec.workloads[0], [], unhealthy))
     assert arms[0]['status'] == 'baseline_unhealthy'
@@ -62,7 +66,7 @@ def test_unhealthy_baseline_does_not_send_observation_traffic():
 
 
 def test_bin_counts_separate_arrival_start_and_completion():
-    spec = load_experiment("experiments/long-context-history.yaml", MODEL)
+    spec = load_experiment("experiments/diagnostic-context-history.yaml", MODEL)
     rows = [RequestResult(request_id='late', scheduled_at=29, started_at=31, completed_at=32,
                           latency_ms=1000, throttled=True, success=False)]
     first = history.describe_window(rows, MeasurementWindow(0,30), spec.slo_for(spec.workloads[0].name), 1)
@@ -79,7 +83,7 @@ def test_history_executor_emits_descriptive_artifact_without_capacity(monkeypatc
     from bedrock_benchmark.contract import schema_for
     from bedrock_benchmark.summary import summarize_entry
     from .fakes import FakeBedrockRuntimeClient
-    spec = load_experiment('experiments/long-context-history.yaml', MODEL)
+    spec = load_experiment('experiments/diagnostic-context-history.yaml', MODEL)
     seen = []
     async def comparison(spec, target, subject, raw, recover, on_progress):
         seen.append(subject.name)
@@ -101,10 +105,18 @@ def test_history_executor_emits_descriptive_artifact_without_capacity(monkeypatc
 
 
 def test_medium_retest_uses_continuous_long_windows():
-    spec = load_experiment('experiments/workload-shape-calibration.yaml', MODEL,
+    spec = load_experiment('experiments/capacity-shape-concurrency.yaml', MODEL,
                            retest={'workload': 'medium_context', 'concurrency': 7, 'duration_s': 1800})
     assert spec.subject_names == ['medium_context']
     assert spec.sweep.values == [7]
     assert spec.duration_s == spec.confirmation.min_steady_state_duration_s == 1800
     assert spec.purpose == 'admission_calibration'
     assert spec.confirmation.max_requests == spec.confirmation.max_duration_s == 'auto'
+
+
+def test_empty_history_window_has_zero_goodput_and_unknown_reliability():
+    spec = load_experiment("experiments/diagnostic-context-history.yaml", MODEL)
+    m = history.describe_window([], MeasurementWindow(0, 30),
+                                spec.slo_for(spec.workloads[0].name), 1)["metrics"]
+    assert m["throughput"]["slo_goodput_rps"] == 0
+    assert m["reliability"]["success_rate"] is None

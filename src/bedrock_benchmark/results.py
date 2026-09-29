@@ -50,6 +50,12 @@ class RequestResult:
     # concurrency/rps value) -- kept generic rather than named fields
     # here since which sweep dimension applies varies per experiment.
     tags: Dict[str, Any] = field(default_factory=dict)
+    # Submission includes executor queueing; started_at is the actual SDK call.
+    submitted_at: Optional[float] = None
+    stream: Optional[bool] = None
+    last_text_at: Optional[float] = None
+    last_text_latency_ms: Optional[float] = None
+    stream_failure_stage: Optional[str] = None
 
 
 @dataclass

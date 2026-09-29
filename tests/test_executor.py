@@ -572,7 +572,7 @@ class CandidateSelectionTests(unittest.TestCase):
         from bedrock_benchmark.experiments.schema import load_experiment
         from bedrock_benchmark.models import load_models
 
-        spec = load_experiment("experiments/rate-capacity.yaml", load_models(names=["nova-micro"])[0])
+        spec = load_experiment("experiments/capacity-reference-rate.yaml", load_models(names=["nova-micro"])[0])
         values = spec.sweep_values("short_chat")
         m = RunMetrics(n=1, success_rate=1, throttle_rate=0, timeout_rate=0, request_throughput_rps=1,
                        token_throughput_tps=None, latency_p50_ms=1, latency_p95_ms=1, latency_p99_ms=1)

@@ -145,7 +145,7 @@ def test_minimum_duration_is_a_finite_nonnegative_number(minimum):
     from dataclasses import replace
     from bedrock_benchmark.experiments.schema import _validate, load_experiment
     from bedrock_benchmark.models import ModelConfig
-    spec = load_experiment("experiments/workload-shape-calibration.yaml", ModelConfig(name="m", model_id="m"))
+    spec = load_experiment("experiments/capacity-shape-concurrency.yaml", ModelConfig(name="m", model_id="m"))
     spec.confirmation = replace(spec.confirmation, min_steady_state_duration_s=minimum)
     with pytest.raises(ValueError, match="min_steady_state_duration_s"):
         _validate(spec)

@@ -38,6 +38,12 @@
           "temporal_validation"
         ],
         "properties": {
+          "mode": {
+            "enum": ["sweep", "sustain", "history"]
+          },
+          "comparison": {
+            "type": "object"
+          },
           "kind": {
             "enum": [
               "concurrency",

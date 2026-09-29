@@ -15,13 +15,13 @@
 # -- so one list spans 1..48, and stop_after_fails ends each class's
 # discovery two points past its saturation instead of sweeping a
 # throttle storm. For a low-quota model even C=1 can exceed quota --
-# that's a real result, and rate-capacity.yaml resolves such a model.
+# that's a real result, and capacity-reference-rate.yaml resolves such a model.
 #
 # transport.total_max_attempts=1: the SDK must never retry, or a real
 # Bedrock 429 would be absorbed into an eventual 200 and the measured
 # throttle rate understated (see client.py's TransportConfig).
 purpose: reference
-name: concurrency-sweep
+name: capacity-reference-concurrency
 description: |
   The three reference workloads (short_chat gold, rag_answer silver,
   long_generation bronze), each swept alone at concurrency 1..48 until

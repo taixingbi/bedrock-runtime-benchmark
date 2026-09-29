@@ -55,10 +55,10 @@ every experiment x every model -> capacity-profile.yaml (judged against the cons
 
 | Experiment | Purpose | Sweep | Per model |
 |---|---|---|---|
-| `rate-capacity.yaml` | reference | 0.25x-2.5x ceiling, one reference workload per tier (`short_chat` gold, `rag_answer` silver, `long_generation` bronze) -- the canonical production-envelope run | ~57 min |
-| `concurrency-sweep.yaml` | reference | each of `short_chat` / `rag_answer` / `long_generation` alone, concurrency 1..48 until 2 consecutive FAILs; confirms the top 2 non-failing concurrencies (highest first, e.g. C=4 then C=2) | ~1.5 h |
-| `mixed-capacity.yaml` | reference | mixed-rate calibration: 0.25x-2.5x ceiling for ONE mix, 60% `short_chat` / 30% `rag_answer` / 10% `long_generation` | ~32 min |
-| `workload-shape-calibration.yaml` | admission_calibration | the 4 non-reference shapes x concurrency 1..48 until 2 consecutive FAILs, each under its own SLO | ~1-2 h |
+| `capacity-reference-rate.yaml` | reference | 0.25x-2.5x ceiling, one reference workload per tier (`short_chat` gold, `rag_answer` silver, `long_generation` bronze) -- the canonical production-envelope run | ~57 min |
+| `capacity-reference-concurrency.yaml` | reference | each of `short_chat` / `rag_answer` / `long_generation` alone, concurrency 1..48 until 2 consecutive FAILs; confirms the top 2 non-failing concurrencies (highest first, e.g. C=4 then C=2) | ~1.5 h |
+| `capacity-mix-rate.yaml` | reference | mixed-rate calibration: 0.25x-2.5x ceiling for ONE mix, 60% `short_chat` / 30% `rag_answer` / 10% `long_generation` | ~32 min |
+| `capacity-shape-concurrency.yaml` | admission_calibration | the 4 non-reference shapes x concurrency 1..48 until 2 consecutive FAILs, each under its own SLO | ~1-2 h |
 
 Every experiment runs adaptive confirmation at its candidate after
 discovery (see [SLO statistics](slo-statistics.md)) -- without it one
@@ -91,7 +91,7 @@ workloads:
   long_context_short_answer: {input_tokens: 8192,  output_tokens: 64,   slo_profile: silver, latency_p95_ms: 8000,  role: characterization}
   very_large_context:        {input_tokens: 16384, output_tokens: 256,  slo_profile: bronze, latency_p95_ms: 20000, role: characterization}
 
-# experiments/workload-shape-calibration.yaml -- the four non-reference shapes
+# experiments/capacity-shape-concurrency.yaml -- the four non-reference shapes
 workloads: [tiny_request, medium_context, long_context_short_answer, very_large_context]
 ```
 
@@ -111,8 +111,8 @@ four), and every experiment declares a `purpose`:
 
 | `purpose` | Experiments | Workloads | Profile carries | Needs `confirmation:` |
 |---|---|---|---|---|
-| **reference** | `rate-capacity`, `concurrency-sweep`, `mixed-capacity` | reference only (enforced) | measurement **and** `recommendation.admission_envelope` | yes |
-| **admission_calibration** | `workload-shape-calibration` | any | measurement **and** a confirmed `calibration_point` per shape; `admission_envelope: null` | yes |
+| **reference** | `capacity-reference-rate`, `capacity-reference-concurrency`, `capacity-mix-rate` | reference only (enforced) | measurement **and** `recommendation.admission_envelope` | yes |
+| **admission_calibration** | `capacity-shape-concurrency` | any | measurement **and** a confirmed `calibration_point` per shape; `admission_envelope: null` | yes |
 | **characterization** | (none shipped) | any | measurement only | no |
 
 **admission_calibration** answers the gateway question "what safe
@@ -129,10 +129,10 @@ admission evidence -- calibration_point -> workload-specific admission evidence 
 
 ```
 eval-bedrock-runtime-benchmark (Benchmark -> Bedrock, no gateway in the path)
-  concurrency-sweep           ->  C_admission per reference workload       ┐
-  rate-capacity               ->  R_admission per reference workload       │  backend admission
-  workload-shape-calibration  ->  extra workload-shape calibration points  │  evidence
-  mixed-capacity              ->  R_safe for one explicit workload mix     ┘
+  capacity-reference-concurrency           ->  C_admission per reference workload       ┐
+  capacity-reference-rate               ->  R_admission per reference workload       │  backend admission
+  capacity-shape-concurrency  ->  extra workload-shape calibration points  │  evidence
+  capacity-mix-rate              ->  R_safe for one explicit workload mix     ┘
           |
 gateway derives its policy / config from that evidence
           |
@@ -140,7 +140,7 @@ eval-bedrock-platform (-> gateway -> Bedrock)
   validates the deployed gateway policy under production-like mixed traffic
 ```
 
-Rates are kept apart -- `attempted_rps` (inflated by fast 429s under overload), `successful_rps` (served), `throttled_rps`, `slo_goodput_rps` -- plus `ceiling_ratio` (served / nominal ceiling); all are observations of what concurrency and latency produced, not a tested rate like `rate-capacity`'s `sustained_rps`. Different workload shapes may require different concurrency to reach the same provider rate ceiling; therefore concurrency must not be interpreted as a workload cost weight. Calibration points are isolated-workload measurements; per-shape C_safe values don't combine mathematically into a global policy, and any policy derived from them must be validated under representative mixed traffic through the deployed gateway (`eval-bedrock-platform`) before production use -- this repo calls Bedrock directly and never validates gateway policy.
+Rates are kept apart -- `attempted_rps` (inflated by fast 429s under overload), `successful_rps` (served), `throttled_rps`, `slo_goodput_rps` -- plus `ceiling_ratio` (served / nominal ceiling); all are observations of what concurrency and latency produced, not a tested rate like `capacity-reference-rate`'s `sustained_rps`. Different workload shapes may require different concurrency to reach the same provider rate ceiling; therefore concurrency must not be interpreted as a workload cost weight. Calibration points are isolated-workload measurements; per-shape C_safe values don't combine mathematically into a global policy, and any policy derived from them must be validated under representative mixed traffic through the deployed gateway (`eval-bedrock-platform`) before production use -- this repo calls Bedrock directly and never validates gateway policy.
 
 **Next step for shape research (not nova-micro).** On nova-micro every
 shape hits the 400 RPM quota first, so this experiment measures
@@ -157,27 +157,27 @@ Responsibilities, without overlap:
 
 | Experiment | Produces | Gateway use |
 |---|---|---|
-| `concurrency-sweep` | per-class isolated `max_inflight` for the three reference workloads | reference workload `C_admission` |
-| `rate-capacity` | per-class isolated `sustained_rps` for the same three | reference workload `R_admission` |
-| `workload-shape-calibration` | confirmed `calibration_point` per non-reference workload shape (no envelope, no headroom) | extra workload-shape admission calibration points |
-| `mixed-capacity` | `sustained_rps` for ONE explicit mix (`scope: workload_mix`) | mix-scoped total-rate `R_admission(mix)` |
+| `capacity-reference-concurrency` | per-class isolated `max_inflight` for the three reference workloads | reference workload `C_admission` |
+| `capacity-reference-rate` | per-class isolated `sustained_rps` for the same three | reference workload `R_admission` |
+| `capacity-shape-concurrency` | confirmed `calibration_point` per non-reference workload shape (no envelope, no headroom) | extra workload-shape admission calibration points |
+| `capacity-mix-rate` | `sustained_rps` for ONE explicit mix (`scope: workload_mix`) | mix-scoped total-rate `R_admission(mix)` |
 
 None of these validates gateway policy: every call goes straight to
 Bedrock. The benchmark produces backend admission evidence; the gateway
 derives its config from it; `eval-bedrock-platform` validates the
 deployed gateway under production-like mixed traffic.
 
-**One mix is one number.** `mixed-capacity`'s 60/30/10 gives
+**One mix is one number.** `capacity-mix-rate`'s 60/30/10 gives
 R_safe(60/30/10), not a global R_safe -- and after headroom,
 R_admission(60/30/10). A chat-heavy, balanced or generation-heavy mix
 can need a very different R_admission. For a shifting production mix,
 measure the representative mixes and take the minimum across them as a
 conservative limit, or configure per known traffic profile. Each mix is
-its own experiment file (e.g. `mixed-capacity-chat-heavy.yaml`) -- one
+its own experiment file (e.g. `capacity-mix-rate-chat-heavy.yaml`) -- one
 `mix:` per file keeps confirmation, sample sizes and the report simple;
 only 60/30/10 is shipped.
 
-Per-class `max_inflight` (and `sustained_rps`) values are **isolated** limits -- each holds for that class running alone (`scope: isolated_workload_class`). They are not additive across classes and are not a global limit; only `mixed-capacity` (`scope: workload_mix`) measures classes together.
+Per-class `max_inflight` (and `sustained_rps`) values are **isolated** limits -- each holds for that class running alone (`scope: isolated_workload_class`). They are not additive across classes and are not a global limit; only `capacity-mix-rate` (`scope: workload_mix`) measures classes together.
 
 **Concurrency ranges.** Concurrency is absolute, but the quota ceiling
 is reached at C ~= ceiling_rps x latency (Little's law) -- on nova-micro
@@ -201,15 +201,15 @@ is the real edge rather than the coarse grid point below it (confirmed
 11 -> max_inflight 8, vs 8 -> 6). Refinement points appear in
 `sweep_points` with `phase: refinement`; they are discovery-class data.
 
-`max_inflight` (`concurrency-sweep`) and `sustained_rps`
-(`rate-capacity`) are two independently confirmed guardrails -- each
+`max_inflight` (`capacity-reference-concurrency`) and `sustained_rps`
+(`capacity-reference-rate`) are two independently confirmed guardrails -- each
 experiment controls one dimension and lets the other emerge. A consumer
 enforces both, which is conservative; it is not a jointly validated 2-D
 (C, R) surface.
 
 ### Planned: joint-capacity
 
-Not built. Today `concurrency-sweep` yields C_safe and `rate-capacity`
+Not built. Today `capacity-reference-concurrency` yields C_safe and `capacity-reference-rate`
 yields R_safe, each with the other dimension left free. `joint-capacity`
 would validate (concurrency, offered_rps) combinations together --
 open-loop arrivals at rate R with at most C in flight -- to get a real
@@ -225,12 +225,12 @@ python3.11 -m venv .venv && .venv/bin/pip install -e ".[dev]"   # same install C
 
 bedrock-benchmark list                                                  # models + experiments, no AWS calls
 bedrock-benchmark doctor --model nova-micro                             # ready? identity, access, quota, config
-bedrock-benchmark plan concurrency-sweep --model nova-micro             # validate + estimate, no requests
-bedrock-benchmark pilot concurrency-sweep --model nova-micro            # ~30 s smoke test
-bedrock-benchmark run concurrency-sweep --model nova-micro              # the benchmark
+bedrock-benchmark plan capacity-reference-concurrency --model nova-micro             # validate + estimate, no requests
+bedrock-benchmark pilot capacity-reference-concurrency --model nova-micro            # ~30 s smoke test
+bedrock-benchmark run capacity-reference-concurrency --model nova-micro              # the benchmark
 bedrock-benchmark run all --all-models                                  # every experiment x every enabled model (explicit)
-bedrock-benchmark run rate-capacity --model nova-micro --model nova-pro
-bedrock-benchmark run concurrency-sweep --model nova-micro --slo-profile gold   # only gold workloads
+bedrock-benchmark run capacity-reference-rate --model nova-micro --model nova-pro
+bedrock-benchmark run capacity-reference-concurrency --model nova-micro --slo-profile gold   # only gold workloads
 ```
 
 Experiments are named, never pathed: `bedrock-benchmark` (`src/bedrock_benchmark/cli.py`)
@@ -241,7 +241,7 @@ backward compatibility).
 
 `--slo-profile NAME` (repeatable) runs only the workloads bound to that
 profile in `catalog/workloads.yaml`: an isolated sweep keeps its
-matching workloads (`concurrency-sweep --slo-profile gold` runs just
+matching workloads (`capacity-reference-concurrency --slo-profile gold` runs just
 `short_chat`); a mix runs only if every class matches -- a partial mix
 is a different mix, so it's skipped; an experiment with nothing
 matching is skipped. The plan lists every skip and why.
@@ -274,8 +274,8 @@ Results are grouped by model:
 ```
 results/run-all-<timestamp>/        # run.py: results/
   nova-micro/
-    concurrency-sweep-<id>.jsonl
-    concurrency-sweep-<id>-capacity-profile.yaml
+    capacity-reference-concurrency-<id>.jsonl
+    capacity-reference-concurrency-<id>-capacity-profile.yaml
     ...
   nova-pro/
     ...

@@ -128,7 +128,7 @@ class SloProfileFilterBatchTests(unittest.TestCase):
         micro = load_models(names=["nova-micro"])
         planned = plan(paths, micro, only_slo_profiles={"gold"})
         skipped = {p.experiment: p.skip_reason for p in planned if p.skip_reason}
-        self.assertEqual(set(skipped), {"mixed-capacity", "long-context-history"})
+        self.assertEqual(set(skipped), {"capacity-mix-rate", "diagnostic-context-history"})
         proc = subprocess.run(
             [sys.executable, "scripts/run_all.py", "--dry-run", "--model", "nova-micro", "--slo-profile", "gold"],
             capture_output=True, text=True,
@@ -164,13 +164,13 @@ class SloProfileFilterBatchTests(unittest.TestCase):
 class PlanTests(unittest.TestCase):
     def test_estimate_counts_subjects_points_repetitions_warmup_and_window(self):
         micro = load_models(names=["nova-micro"])[0]
-        spec = load_experiment("experiments/workload-shape-calibration.yaml", micro)  # 5 workloads x (10 + 4 refinement) points
+        spec = load_experiment("experiments/capacity-shape-concurrency.yaml", micro)  # 5 workloads x (10 + 4 refinement) points
         spec.confirmation = None
         # + per shape: 120 s recovery + a 20 s probe before each of up to 4 refinement points, a 20 s
         # probe at the start; 120 s between shapes
         self.assertEqual(estimated_duration_s(spec),
                          5 * ((10 + 4) * 1 * (10 + 90) + 4 * (120 + 20) + 20) + 4 * 120)
-        mixed = load_experiment("experiments/mixed-capacity.yaml", micro)  # a mix is ONE subject
+        mixed = load_experiment("experiments/capacity-mix-rate.yaml", micro)  # a mix is ONE subject
         mixed.confirmation = None
         self.assertEqual(estimated_duration_s(mixed), 20 + 1 * 8 * 1 * (10 + 90))  # + the start probe
 
@@ -183,7 +183,7 @@ class PlanTests(unittest.TestCase):
         for the highest candidate only (assumed to PASS)
         -- plus, per shape, the 120 s cooldown and 60 s of conditioning."""
         micro = load_models(names=["nova-micro"])[0]
-        spec = load_experiment("experiments/workload-shape-calibration.yaml", micro)
+        spec = load_experiment("experiments/capacity-shape-concurrency.yaml", micro)
         self.assertEqual(estimated_duration_s(spec),
                          5 * ((10 + 4) * 100 + 4 * (120 + 20) + 20) + (8 + 4 + 4 + 4 + 4) * 100
                          + 5 * (120 + 20 + 60) + 4 * 120)
@@ -193,7 +193,7 @@ class PlanTests(unittest.TestCase):
         3,688 / 0.6 = 6,147 requests: 11 reps of ~600 -- inside the mix's
         raised max_repetitions (16)."""
         micro = load_models(names=["nova-micro"])[0]
-        mixed = load_experiment("experiments/mixed-capacity.yaml", micro)
+        mixed = load_experiment("experiments/capacity-mix-rate.yaml", micro)
         # + start probe; cooldown, probe, conditioning before the candidate
         self.assertEqual(estimated_duration_s(mixed), 20 + 8 * 100 + 11 * 100 + 120 + 20 + 60)
 
@@ -203,7 +203,7 @@ class PlanTests(unittest.TestCase):
         gold 3,688 -> 7, silver 736 -> 2, bronze 368 -> 1 -- plus, per
         workload, 120 s cooldown + 60 s conditioning, and 120 s between workloads."""
         micro = load_models(names=["nova-micro"])[0]
-        spec = load_experiment("experiments/rate-capacity.yaml", micro)
+        spec = load_experiment("experiments/capacity-reference-rate.yaml", micro)
         self.assertEqual([w.slo_profile for w in spec.workloads], ["gold", "silver", "bronze"])
         self.assertEqual(estimated_duration_s(spec),
                          3 * (20 + 8 * 100) + (7 + 2 + 1) * 100 + 3 * (120 + 20 + 60) + 2 * 120)
@@ -220,7 +220,7 @@ class CliTests(unittest.TestCase):
     def test_run_all_dry_run_prints_the_plan_and_calls_nothing(self):
         proc = subprocess.run([sys.executable, "scripts/run_all.py", "--dry-run"], capture_output=True, text=True)
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        for name in ("nova-micro", "qwen3-32b", "rate-capacity", "run sequentially"):
+        for name in ("nova-micro", "qwen3-32b", "capacity-reference-rate", "run sequentially"):
             self.assertIn(name, proc.stdout)
 
     def test_unknown_experiment_paths_are_a_clear_error_not_a_traceback(self):

@@ -5,7 +5,7 @@ after another, then print a summary table.
     python scripts/run_all.py --dry-run                        # plan + time estimate, no AWS calls
     python scripts/run_all.py                                  # all experiments x all enabled models
     python scripts/run_all.py --model nova-micro --model nova-pro
-    python scripts/run_all.py experiments/rate-capacity.yaml   # one experiment, all models
+    python scripts/run_all.py experiments/capacity-reference-rate.yaml   # one experiment, all models
     python scripts/run_all.py --model nova-micro --slo-profile gold   # only gold workloads
     python scripts/run_all.py --model nova-micro --pilot         # ~30 s smoke test, no batch
 

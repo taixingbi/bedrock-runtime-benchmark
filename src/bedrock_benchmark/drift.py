@@ -5,7 +5,8 @@ One capacity profile is a SINGLE-RUN OPERATING ENVELOPE: one snapshot of
 provider conditions (model + Bedrock serving + routing + quota + the
 conditions at measured_at). The same envelope measured this morning,
 tonight and next week can differ. This module lines repeated profiles up
-per (model, experiment, workload/mix, sweep kind) and states, as a
+per model, experiment, workload/mix, sweep kind, mode, candidate and
+measurement duration, and states, as a
 `temporal_validation` block, what the runs support together:
 
   runs / days_observed / utc_hours_observed    how much evidence, over what time
@@ -31,6 +32,7 @@ excluded. A profile without `environment.measured_at`
 """
 from __future__ import annotations
 
+import json
 import statistics
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
@@ -84,6 +86,23 @@ def summarize(paths: Iterable[str], *, stability_threshold_pct: float = 20.0, mi
         env = profile.get("environment") or {}
         measured = (env.get("measured_at") or {}).get("start")
         model = (profile.get("model") or {}).get("name") or (profile.get("model") or {}).get("model_id")
+        measurement = profile.get("measurement") or {}
+        retest = measurement.get("retest") or {}
+        # Historical filenames/experiment names stay untouched and are not
+        # automatically pooled with renamed experiments.
+        legacy_sustain = str(profile.get("experiment", "")).endswith("-sustain")
+        mode = profile.get("mode") or ("sustain" if retest or legacy_sustain else
+                                       "history" if measurement.get("history_protocol") else "sweep")
+        comparison = {
+            "mode": mode,
+            "window_s": measurement.get("window_s"),
+            "min_steady_state_duration_s": (measurement.get("confirmation") or {}).get("min_steady_state_duration_s"),
+            "candidate_concurrency": (retest.get("concurrency") if retest else
+                                      (profile.get("sweep") or {}).get("values")) if mode == "sustain" else None,
+            "workload": retest.get("workload"),
+            "duration_s": retest.get("duration_s"),
+        }
+        comparison_key = json.dumps(comparison, sort_keys=True)
         subjects = [("class", n, e) for n, e in (profile.get("workload_classes") or {}).items()]
         subjects += [("mix", n, e) for n, e in (profile.get("mixed_workloads") or {}).items()]
         for scope, name, entry in subjects:
@@ -94,7 +113,7 @@ def summarize(paths: Iterable[str], *, stability_threshold_pct: float = 20.0, mi
                 if "recommendation" in entry:  # v11+: policy lives in the recommendation block
                     envelope = (entry["recommendation"] or {}).get("admission_envelope")
                     production = None if envelope is None else envelope.get(_UNITS[kind][1])
-                groups.setdefault((model, profile.get("experiment"), scope, name, kind), []).append({
+                groups.setdefault((model, profile.get("experiment"), scope, name, kind, comparison_key), []).append({
                     "measured_at": measured, "confirmed": confirmed, "admission": production,
                     "git_commit": env.get("git_commit"), "profile": path,
                     # v23+: a run whose provider never recovered supports no conclusion.
@@ -102,7 +121,7 @@ def summarize(paths: Iterable[str], *, stability_threshold_pct: float = 20.0, mi
                 })
 
     report = []
-    for (model, experiment, scope, name, kind), all_runs in sorted(groups.items(), key=lambda kv: tuple(map(str, kv[0]))):
+    for (model, experiment, scope, name, kind, comparison_key), all_runs in sorted(groups.items(), key=lambda kv: tuple(map(str, kv[0]))):
         all_runs.sort(key=lambda r: r["measured_at"] or "")
         # Only VALID measurements are evidence: an invalid run (provider never
         # recovered) is listed but counts toward nothing -- not as a
@@ -138,8 +157,10 @@ def summarize(paths: Iterable[str], *, stability_threshold_pct: float = 20.0, mi
             tv.get("conservative_admission")
             if tv["envelope"] in ("stable_operating_envelope", "unstable_operating_envelope") else None)
         tv["criteria"] = {"min_runs": min_runs, "min_days": min_days, "max_spread_pct": stability_threshold_pct}
+        comparison = json.loads(comparison_key)
         report.append({
             "model": model, "experiment": experiment, scope: name, "kind": kind,
+            "mode": comparison["mode"], "comparison": comparison,
             "temporal_validation": tv,
             "runs": [{k: v for k, v in r.items() if v is not None} for r in all_runs],
         })
@@ -187,7 +208,11 @@ def format_temporal(profile: dict) -> str:
         tv = e["temporal_validation"]
         name = e.get("class") or e.get("mix")
         use = tv.get("production_capacity_input")
-        lines.append(f"  {e['model']} / {e['experiment']} / {name} [{e['kind']}]: {e['status']}  "
+        details = ", ".join(f"{key}={value}" for key, value in (e.get("comparison") or {}).items()
+                            if value is not None and key not in ("mode", "workload"))
+        lines.append(f"  {e['model']} / {e['experiment']} / {name} [{e['kind']}; mode={e.get('mode', 'sweep')}]: {e['status']}  "
                      f"runs={tv['runs']} days={tv['days_observed']} invalid={tv.get('invalid_runs', 0)}  "
                      f"production_capacity_input={use if use else 'none'}")
+        if details:
+            lines.append(f"    {details}")
     return "\n".join(lines)

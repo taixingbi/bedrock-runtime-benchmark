@@ -154,7 +154,7 @@ def _concurrency_block(rec: Recommendation, *, ceiling_rps: Optional[float] = No
             # Confirmed while SERVED above the nominal ceiling: it held for
             # the confirmation window (which can be short -- bronze's first
             # look is ~a minute), not proof it holds indefinitely; the quota
-            # still caps sustained production rate (rate-capacity).
+            # still caps sustained production rate (capacity-reference-rate).
             out["confirmed_ceiling_ratio"] = ceiling_ratio(rec.confirmed_point, ceiling_rps)
             out["confirmed_above_provider_ceiling"] = above_ceiling(rec.confirmed_point, ceiling_rps)
     return out
@@ -364,7 +364,7 @@ def _calibration_point(spec, subject: str, rec: Optional[Recommendation], ceilin
     -- C_safe = f(shape, SLO, quota, provider conditions) -- as an input
     for gateway policy derivation, not a config value (no headroom).
     The rates are what C and latency PRODUCED in this closed-loop run --
-    observations, not a tested rate envelope (that is rate-capacity's
+    observations, not a tested rate envelope (that is capacity-reference-rate's
     sustained_rps). Different workload shapes may require different
     concurrency to reach the same provider rate ceiling, so concurrency is
     not a workload cost weight. Null values when nothing was confirmed."""
@@ -526,7 +526,46 @@ def _slo_dict(slo) -> dict:
     }
 
 
-def _envelope(entry: dict, profile_report, spec, report_results: List[RequestResult]) -> None:
+def _measurement_windows(subject, spec, all_results, recorded_windows=()):
+    """Keep each repetition/recovery attempt separate, including warmup/drain rows."""
+    from .analysis.metrics import MeasurementWindow
+    from .analysis.observability import describe_series
+
+    grouped = {
+        (w["start"], w["end"], w["phase"], w["value"], w["repetition"]): []
+        for w in recorded_windows if w["subject"] == subject
+    }
+    for r in all_results:
+        tags = r.tags
+        if tags.get("subject") != subject or tags.get("phase") not in (
+                "discovery", "refinement", "confirmation"):
+            continue
+        start, end = tags.get("window_start"), tags.get("window_end")
+        if start is None or end is None:
+            continue
+        key = (start, end, tags.get("phase"), tags.get("sweep_value"), tags.get("repetition"))
+        grouped.setdefault(key, []).append(r)
+    slos = {w.name: (spec.slo_for(w.name).ttft_p95_ms, spec.slo_for(w.name).latency_p95_ms,
+                     spec.slo_for(w.name).tpot_p95_ms) for w in spec.workloads}
+    out = []
+    for (start, end, phase, value, repetition), rows in sorted(grouped.items()):
+        kwargs = dict(slo_by_workload=slos,
+                      configured_concurrency=value if spec.sweep.type == "concurrency" else None,
+                      configured_offered_rps=value if spec.sweep.type == "rate" else None)
+        window = MeasurementWindow(start, end)
+        entry = {"phase": phase, "value": value, "repetition": repetition,
+                 **describe_series(rows, window, **kwargs)}
+        if spec.mix is not None:
+            entry["classes"] = {
+                w.name: describe_series([r for r in rows if r.tags.get("workload") == w.name],
+                                        window, slo_by_workload=slos)
+                for w in spec.workloads
+            }
+        out.append(entry)
+    return out
+
+
+def _envelope(entry: dict, profile_report, spec, report_results: List[RequestResult], recorded_windows=()) -> None:
     subject = profile_report.workload_name
     control = entry.get("role") == "reference_control"
     purpose = "characterization" if control else spec.purpose
@@ -536,6 +575,7 @@ def _envelope(entry: dict, profile_report, spec, report_results: List[RequestRes
         entry["provider_constraints"] = spec.provider_ceilings[subject].to_dict()
     if spec.sweep.quota_fractions is not None:
         entry["sweep_values_rps"] = spec.sweep_values(subject)
+    entry["measurement_windows"] = _measurement_windows(subject, spec, report_results, recorded_windows)
     if profile_report.history_comparison is not None:
         entry["history_comparison"] = profile_report.history_comparison
         entry["measurement_validity"] = profile_report.measurement_validity
@@ -707,7 +747,7 @@ def build_capacity_profile(report: ExperimentReport, run_metadata: Optional[dict
         }
         profile_report = by_name.get(workload.name)
         if profile_report is not None and profile_report.mix_shares is None:
-            _envelope(entry, profile_report, spec, report.all_results)
+            _envelope(entry, profile_report, spec, report.all_results, report.measurement_windows)
         workload_classes[workload.name] = entry
 
     mixed: Dict[str, dict] = {}
@@ -726,7 +766,7 @@ def build_capacity_profile(report: ExperimentReport, run_metadata: Optional[dict
             for name in profile_report.mix_shares
         })
         entry["observed_mix"]["scope"] = "all_measured_requests"
-        _envelope(entry, profile_report, spec, report.all_results)
+        _envelope(entry, profile_report, spec, report.all_results, report.measurement_windows)
         rec = profile_report.recommendation
         if rec is not None and rec.confirmed_point is not None:
             # Per class at the CONFIRMED point -- the capacity -- not the
@@ -744,6 +784,7 @@ def build_capacity_profile(report: ExperimentReport, run_metadata: Optional[dict
     return {
         "schema_version": 23,
         "experiment": spec.name,
+        "mode": spec.mode,
         "run": run_metadata or {},
         # reference: carries production admission envelopes;
         # admission_calibration: confirmed calibration_point per workload
@@ -801,6 +842,21 @@ def build_capacity_profile(report: ExperimentReport, run_metadata: Optional[dict
             },
         },
         "measurement": {
+            "metrics_version": 1,
+            "stream": spec.stream,
+            "descriptive_bin_s": spec.history_protocol.bin_s if spec.history_protocol else 30,
+            "metric_definitions": {
+                "latency": "successful scheduled cohort, including drain; missing values excluded with n reported",
+                "e2e_ms": "SDK invocation to response/stream completion; excludes executor queueing",
+                "tpot_ms": "(stream completion - first text) / (output tokens - 1); existing SLO definition",
+                "text_decode_tpot_ms": "(last text - first text) / (output tokens - 1); descriptive, no SLO gate",
+                "throughput": "successful completions inside window / window seconds; tokens from provider usage",
+                "attempted_rps": "SDK calls started inside window / window seconds",
+                "reliability": "all requests scheduled inside window, including drain outcomes",
+                "outstanding": "time-weighted mean and peak clipped to window; queue-inclusive and SDK calls separate",
+                "max_inflight": "null means no explicit in-flight cap for open-loop rate runner",
+                "bins": "descriptive only; no additional hypothesis tests",
+            },
             **({"retest": spec.retest} if spec.retest is not None else {}),
             **({"history_protocol": vars(spec.history_protocol)} if spec.history_protocol is not None else {}),
             "warmup_s": spec.warmup_s,

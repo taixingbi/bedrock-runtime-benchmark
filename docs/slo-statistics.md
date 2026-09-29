@@ -201,7 +201,7 @@ candidate priority, never to reject a candidate outright:
   (`confirmed_above_provider_ceiling`, `confirmed_ceiling_ratio`): it held
   for the confirmation window, which can be short (bronze's first look is
   ~437 requests, about a minute), not indefinitely -- the quota still caps
-  sustained production rate (`rate-capacity`'s `sustained_rps`).
+  sustained production rate (`capacity-reference-rate`'s `sustained_rps`).
 
 Rate sweeps are different: candidates are offered rps at or below the
 ceiling, because the policy caps `sustained_rps` at the quota anyway, so
@@ -347,7 +347,7 @@ only, since the blend isn't gated). Class
 counts depend only on the seeded class assignment (stratified blocks or stochastic draws), never on outcomes, so the
 look times stay outcome-independent and the Bonferroni bound holds.
 `look_schedule_requests` (6,147 / 9,284 here) is only the expected total,
-used for caps and time estimates. `mixed-capacity` uses `auto` caps: requests
+used for caps and time estimates. `capacity-mix-rate` uses `auto` caps: requests
 are 1.25 times the last look's total; duration scales with required samples /
 candidate RPS, rounded up to full measurement windows, including each window's
 warmup and a 1.25 margin. This budget applies separately to each candidate.
@@ -374,7 +374,7 @@ A candidate stops only on:
 7. a passing look contradicts the collected evidence -> **INCONCLUSIVE** (`post_look_violation`)
 
 `confirmation.min_steady_state_duration_s` is a minimum measured load exposure
-(default 0 for compatibility; workload-shape-calibration explicitly uses 300s).
+(default 0 for compatibility; capacity-shape-concurrency explicitly uses 300s).
 It excludes cooldown, conditioning, per-window warmup, and drain. A passing
 fixed-count look is retained while more windows are collected; it is never
 retested on a growing sample. If a cap stops collection before the minimum,

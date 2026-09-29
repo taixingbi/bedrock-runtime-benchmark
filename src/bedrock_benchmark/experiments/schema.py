@@ -356,6 +356,12 @@ class ExperimentSpec:
         return slo
 
     @property
+    def mode(self) -> str:
+        if self.retest is not None:
+            return "sustain"
+        return "history" if self.history_protocol is not None else "sweep"
+
+    @property
     def subject_names(self) -> List[str]:
         return [self.mix.name] if self.mix is not None else [w.name for w in self.workloads]
 
@@ -484,7 +490,6 @@ def load_experiment(
         if spec.confirmation is None:
             raise ValueError("retest requires a confirmation configuration")
         spec.workloads = selected
-        spec.name += "-sustain"
         spec.retest = dict(retest)
         spec.description = (f"Focused retest of {selected[0].name} at C={c}: continuous {seconds:g}s "
                             "discovery windows followed by independent confirmation; finite-duration evidence.")

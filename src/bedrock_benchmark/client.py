@@ -202,10 +202,14 @@ class BedrockConverseTarget:
 
     async def invoke(self, request: InvokeRequest) -> RequestResult:
         loop = asyncio.get_running_loop()
+        submitted_at = time.time()
         self._outstanding += 1
         self.peak_outstanding = max(self.peak_outstanding, self._outstanding)
         try:
-            return await loop.run_in_executor(self._executor, self._invoke_sync, request)
+            result = await loop.run_in_executor(self._executor, self._invoke_sync, request)
+            result.submitted_at = submitted_at
+            result.stream = request.stream
+            return result
         finally:
             self._outstanding -= 1
 
@@ -237,27 +241,41 @@ class BedrockConverseTarget:
         )
 
     def _invoke_stream(self, request_id, request, messages, inference_config, scheduled_at, clock: "_Clock") -> RequestResult:
+        first_token_elapsed: Optional[float] = None
+        last_text_elapsed: Optional[float] = None
+        usage: dict = {}
+        stop_reason: Optional[str] = None
         try:
             resp = self._client.converse_stream(modelId=self.model_id, messages=messages, inferenceConfig=inference_config)
-            first_token_elapsed: Optional[float] = None
-            usage: dict = {}
-            stop_reason: Optional[str] = None
             for event in resp["stream"]:
                 if "messageStop" in event:
                     stop_reason = event["messageStop"].get("stopReason")
                 delta = event.get("contentBlockDelta", {}).get("delta", {})
-                if "text" in delta and first_token_elapsed is None:
-                    first_token_elapsed = clock.elapsed()
+                if delta.get("text"):
+                    last_text_elapsed = clock.elapsed()
+                    if first_token_elapsed is None:
+                        first_token_elapsed = last_text_elapsed
                 metadata_usage = event.get("metadata", {}).get("usage")
                 if metadata_usage:
                     usage = metadata_usage
-        except Exception as exc:  # noqa: BLE001 - see non-streaming branch's own note
-            return self._failure(request_id, scheduled_at, clock, exc)
+        except Exception as exc:  # noqa: BLE001 - preserve partial stream observations
+            result = self._failure(request_id, scheduled_at, clock, exc)
+            result.first_token_at = clock.wall_at(first_token_elapsed) if first_token_elapsed is not None else None
+            result.ttft_ms = round(first_token_elapsed * 1000, 2) if first_token_elapsed is not None else None
+            result.last_text_at = clock.wall_at(last_text_elapsed) if last_text_elapsed is not None else None
+            result.last_text_latency_ms = round(last_text_elapsed * 1000, 2) if last_text_elapsed is not None else None
+            result.stream_failure_stage = "before_first_text" if first_token_elapsed is None else "after_first_text"
+            result.input_tokens = usage.get("inputTokens")
+            result.output_tokens = usage.get("outputTokens")
+            result.stop_reason = stop_reason
+            return result
 
         elapsed = clock.elapsed()
         return RequestResult(
             request_id=request_id, scheduled_at=scheduled_at, started_at=clock.wall_start,
             completed_at=clock.wall_at(elapsed),
+            last_text_at=clock.wall_at(last_text_elapsed) if last_text_elapsed is not None else None,
+            last_text_latency_ms=round(last_text_elapsed * 1000, 2) if last_text_elapsed is not None else None,
             first_token_at=clock.wall_at(first_token_elapsed) if first_token_elapsed is not None else None,
             ttft_ms=round(first_token_elapsed * 1000, 2) if first_token_elapsed is not None else None,
             latency_ms=round(elapsed * 1000, 2), success=True,

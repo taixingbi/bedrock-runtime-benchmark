@@ -9,8 +9,8 @@
 #              different output lengths can't share one E2E budget)
 #   role       reference         -- one per SLO tier; the ONLY workloads a
 #                                   production admission envelope is produced for
-#                                   (by reference experiments: rate-capacity,
-#                                   concurrency-sweep, mixed-capacity)
+#                                   (by reference experiments: capacity-reference-rate,
+#                                   capacity-reference-concurrency, capacity-mix-rate)
 #              characterization  -- for studying how token shape / context size
 #                                   move the envelope; measured, never recommended
 #
