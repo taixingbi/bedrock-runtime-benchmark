@@ -33,7 +33,7 @@ import yaml
 
 from ..ceiling import ProviderCeiling, provider_ceiling
 from ..client import TransportConfig
-from ..constraints import DEFAULT_POLICY_FILE, DEFAULT_SLO_FILE, SloConfig, load_policy, load_slo
+from ..constraints import DEFAULT_POLICY_FILE, DEFAULT_SLO_FILE, SloConfig, TtftBudget, ttft_budget_for, load_policy, load_slo
 from ..models import ModelConfig
 from ..workload import DEFAULT_WORKLOADS_FILE, WorkloadProfile, load_workloads
 
@@ -84,6 +84,10 @@ class RecoveryProbe:
     max_ttft_ratio: float = 2.0
     max_attempts: int = 5
     retry_cooldown_s: float = 120.0
+    baseline_fraction: Optional[float] = None
+    baseline_duration_s: float = 120.0
+    baseline_min_requests: int = 100
+    baseline_goodput_ratio: float = 0.9
 
 
 REFINEMENT_STRATEGIES = ("integer_bisection",)
@@ -124,6 +128,7 @@ class SweepConfig:
     # non-monotonic check -- without spending windows on a throttle storm
     # far past it. Values not reached are reported as skipped.
     stop_after_fails: Optional[int] = None
+    stop_after_clear_fail: bool = False
     # Concurrency sweeps only -- see RefinementConfig. None = no refinement.
     refinement: Optional["RefinementConfig"] = None
 
@@ -151,6 +156,7 @@ class ConfirmationConfig:
     # Measured load exposure required in addition to a fixed-count PASS.
     # Excludes cooldown, conditioning, per-window warmup and drain.
     min_steady_state_duration_s: float = 0.0
+    continuous: bool = False
     # Per-candidate caps. The statistics are SAMPLE-COUNT driven (fixed-
     # count looks at pre-planned N); repetitions are only how data is
     # collected. max_repetitions is an optional extra cap -- None (the
@@ -302,9 +308,11 @@ class ExperimentSpec:
     # throttle is still recorded; 0 = re-fire immediately.
     throttle_pause_s: float = 0.0
     seed: Optional[int] = None
+    workload_rotation_index: int = 0
     transport: TransportConfig = field(default_factory=TransportConfig)
     mix: Optional[MixConfig] = None
     history_protocol: Optional[HistoryProtocol] = None
+    burst_protocol: bool = False
     retest: Optional[dict] = None
     # `isolation: {inter_subject_cooldown_s}` -- a fixed recovery interval
     # between sweep subjects (workloads) to reduce carry-over: all subjects
@@ -344,13 +352,25 @@ class ExperimentSpec:
     # theoretical request ceiling for that subject's token shape.
     provider_ceilings: Dict[str, ProviderCeiling] = field(default_factory=dict)
 
+    ttft_budgets: Dict[str, TtftBudget] = field(default_factory=dict)
+
+    def ttft_budget_name(self, workload_name: str) -> Optional[str]:
+        if not self.ttft_budgets:
+            return None
+        workload = next(w for w in self.workloads if w.name == workload_name)
+        return ttft_budget_for(self.ttft_budgets, workload.input_tokens)[0]
+
     def slo_for(self, workload_name: str) -> SloConfig:
-        """The workload's profile (TTFT/TPOT/success/throttle), with the
-        workload's own E2E latency cap applied on top."""
+        """Resolve input-length TTFT, profile TPOT/reliability and workload E2E.
+        Legacy SLO files without ttft_budgets retain profile-based TTFT.
+        """
         workload = next((w for w in self.workloads if w.name == workload_name), None)
         slo = self.slo
         if workload is not None and workload.slo_profile is not None:
             slo = self.slo_profiles[workload.slo_profile]
+        if workload is not None and self.ttft_budgets:
+            _, budget = ttft_budget_for(self.ttft_budgets, workload.input_tokens)
+            slo = replace(slo, ttft_p95_ms=budget.ttft_p95_ms)
         if workload is not None and workload.latency_p95_ms is not None:
             slo = replace(slo, latency_p95_ms=workload.latency_p95_ms)
         return slo
@@ -380,7 +400,7 @@ class NoMatchingWorkloads(Exception):
 
 
 _MODEL_KEYS = ("target", "quota_snapshot", "quota")
-_SLO_KEYS = ("slo", "slo_profiles")
+_SLO_KEYS = ("slo", "slo_profiles", "ttft_budgets")
 _POLICY_KEYS = ("provider_headroom", "quota_headroom")
 
 
@@ -461,14 +481,17 @@ def load_experiment(
         throttle_pause_s=raw.get("throttle_pause_s", 0.0),
         purpose=_purpose(raw, workloads, path, workloads_file),
         seed=raw.get("seed"),
+        workload_rotation_index=raw.get("workload_rotation_index", 0),
         transport=TransportConfig(**transport),
         mix=mix_config,
+        burst_protocol=raw.get("burst_protocol", False),
         history_protocol=HistoryProtocol(**raw["history_protocol"]) if raw.get("history_protocol") else None,
         inter_subject_cooldown_s=_isolation(raw, path),
         recovery_probe=_recovery_probe(raw, path),
         workload_validation_tolerance_pct=raw.get("workload_validation_tolerance_pct", 10.0),
         output_validation_tolerance_pct=raw.get("output_validation_tolerance_pct", 25.0),
         slo_profiles=dict(slos.profiles),
+        ttft_budgets=dict(slos.ttft_budgets),
         token_counting=model.token_counting,
         output_burndown=model.output_burndown,
         quota_account=model.account,
@@ -512,6 +535,10 @@ def _recovery_probe(raw: dict, path: str) -> Optional[RecoveryProbe]:
     if not cfg:
         return None
     probe = RecoveryProbe(**cfg)
+    if (probe.baseline_fraction is not None and not 0 < probe.baseline_fraction < 1
+            or not math.isfinite(probe.baseline_duration_s) or probe.baseline_duration_s <= 0
+            or probe.baseline_min_requests < 1 or not 0 < probe.baseline_goodput_ratio <= 1):
+        raise ValueError(f"{path}: invalid baseline recovery policy")
     if (probe.duration_s <= 0 or probe.concurrency < 1 or probe.max_attempts < 1 or probe.retry_cooldown_s < 0
             or not 0 <= probe.max_throttle_rate <= 1 or not 0 <= probe.min_success_rate <= 1
             or probe.max_ttft_ratio <= 1):
@@ -636,6 +663,17 @@ def _validate_sweep(spec: ExperimentSpec, model: ModelConfig, path: str) -> None
 
 
 def _validate(spec: ExperimentSpec) -> None:
+    if type(spec.workload_rotation_index) is not int or spec.workload_rotation_index < 0:
+        raise ValueError("workload_rotation_index must be a nonnegative integer")
+    if type(spec.burst_protocol) is not bool or type(spec.sweep.stop_after_clear_fail) is not bool:
+        raise ValueError("burst_protocol and stop_after_clear_fail must be booleans")
+    if spec.confirmation and type(spec.confirmation.continuous) is not bool:
+        raise ValueError("confirmation.continuous must be a boolean")
+    if spec.burst_protocol and (spec.sweep.type != "rate" or spec.purpose != "characterization"
+            or spec.confirmation is not None or spec.recovery_probe is None
+            or spec.recovery_probe.baseline_fraction is None):
+        raise ValueError("burst_protocol requires rate characterization with baseline recovery and no confirmation")
+
     for name in ("provider_headroom", "quota_headroom"):
         if not 0 <= getattr(spec, name) < 1:
             raise ValueError(f"{name} must be in [0, 1)")

@@ -35,8 +35,15 @@ constraints:                                       # what every number was judge
   quota: {account: "646821141010", region: us-east-1, rpm: 400, tpm: 8000000, output_burndown: 1.0}  # constraints/quota.yaml
   slo:                                                                       # constraints/slo.yaml -- POLICY input
     role: policy_input
+    ttft_selection: configured_workload_input_tokens
+    ttft_budgets:
+      short_input: {max_input_tokens: 512, ttft_p95_ms: 800}
+      medium_input: {max_input_tokens: 4096, ttft_p95_ms: 1500}
+      long_input: {max_input_tokens: null, ttft_p95_ms: 3000}
+    effective_by_workload:
+      short_chat: {ttft_budget: short_input, ttft_p95_ms: 800, tpot_p95_ms: 40, latency_p95_ms: 3000, success_rate_min: 0.995, throttle_rate_max: 0.001, confidence: 0.95}
     profiles:
-      gold: {ttft_p95_ms: 800, tpot_p95_ms: 40, latency_p95_ms: null, success_rate_min: 0.995, throttle_rate_max: 0.001, confidence: 0.95}
+      gold: {ttft_p95_ms: null, tpot_p95_ms: 40, latency_p95_ms: null, success_rate_min: 0.995, throttle_rate_max: 0.001, confidence: 0.95}
   workloads:                                                                 # catalog/workloads.yaml -- the E2E cap is per workload
     short_chat: {input_tokens: 512, output_tokens: 64, slo_profile: gold, latency_p95_ms: 3000, role: reference}
 measurement:
@@ -67,7 +74,6 @@ workload_classes:
       observed_slo_goodput_rps: 8.1
       statistically_confirmed_offered_rps: 5.0     # THE CAPACITY: highest confirmed SLO-compliant point -- null if none
       confirmed_slo_goodput_rps: 4.9
-      measured_burst_ceiling_rps: 10.0      # highest swept rate that didn't FAIL (may be burst)
       provider_ceiling_rps: 6.6667          # from the quota
       saturation:                           # a DISCOVERY observation -- never the capacity
         observed_edge: 13.3333              # first FAIL seen by the discovery sweep (incl. refinement)
@@ -146,7 +152,7 @@ or mix keeps them in separate blocks:
 
 | Block | Holds | Kind |
 |---|---|---|
-| `rate` / `concurrency` | `observed_nonfailing_*`, `statistically_confirmed_*` (the capacity), `measured_burst_ceiling_rps`, `provider_ceiling_rps`, saturation, SLO goodput, verdicts -- never a safety margin | measurement |
+| `rate` / `concurrency` | `observed_nonfailing_*`, `statistically_confirmed_*` (the capacity), legacy `measured_burst_ceiling_rps` (omitted by reference rate), `provider_ceiling_rps`, saturation, SLO goodput, verdicts -- never a safety margin | measurement |
 | `recommendation.admission_envelope` | the confirmed point after the safety headroom in `constraints/recommendation-policy.yaml` | policy |
 
 ```
@@ -326,3 +332,61 @@ invented. Latency durations use the existing monotonic clock.
 Bins and p99 are descriptive and introduce no new SLO gates. Small sample counts
 do not establish stable tail latency. Historical artifacts are unchanged; the
 existing schema version accepts these additive fields.
+
+
+## Input-length TTFT budgets
+
+The shipped SLO configuration separates TTFT from output speed and reliability.
+TTFT is selected once from configured workload input_tokens: <=512 uses 800ms,
+513–4096 uses 1500ms, and >4096 uses 3000ms. These are initial policy choices,
+not a fitted prefill model. Observed tokens remain subject to workload validation;
+they do not dynamically move a request into another SLO band.
+
+Gold/silver/bronze now supply TPOT, success, throttle and confidence only.
+The effective TTFT therefore changes from 3000 to 1500ms for long_generation
+(4096 input), and from 1500 to 3000ms for long_context_short_answer (8192 input).
+Their output-speed, reliability and E2E requirements remain unchanged.
+
+Read constraints.slo.effective_by_workload for the complete resolved SLO.
+This same resolution is used for discovery, confirmation, goodput, pilot and
+history diagnostics, including individual classes inside mixed traffic.
+Temporal validation separates different recorded SLO policies.
+
+Custom legacy files without ttft_budgets still support profile-level TTFT.
+Combining both TTFT sources is rejected. Historical results are unchanged.
+
+### Sustainable protocol metadata
+
+`measurement.workload_rotation_index` and `workload_order` record execution order.
+`measurement.confirmation.continuous` indicates that each confirmation window is
+at least `min_steady_state_duration_s` long; cooldown, conditioning and drain do
+not count. Candidate `steady_state.longest_continuous_window_s` records this
+exposure separately from total measured time.
+
+Recovery entries distinguish `kind: liveness` and `kind: baseline_capacity`.
+Baseline checks include offered rate, duration, sample size, goodput, latency and
+throttle rate. Exhausted recovery invalidates measurement. Invalidated windows
+remain in raw JSONL but are omitted from `measurement_windows`.
+
+Candidate `checks_basis` distinguishes fixed-count decision evidence from
+all-collected descriptive checks after an early stop. The latter cannot override
+the sequential `verdict: INCONCLUSIVE`.
+
+Opt-in burst measurements appear under `measurement_validity.burst_results`:
+configured rate, multiplier, pulse duration, first observed throttle onset,
+and observed recovery time with censoring flags. They do not produce admission
+recommendations. Reference rate no longer labels a short non-failing point as a
+measured burst ceiling.
+
+### Correctness gates
+
+When `workload_validation.valid` is false, `recommendation.admission_envelope`
+is null with reason `workload_validation_failed`. Admission calibration points
+are also withheld. Mixed workloads require every participating class to pass
+this check. Temporal validation excludes invalid shapes even in historical files.
+
+Concurrency measurement windows record `peak_sdk_inflight`, counted under a
+lock inside SDK execution threads through stream completion. This is separate
+from timestamp-reconstructed outstanding metrics. A peak above the configured
+concurrency records a `concurrency_invariant_violated` event, invalidates the
+subject, stops its remaining measurement phases and blocks recommendations.

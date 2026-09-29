@@ -141,8 +141,9 @@ there is no gateway config schema in this repo.
 
 | Experiment | Purpose | Sweep | Per model |
 |---|---|---|---|
-| `capacity-reference-rate` | reference | 0.25x-2.5x of the provider ceiling, one reference workload per tier (`short_chat` gold, `rag_answer` silver, `long_generation` bronze) -- the canonical envelope run | ~57 min |
-| `capacity-reference-concurrency` | reference | each reference workload alone, concurrency 1..48 until 2 consecutive FAILs; confirms the top 2 non-failing concurrencies | ~1.5 h |
+| `capacity-reference-rate` | reference | 0.25–1× ceiling; stop at clear FAIL; recovery and continuous confirmation | ~74 min |
+| `capacity-reference-concurrency` | reference | each reference workload alone, concurrency 1..48 until clear FAIL; refinement and continuous confirmation | up to ~170 min |
+| `capacity-burst-rate` | characterization | opt-in 90s overload pulses at 1.25 / 1.5 / 2 / 2.5× ceiling, with recovery after each | ~81 min |
 | `capacity-mix-rate` | reference | mixed-rate calibration: 0.25x-2.5x ceiling for a workflow mix (`--mix`); default 60/30/10 is a reference example | ~32 min |
 | `capacity-shape-concurrency` | admission_calibration | the 4 non-reference shapes plus a long_generation reference control x concurrency 1..48 until 2 consecutive FAILs, each under its own SLO | ~1-2 h |
 
@@ -399,3 +400,21 @@ Raw JSONL also preserves submission and last-text timing, including partial-stre
 failures. Existing TPOT SLO checks keep their definition; the additional
 `text_decode_tpot_ms` excludes trailing metadata time and is descriptive only.
 See [metric definitions](docs/capacity-profile-schema.md#common-descriptive-metrics-metrics_version-1).
+
+### TTFT by input length
+
+In `constraints/slo.yaml`, `ttft_budgets` assigns the first-response budget by
+configured input length: <=512 tokens → 800ms; 513–4096 → 1500ms; >4096 → 3000ms.
+These are initial policy budgets. The workload's gold/silver/bronze profile
+independently selects TPOT and reliability; E2E stays in the workload catalog.
+Reports record the resolved limits in `constraints.slo.effective_by_workload`.
+
+### Sustainable capacity and overload experiments
+
+- `capacity-reference-rate`: Poisson discovery at 0.25 / 0.5 / 0.75 / 1× nominal quota ceiling. Stops at a clear statistical FAIL or severe-throttle guard. An optional 1.25× boundary point can be added explicitly.
+- Reference rate and concurrency use liveness **and** a baseline-capacity recovery check before discovery and confirmation. The baseline uses the same workload at 0.25× ceiling for at least 120 seconds and 100 requests, with goodput, throttle and latency checks. It is a recovery control, not proof that a higher candidate is safe. Recovery exhaustion invalidates the subject.
+- Fresh reference confirmation uses windows of at least 300 seconds of continuous measured load. A fixed-count statistical PASS and minimum exposure are both required; additional observations can veto PASS. Rate confirmation tries up to three preselected candidates, highest first, with confidence split across candidates and looks.
+- `capacity-burst-rate` is opt-in and excluded from `run all`. Each 90-second pulse at 1.25 / 1.5 / 2 / 2.5× ceiling starts after checked baseline recovery. Results record first observed throttling and recovery checks. Missing onset and exhausted recovery are censored observations, not zero durations. Recovery time includes cooldown and probe durations; it is not an exact provider reset timestamp.
+- `run` advances a local rotation counter in `results/.workload-rotation-index`. All experiments in that batch share the index. Use `--workload-rotation-index 0` (or 1, 2, …) to replay an order. The actual order and index are recorded in the profile. Rotation does not replace recovery checks.
+
+Single-run results describe the measured conditions. Repeat across times/days for temporal validation. Separately measured concurrency and rate limits still require validation when applied together or to mixed traffic.

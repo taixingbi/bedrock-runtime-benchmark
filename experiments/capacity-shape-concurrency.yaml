@@ -34,6 +34,8 @@
 # interpreted as a workload cost weight.
 #
 # It is NOT a production config: no admission envelope, no headroom.
+# Invalid workload shapes or SDK concurrency invariant violations suppress
+# calibration_point. Workload order rotates across runs via the run command.
 # Calibration points are isolated-workload measurements; per-shape
 # C_safe values don't combine mathematically into a global policy. Any
 # policy derived from them must be validated under
@@ -51,18 +53,19 @@
 # without unnecessarily continuing deep into overload. Slow: run it for a
 # capacity re-baseline, not on every change.
 #
-# Research limit: on nova-micro (400 RPM) every shape hits the RPM quota
-# long before any token or compute limit, so C_safe here is ~ 6.67 rps x
-# request service time -- the workload shape primarily affects the
-# observed concurrency boundary through request service time while RPM
-# remains the binding provider constraint.
+# Research limit: at the configured nova-micro quotas, RPM gives the
+# lowest nominal rate ceiling for these shapes. Little's law suggests
+# C ~= 6.67 rps x mean request service time near that ceiling. Actual
+# throttling still requires measurement; nominal quotas alone do not
+# establish its cause.
 # Isolating how input / output tokens themselves limit capacity needs an
 # account or model whose RPM quota doesn't bind first.
 purpose: admission_calibration
 name: capacity-shape-concurrency
 description: |
   Concurrency 1..48 (until two consecutive FAILs, then integer
-  refinement and fixed-count plus minimum-time confirmation) across the four non-reference
+  refinement and fresh fixed-count confirmation with continuous
+  windows of at least 300 seconds) across the four non-reference
   catalog shapes plus long_generation as a reference control, each under
   its own SLO. Produces statistically
   confirmed workload-shape capacity points -- workload-specific
@@ -106,7 +109,14 @@ isolation:
   # to max_attempts; never healthy -> measurement_validity: invalid.
   # Points throttled far below the ceiling are discarded, recovered and
   # re-measured once (provider state, not the point's own load).
+  # A healthy liveness probe must also pass a baseline-capacity probe at
+  # 25% of the nominal ceiling: no throttling, healthy latency and at
+  # least 90% goodput relative to offered load and the healthy baseline.
   recovery_probe:
+    baseline_fraction: 0.25
+    baseline_duration_s: 120
+    baseline_min_requests: 100
+    baseline_goodput_ratio: 0.9
     duration_s: 20
     concurrency: 1
     max_throttle_rate: 0.0
@@ -145,8 +155,10 @@ isolation:
 #     (~2 rps) collecting 4,380.
 confirmation:
   # Observation policy, not an assumed Bedrock quota/reset window.
-  # Only measured load time counts; a sample-count PASS alone is insufficient.
+  # Each confirmation window runs continuously for at least 300 seconds.
+  # PASS also requires the planned statistical look and sanity checks.
   min_steady_state_duration_s: 300
+  continuous: true
   max_looks: 2
   max_requests: 8000
   max_duration_s: 3000

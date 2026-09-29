@@ -17,6 +17,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+import math
+
 import yaml
 
 DEFAULT_SLO_FILE = "constraints/slo.yaml"
@@ -64,9 +66,24 @@ class SloConfig:
     confidence: Optional[float] = None
 
 
+@dataclass(frozen=True)
+class TtftBudget:
+    # Inclusive upper bound; the final band has no upper bound.
+    max_input_tokens: Optional[int]
+    ttft_p95_ms: float
+
+
+def ttft_budget_for(budgets: Dict[str, TtftBudget], input_tokens: int):
+    for name, budget in budgets.items():
+        if budget.max_input_tokens is None or input_tokens <= budget.max_input_tokens:
+            return name, budget
+    raise ValueError(f"no TTFT budget for {input_tokens} input tokens")
+
+
 @dataclass
 class SloProfiles:
     profiles: Dict[str, SloConfig] = field(default_factory=dict)
+    ttft_budgets: Dict[str, TtftBudget] = field(default_factory=dict)
 
     def get(self, name: str) -> SloConfig:
         return self.profiles[name]
@@ -97,7 +114,32 @@ def load_slo(path: str = DEFAULT_SLO_FILE) -> SloProfiles:
             raise ValueError(f"{path}: profiles.{name}.confidence must be in (0, 1)")
         if not 0 <= p.throttle_rate_max <= 1 or not 0 <= p.success_rate_min <= 1:
             raise ValueError(f"{path}: profiles.{name} rates must be in [0, 1]")
-    return SloProfiles(profiles=profiles)
+    budgets = {}
+    if "ttft_budgets" in raw:
+        configured = raw["ttft_budgets"]
+        if not isinstance(configured, dict) or not configured:
+            raise ValueError(f"{path}: ttft_budgets must be a nonempty mapping")
+        previous = 0
+        for index, (name, cfg) in enumerate(configured.items()):
+            budget = TtftBudget(**cfg)
+            upper = budget.max_input_tokens
+            if upper is None:
+                if index != len(configured) - 1:
+                    raise ValueError("unbounded TTFT band must be last")
+            elif type(upper) is not int or upper <= previous:
+                raise ValueError("TTFT upper bounds must be strictly increasing positive integers")
+            else:
+                previous = upper
+            if (isinstance(budget.ttft_p95_ms, bool) or
+                    not isinstance(budget.ttft_p95_ms, (int, float)) or
+                    not math.isfinite(budget.ttft_p95_ms) or budget.ttft_p95_ms <= 0):
+                raise ValueError("TTFT budgets must be finite positive milliseconds")
+            budgets[name] = budget
+        if list(budgets.values())[-1].max_input_tokens is not None:
+            raise ValueError("TTFT bands must end with max_input_tokens: null")
+        if any(p.ttft_p95_ms is not None for p in profiles.values()):
+            raise ValueError("use ttft_budgets or profile ttft_p95_ms, not both")
+    return SloProfiles(profiles=profiles, ttft_budgets=budgets)
 
 
 def load_quotas(path: str = DEFAULT_QUOTA_FILE) -> QuotaTable:

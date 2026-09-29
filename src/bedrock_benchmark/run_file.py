@@ -77,12 +77,19 @@ def estimated_duration_s(spec: ExperimentSpec) -> float:
         discovery += spec.sweep.refinement.max_points * probe  # a recovery probe before each refinement point
     total = 0.0
     for index, subject in enumerate(spec.subject_names):
-        total += probe  # at the start of each subject (healthy probes; unhealthy ones retry)
+        subject_probe = probe
+        if spec.recovery_probe and spec.recovery_probe.baseline_fraction is not None:
+            rp = spec.recovery_probe
+            rate = spec.provider_ceilings[subject].rps * rp.baseline_fraction
+            subject_probe += spec.warmup_s + max(rp.baseline_duration_s, 1.25 * rp.baseline_min_requests / rate)
+        if spec.burst_protocol:
+            total += spec.sweep.point_count * (subject_probe + spec.recovery_probe.retry_cooldown_s)
+        total += subject_probe  # at the start of each subject (healthy probes; unhealthy ones retry)
         if index > 0:
             total += spec.inter_subject_cooldown_s
         confirm = _confirmation_estimate_s(spec, subject, per_run)
         if confirm > 0:  # cooldown + probe + conditioning for the (highest) candidate, assumed to PASS
-            confirm += spec.confirmation.cooldown_s + probe + spec.confirmation.warmup_s
+            confirm += spec.confirmation.cooldown_s + subject_probe + spec.confirmation.warmup_s
         total += discovery + confirm
     return total
 
@@ -126,9 +133,11 @@ def _confirmation_estimate_s(spec: ExperimentSpec, subject: str, per_run: float)
                       max_looks=c.max_looks, max_repetitions=c.max_repetitions, max_requests=c.max_requests,
                       max_duration_s=c.max_duration_s, candidates=max(1, k),
                       min_steady_state_duration_s=c.min_steady_state_duration_s)
-    per_rep = top_rps * spec.duration_s
+    duration = max(spec.duration_s, c.min_steady_state_duration_s) if c.continuous else spec.duration_s
+    per_run = spec.warmup_s + duration
+    per_rep = top_rps * duration
     reps = math.ceil(plan.look_schedule[0] / per_rep) if per_rep > 0 else math.inf
-    reps = max(reps, math.ceil(c.min_steady_state_duration_s / spec.duration_s))
+    reps = max(reps, math.ceil(c.min_steady_state_duration_s / duration))
     max_requests = plan.look_schedule[-1] if c.max_requests == "auto" else c.max_requests
     if reps > rep_cap or plan.look_schedule[0] > max_requests:
         return 0.0
@@ -238,6 +247,8 @@ def run_file(
 ) -> RunOutcome:
     spec = load_experiment(path, model, slo_file=slo_file, workloads_file=workloads_file,
                            only_slo_profiles=only_slo_profiles, mix=mix, retest=retest)
+    if run_metadata and "workload_rotation_index" in run_metadata:
+        spec.workload_rotation_index = run_metadata["workload_rotation_index"]
     print(f"running experiment: {spec.name} on {model.name} ({model.model_id})")
     print(f"sweep: {describe_sweep(spec)}")
     for name in spec.subject_names:

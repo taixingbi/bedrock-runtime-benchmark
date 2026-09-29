@@ -1,90 +1,44 @@
-# The canonical "give me the production operating envelope" run: an
-# open-loop Poisson RATE sweep straddling the model's own RPM quota --
-# separates latency saturation (capacity-reference-concurrency's job) from
-# RPM/throttling saturation (this one's).
-#
-# Rates are quota_fractions of each workload's PROVIDER CEILING from
-# the model's quota in catalog/models.yaml:
-#   ceiling = min(RPM / 60, TPM / (input + max_tokens) / 60)
-# (1.0 = exactly the ceiling; the artifact's provider_constraints says
-# whether RPM or TPM binds). One sweep brackets every model's ceiling:
-# 0.25x..2.5x is 0.21..2.08 rps for a 50 RPM model and 4.2..41.7 rps
-# for a 1000 RPM one. The first batch showed real ceilings between
-# ~1.0x and ~1.9x quota, so the sweep extends to 2.5x to find the edge.
-# reference: THE production envelope run -- one reference workload per SLO tier.
+# Single-run sustainable capacity; temporal validation is required for production.
 purpose: reference
 name: capacity-reference-rate
 description: |
-  Poisson rate sweep at 0.25x..2.5x of each workload's provider ceiling,
-  one workload per SLO tier (short_chat gold, rag_answer silver,
-  long_generation bronze), each with adaptive confirmation. 10s warmup +
-  90s window per point; up to ~30 min per workload (confirmation usually
-  stops sooner: silver/bronze need only 736 / 368 requests).
-
-workloads: [short_chat, rag_answer, long_generation]   # one per SLO tier: gold / silver / bronze
-
+  Open-loop Poisson discovery up to the nominal provider ceiling, stopping
+  after a clear FAIL. Recovery is checked at both liveness and baseline load.
+  Fresh confirmation tries lower candidates if necessary, with at least
+  300 seconds of continuous measured load per window.
+workloads: [short_chat, rag_answer, long_generation]
 warmup_s: 10
 duration_s: 90
 stream: true
-
 sweep:
   type: rate
-  quota_fractions: [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 2.5]
-
-# Two phases with separate jobs (analysis/confirmation.py):
-#   discovery     every value once -- picks the candidate and reports the
-#                 transition region; its data never confirms anything.
-#   confirmation  fresh data at the candidate (the highest non-failing
-#                 point at or below the provider ceiling) until a
-#                 pre-planned look PASSes or FAILs it (exact bounds),
-#                 severe throttling stops it early, or max_requests /
-#                 max_duration_s is hit -> INCONCLUSIVE.
-# PASS only at max_looks pre-planned sample SIZES, each decided on
-# exactly the first N requests at confidence 1 - 0.05 / max_looks, so
-# repeated checking can't inflate false PASSes. For gold (throttle <=
-# 0.1%, exact Clopper-Pearson bounds) the looks are at N = 3,688 and
-# 5,570 requests; at the 6.67 rps ceiling that takes ~560 s / ~840 s of
-# windows -- inside max_duration_s.
-#
-# The discovery sweep ENDS at 2.5x the ceiling, so confirmation at ~1.0x
-# would otherwise start on a bucket that overload just drained: cooldown_s
-# inserts a recovery interval, and warmup_s conditions the candidate (data discarded) so
-# the looks read steady state, not a rested bucket's burst credit. Neither
-# counts against max_duration_s.
+  # Add 1.25 explicitly when a boundary probe is required.
+  quota_fractions: [0.25, 0.5, 0.75, 1.0]
+  stop_after_clear_fail: true
 confirmation:
   max_looks: 2
-  max_requests: 8000
-  max_duration_s: 1800
-  candidates: 1
+  max_requests: auto
+  max_duration_s: auto
+  candidates: 3
   cooldown_s: 120
   warmup_s: 60
-
-# Provider-state isolation: the three workloads share one model's quota,
-# and each one's sweep ends in overload -- a fixed recovery interval
-# before the next reduces carry-over (approximating C_safe(W_i), not
-# C_safe(W_i | history); a policy, not a proven reset).
+  min_steady_state_duration_s: 300
+  continuous: true
 isolation:
   inter_subject_cooldown_s: 120
-  # Recovery is CHECKED, not assumed: after each recovery interval a short
-  # low-load probe (data discarded) must be healthy -- no throttling,
-  # >= 90% success, TTFT p50 within 2x the first healthy probe -- before
-  # the next phase; unhealthy -> wait retry_cooldown_s and probe again, up
-  # to max_attempts; never healthy -> measurement_validity: invalid.
-  # Points throttled far below the ceiling are discarded, recovered and
-  # re-measured once (provider state, not the point's own load).
   recovery_probe:
     duration_s: 20
     concurrency: 1
     max_throttle_rate: 0.0
-    min_success_rate: 0.9
+    min_success_rate: 0.99
     max_ttft_ratio: 2.0
     max_attempts: 5
     retry_cooldown_s: 120
-
+    baseline_fraction: 0.25
+    baseline_duration_s: 120
+    baseline_min_requests: 100
+    baseline_goodput_ratio: 0.9
 transport:
-  # 128, not 64: long_generation (1024 output tokens, ~4s each) has ~67
-  # requests in flight at 2.5x quota -- above 64 the thread pool would
-  # queue them and flag those points client_limited.
   max_connections: 128
   total_max_attempts: 1
   connect_timeout_s: 5

@@ -36,7 +36,7 @@ from bedrock_benchmark.workload import DEFAULT_WORKLOADS_FILE  # noqa: E402
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("experiments", nargs="*", help="experiment YAMLs (default: experiments/*.yaml)")
+    parser.add_argument("experiments", nargs="*", help="experiment YAMLs (default: all except opt-in burst experiment)")
     parser.add_argument("--models-file", default=DEFAULT_MODELS_FILE, help=f"default: {DEFAULT_MODELS_FILE}")
     parser.add_argument("--workloads-file", default=DEFAULT_WORKLOADS_FILE,
                         help=f"workload catalog (default: {DEFAULT_WORKLOADS_FILE})")
@@ -47,6 +47,7 @@ def main() -> int:
                         help="run only workloads bound to this SLO profile, e.g. gold (repeatable)")
     parser.add_argument("--model", action="append", dest="models", metavar="NAME",
                         help="run only this model (repeatable; default: every enabled model)")
+    parser.add_argument("--workload-rotation-index", type=int, help="replay workload order; default: rotate each invocation")
     parser.add_argument("--results-dir", help="batch output dir (default: results/run-all-<timestamp>)")
     parser.add_argument("--dry-run", action="store_true", help="validate + print the plan and time estimate, run nothing")
     parser.add_argument("--fail-fast", action="store_true", help="stop at the first failed run")
@@ -57,7 +58,7 @@ def main() -> int:
                         help="requests per model x workload in the pilot (default: 3)")
     args = parser.parse_args()
 
-    paths = args.experiments or sorted(str(p) for p in Path("experiments").glob("*.yaml"))
+    paths = args.experiments or sorted(str(p) for p in Path("experiments").glob("*.yaml") if p.stem != "capacity-burst-rate")
     missing = [p for p in paths if not Path(p).is_file()]
     if missing:
         hint = ""
@@ -93,8 +94,10 @@ def main() -> int:
 
 
     results_dir = Path(args.results_dir or f"results/run-all-{time.strftime('%Y%m%d-%H%M%S')}")
+    from bedrock_benchmark.experiments.order import rotation_index
+    metadata = {"workload_rotation_index": rotation_index(Path.cwd(), args.workload_rotation_index)}
     batch = run_batch(paths, models, results_dir=results_dir, fail_fast=args.fail_fast,
-                      slo_file=args.slo_file, workloads_file=args.workloads_file, only_slo_profiles=args.slo_profiles)
+                      slo_file=args.slo_file, workloads_file=args.workloads_file, only_slo_profiles=args.slo_profiles, run_metadata=metadata)
 
     print(f"\n{'=' * 78}\nSUMMARY\n{'=' * 78}")
     print(format_summary(batch))

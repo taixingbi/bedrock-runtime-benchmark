@@ -26,7 +26,7 @@ class ShippedConstraintsTests(unittest.TestCase):
         self.assertEqual(set(slos.profiles), {"gold", "silver", "bronze"})
         gold, silver, bronze = (slos.get(n) for n in ("gold", "silver", "bronze"))
         # Each class is strictly more relaxed than the one above it.
-        for field in ("ttft_p95_ms", "tpot_p95_ms", "throttle_rate_max"):
+        for field in ("tpot_p95_ms", "throttle_rate_max"):
             with self.subTest(field=field):
                 self.assertLess(getattr(gold, field), getattr(silver, field))
                 self.assertLess(getattr(silver, field), getattr(bronze, field))
@@ -48,7 +48,8 @@ class ShippedConstraintsTests(unittest.TestCase):
                 with self.subTest(path=path.name, workload=w.name):
                     self.assertIn(w.slo_profile, slos.profiles)
                     # profile-level components + the workload's own E2E cap
-                    self.assertEqual(spec.slo_for(w.name), replace(slos.get(w.slo_profile), latency_p95_ms=w.latency_p95_ms))
+                    self.assertEqual(spec.slo_for(w.name), replace(slos.get(w.slo_profile), latency_p95_ms=w.latency_p95_ms,
+                                     ttft_p95_ms=800 if w.input_tokens <= 512 else 1500 if w.input_tokens <= 4096 else 3000))
 
     def test_catalog_binds_every_workload_to_an_existing_profile(self):
         slos = load_slo()

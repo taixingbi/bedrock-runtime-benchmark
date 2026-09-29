@@ -238,6 +238,10 @@ async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress:
     else:
         subjects = [profiles[w.name] for w in spec.workloads]
 
+    if subjects:
+        offset = spec.workload_rotation_index % len(subjects)
+        subjects = subjects[offset:] + subjects[:offset]
+
     for index, subject in enumerate(subjects):
         is_mix = isinstance(subject, WorkloadMix)
         shares = subject.shares if is_mix else None
@@ -269,6 +273,9 @@ async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress:
         async def measure(value: float, reps: int, phase: str) -> dict:
             state = acc[phase].setdefault(value, {"results": [], "windows": [], "per_rep": [], "peak": 0})
             offered_rps = value if spec.sweep.type == "rate" else None
+            duration = spec.duration_s
+            if phase == "confirmation" and spec.confirmation.continuous:
+                duration = max(duration, spec.confirmation.min_steady_state_duration_s)
             for _ in range(reps):
                 rep = len(state["windows"])
                 # A distinct seed per repetition -- the same seed would
@@ -278,22 +285,30 @@ async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress:
                 seed = None if spec.seed is None else spec.seed + rep + _SEED_OFFSET[phase]
                 if spec.sweep.type == "concurrency":
                     runner = ConcurrencyRunner(
-                        target, subject, concurrency=int(value), duration_s=spec.duration_s,
+                        target, subject, concurrency=int(value), duration_s=duration,
                         warmup_s=spec.warmup_s, stream=spec.stream, seed=seed,
                         throttle_pause_s=spec.throttle_pause_s,
                     )
                 else:
                     runner = RateRunner(
-                        target, subject, rps=value, duration_s=spec.duration_s, warmup_s=spec.warmup_s,
+                        target, subject, rps=value, duration_s=duration, warmup_s=spec.warmup_s,
                         stream=spec.stream, seed=seed,
                     )
                 target.reset_peak()
                 results = await runner.run()
                 state["peak"] = max(state["peak"], target.peak_outstanding)
+                if spec.sweep.type == "concurrency" and target.peak_sdk_inflight > int(value):
+                    validity["status"] = "invalid"
+                    validity["events"].append({
+                        "outcome": "concurrency_invariant_violated", "phase": phase,
+                        "configured_concurrency": int(value),
+                        "peak_sdk_inflight": target.peak_sdk_inflight,
+                    })
                 window = runner.window
                 report.measurement_windows.append({
                     "subject": subject.name, "phase": phase, "value": value, "repetition": rep,
                     "start": window.start, "end": window.end,
+                    "peak_sdk_inflight": target.peak_sdk_inflight,
                 })
                 for r in results:
                     r.tags.update({
@@ -312,6 +327,8 @@ async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress:
                     results, windows=[window], offered_rps=offered_rps, confidence=confidence, **metric_slo,
                 ))
                 report.all_results.extend(results)
+                if validity["status"] == "invalid":
+                    break
             return state
 
         async def condition(value: float, seconds: float) -> None:
@@ -353,8 +370,47 @@ async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress:
             if healthy and ttft and baseline_ttft["ms"] is None:
                 baseline_ttft["ms"] = ttft
             validity["recovery_probes"].append({
-                "reason": reason, "attempt": attempt, "n": m.n, "throttle_rate": m.throttle_rate,
+                "kind": "liveness", "reason": reason, "attempt": attempt, "n": m.n, "throttle_rate": m.throttle_rate,
                 "success_rate": m.success_rate, "ttft_p50_ms": ttft, "healthy": healthy})
+            return healthy
+
+        baseline_capacity = None
+
+        async def capacity_probe(reason: str, attempt: int) -> bool:
+            nonlocal baseline_capacity
+            if rp.baseline_fraction is None:
+                return True
+            if ceiling_rps is None or ceiling_rps <= 0:
+                return False
+            rate = ceiling_rps * rp.baseline_fraction
+            duration = max(rp.baseline_duration_s, 1.25 * rp.baseline_min_requests / rate)
+            runner = RateRunner(target, subject, rps=rate, duration_s=duration,
+                                warmup_s=spec.warmup_s, stream=spec.stream,
+                                seed=None if spec.seed is None else spec.seed + 50000 + attempt)
+            rows = await runner.run()
+            for r in rows:
+                r.tags.update({"subject": subject.name, "phase": "baseline_capacity_probe",
+                               "measured": False, "probe_reason": reason})
+            report.all_results.extend(rows)
+            m = compute_run_metrics(rows, windows=[runner.window], confidence=confidence, **metric_slo)
+            healthy = (m.n >= rp.baseline_min_requests and m.throttle_rate <= rp.max_throttle_rate
+                       and m.success_rate >= rp.min_success_rate
+                       and m.slo_goodput_rps is not None
+                       and m.slo_goodput_rps >= rate * rp.baseline_goodput_ratio)
+            latency = m.ttft_p95_ms if spec.stream else m.latency_p95_ms
+            limit = blend_slo.ttft_p95_ms if spec.stream else blend_slo.latency_p95_ms
+            healthy = healthy and latency is not None and (limit is None or latency <= limit)
+            if baseline_capacity is not None:
+                goodput, previous_latency = baseline_capacity
+                healthy = healthy and m.slo_goodput_rps is not None and m.slo_goodput_rps >= goodput * rp.baseline_goodput_ratio
+                healthy = healthy and latency is not None and latency <= previous_latency * rp.max_ttft_ratio
+            if healthy and baseline_capacity is None:
+                baseline_capacity = (m.slo_goodput_rps, latency)
+            validity["recovery_probes"].append({"kind": "baseline_capacity", "reason": reason,
+                "attempt": attempt, "offered_rps": rate, "duration_s": duration, "n": m.n,
+                "goodput_rps": m.slo_goodput_rps, "latency_p95_ms": latency,
+                "throttle_rate": m.throttle_rate, "healthy": healthy,
+                "scope": "recovery control; does not certify candidate capacity"})
             return healthy
 
         async def recover(cooldown_s: float, reason: str) -> bool:
@@ -368,7 +424,7 @@ async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress:
             for attempt in range(1, rp.max_attempts + 1):
                 if attempt > 1 and rp.retry_cooldown_s > 0:
                     await asyncio.sleep(rp.retry_cooldown_s)
-                if await probe(reason, attempt):
+                if await probe(reason, attempt) and await capacity_probe(reason, attempt):
                     return True
             validity["status"] = "invalid"
             validity["events"].append({"reason": reason, "outcome": "provider_unrecovered",
@@ -379,6 +435,9 @@ async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress:
             """Drop a phase's data at `value`: it was measured in a suspect
             provider state. Kept in the raw JSONL, tagged, never measured."""
             state = acc[phase].pop(value, None)
+            for w in report.measurement_windows:
+                if w["subject"] == subject.name and w["phase"] == phase and w["value"] == value:
+                    w["phase"] = "invalidated"
             for r in (state or {}).get("results", []):
                 r.tags.update({"phase": "invalidated", "invalidated_phase": phase, "measured": False})
 
@@ -395,7 +454,12 @@ async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress:
             signal: discard, recover, re-measure once. None = the provider
             never recovered (the subject's measurement is invalid)."""
             await measure(value, spec.repetitions, phase)
+            if validity["status"] == "invalid":
+                return None
             point = build(value, phase)
+            if spec.sweep.stop_after_clear_fail and (point_verdict(point, class_gate, **gate_kwargs).verdict == FAIL
+                                                     or severe_throttling(point.metrics)):
+                return point
             if rp is None or not suspect_point(point, ceiling_rps):
                 return point
             if not await recover(0.0, f"suspect {phase} point {value:g}"):
@@ -403,6 +467,8 @@ async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress:
                 return None
             invalidate(phase, value)
             await measure(value, spec.repetitions, phase)
+            if validity["status"] == "invalid":
+                return None
             again = build(value, phase)
             note_suspect(phase, value, point,
                          "reproduced_after_recovery" if suspect_point(again, ceiling_rps) else "cleared_after_recovery")
@@ -461,6 +527,30 @@ async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress:
         points: List[SweepPoint] = []
         consecutive_fails = 0
         for value in values:
+            if spec.burst_protocol:
+                pulse_started = time.perf_counter()
+                await measure(value, 1, "discovery")
+                point = build(value, "discovery")
+                state = acc["discovery"][value]
+                window = state["windows"][-1]
+                throttles = [r.started_at for r in state["results"]
+                             if r.throttled and window.contains(r.scheduled_at)]
+                recovered = await recover(rp.retry_cooldown_s, f"after burst {value:g}")
+                validity.setdefault("burst_results", []).append({
+                    "offered_rps": value, "ceiling_multiple": value / ceiling_rps,
+                    "burst_duration_s": window.end - window.start,
+                    "throttle_onset_s": max(0, min(throttles) - window.start) if throttles else None,
+                    "throttle_onset_censored": not bool(throttles),
+                    "recovery_observed_after_s": max(0.0, time.perf_counter() - pulse_started - spec.warmup_s - spec.duration_s),
+                    "recovery_time_censored": not recovered, "recovered": recovered,
+                    "recovery_definition": "first successful liveness and baseline-capacity probe; includes drain, cooldown and probe time",
+                })
+                points.append(point)
+                if on_progress is not None:
+                    on_progress(subject.name, value, point)
+                if not recovered:
+                    break
+                continue
             point = await measure_valid(value, "discovery")
             if point is None:
                 break  # provider never recovered: stop -- no conclusion from this subject
@@ -468,6 +558,10 @@ async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress:
             if on_progress is not None:
                 on_progress(subject.name, value, point)
             consecutive_fails = consecutive_fails + 1 if point_verdict(point, class_gate, **gate_kwargs).verdict == FAIL else 0
+            if spec.sweep.stop_after_clear_fail and (consecutive_fails or severe_throttling(point.metrics)):
+                validity["events"].append({"phase": "discovery", "value": value,
+                    "outcome": "stopped_clear_fail" if consecutive_fails else "stopped_severe_throttling"})
+                break
             if spec.sweep.stop_after_fails is not None and consecutive_fails >= spec.sweep.stop_after_fails:
                 break  # saturation seen stop_after_fails times in a row -- the rest is past it
 
@@ -538,7 +632,8 @@ async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress:
             class_look = None if class_gate is None else {
                 n: {**kw, "confidence": plan.per_test_confidence} for n, kw in class_gate.items()
             }
-            per_rep_s = spec.warmup_s + spec.duration_s
+            confirmation_duration = max(spec.duration_s, cfg.min_steady_state_duration_s) if cfg.continuous else spec.duration_s
+            per_rep_s = spec.warmup_s + confirmation_duration
             started = time.perf_counter()
             stopped = False
             for disc in reversed(candidates):  # highest first; stop at the first PASS
@@ -546,8 +641,8 @@ async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress:
                 if stopped:
                     confirmations.append(ConfirmationResult(value, INCONCLUSIVE, "not_tested"))
                     continue
-                est_per_rep = (value * spec.duration_s if spec.sweep.type == "rate"
-                               else disc.metrics.n / max(1, len(disc.repetitions)))
+                est_per_rep = (value * confirmation_duration if spec.sweep.type == "rate"
+                               else disc.metrics.n / max(1, len(disc.repetitions)) * confirmation_duration / spec.duration_s)
                 result = None
                 looks_used = 0
                 passed_look = None
@@ -566,7 +661,7 @@ async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress:
                     await condition(value, cfg.warmup_s)  # discarded: steady state before the looks
                 started += time.perf_counter() - paused_from
                 caps = candidate_caps(plan, cfg.max_requests, cfg.max_duration_s, est_requests_per_rep=est_per_rep,
-                                      per_rep_s=per_rep_s, measured_per_rep_s=spec.duration_s)
+                                      per_rep_s=per_rep_s, measured_per_rep_s=confirmation_duration)
                 if caps["per_candidate"]:
                     started = time.perf_counter()  # an `auto` budget is this candidate's own
                 requests_cap, duration_cap = caps["max_requests"], caps["max_duration_s"]
@@ -578,6 +673,9 @@ async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress:
                                                 next_look_n=plan.look_schedule[0], caps=caps)
                 while result is None:
                     state = await measure(value, 1, "confirmation")
+                    if validity["status"] == "invalid":
+                        result = ConfirmationResult(value, INCONCLUSIVE, "provider_state_invalid")
+                        break
                     point = build(value, "confirmation", conf=plan.per_test_confidence)
                     if on_progress is not None:
                         on_progress(subject.name, value, point)
@@ -699,6 +797,8 @@ async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress:
                             caps=caps,
                             steady_state={
                                 "required_duration_s": cfg.min_steady_state_duration_s,
+                                "continuous": cfg.continuous,
+                                "longest_continuous_window_s": max(w.end - w.start for w in state["windows"]),
                                 "measured_duration_s": measured_s,
                                 "minimum_duration_met": measured_s + 1e-9 >= cfg.min_steady_state_duration_s,
                                 "statistical_look_passed": passed_look is not None,

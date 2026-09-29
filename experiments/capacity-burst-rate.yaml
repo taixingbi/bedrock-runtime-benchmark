@@ -1,0 +1,31 @@
+# Opt-in: excluded from `run all`; each pulse is followed by checked recovery.
+name: capacity-burst-rate
+purpose: characterization
+burst_protocol: true
+description: Fixed-duration overload pulses, throttle onset and observed baseline recovery.
+workloads: [short_chat, rag_answer, long_generation]
+stream: true
+warmup_s: 0
+duration_s: 90
+sweep:
+  type: rate
+  quota_fractions: [1.25, 1.5, 2.0, 2.5]
+isolation:
+  inter_subject_cooldown_s: 120
+  recovery_probe:
+    duration_s: 20
+    concurrency: 1
+    max_throttle_rate: 0
+    min_success_rate: 0.99
+    max_ttft_ratio: 2
+    max_attempts: 5
+    retry_cooldown_s: 120
+    baseline_fraction: 0.25
+    baseline_duration_s: 120
+    baseline_min_requests: 100
+    baseline_goodput_ratio: 0.9
+transport:
+  max_connections: 128
+  total_max_attempts: 1
+  connect_timeout_s: 5
+  read_timeout_s: 60

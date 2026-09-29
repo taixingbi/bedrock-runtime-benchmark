@@ -101,6 +101,9 @@ def summarize(paths: Iterable[str], *, stability_threshold_pct: float = 20.0, mi
                                       (profile.get("sweep") or {}).get("values")) if mode == "sustain" else None,
             "workload": retest.get("workload"),
             "duration_s": retest.get("duration_s"),
+            "slo_policy": (profile.get("constraints") or {}).get("slo"),
+            "continuous_confirmation": (measurement.get("confirmation") or {}).get("continuous", False),
+            "recovery_policy": measurement.get("isolation"),
         }
         comparison_key = json.dumps(comparison, sort_keys=True)
         subjects = [("class", n, e) for n, e in (profile.get("workload_classes") or {}).items()]
@@ -117,7 +120,11 @@ def summarize(paths: Iterable[str], *, stability_threshold_pct: float = 20.0, mi
                     "measured_at": measured, "confirmed": confirmed, "admission": production,
                     "git_commit": env.get("git_commit"), "profile": path,
                     # v23+: a run whose provider never recovered supports no conclusion.
-                    "measurement_validity": (entry.get("measurement_validity") or {}).get("status", "valid"),
+                    "measurement_validity": ("invalid" if
+                        (entry.get("workload_validation") or {}).get("valid") is False
+                        or any((profile.get("workload_classes", {}).get(n, {}).get("workload_validation") or {}).get("valid") is False
+                               for n, share in (entry.get("shares") or {}).items() if share > 0)
+                        else (entry.get("measurement_validity") or {}).get("status", "valid")),
                 })
 
     report = []
@@ -209,7 +216,7 @@ def format_temporal(profile: dict) -> str:
         name = e.get("class") or e.get("mix")
         use = tv.get("production_capacity_input")
         details = ", ".join(f"{key}={value}" for key, value in (e.get("comparison") or {}).items()
-                            if value is not None and key not in ("mode", "workload"))
+                            if value is not None and key not in ("mode", "workload", "slo_policy", "recovery_policy"))
         lines.append(f"  {e['model']} / {e['experiment']} / {name} [{e['kind']}; mode={e.get('mode', 'sweep')}]: {e['status']}  "
                      f"runs={tv['runs']} days={tv['days_observed']} invalid={tv.get('invalid_runs', 0)}  "
                      f"production_capacity_input={use if use else 'none'}")

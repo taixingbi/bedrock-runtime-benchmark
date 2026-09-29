@@ -52,10 +52,10 @@ def experiment_names(root: Path) -> List[str]:
 
 
 def experiment_paths(names: List[str], root: Path) -> List[str]:
-    """Experiment names -> their files; `all` = every experiment."""
+    """Experiment names -> their files; `all` excludes opt-in overload experiments."""
     known = experiment_names(root)
     if names == ["all"]:
-        return [str(root / "experiments" / f"{n}.yaml") for n in known]
+        return [str(root / "experiments" / f"{n}.yaml") for n in known if n != "capacity-burst-rate"]
     unknown = [n for n in names if n not in known]
     if unknown:
         raise SystemExit(f"bedrock-benchmark: unknown experiment(s) {unknown} -- available: {', '.join(known)} "
@@ -168,9 +168,13 @@ def cmd_run(args, root: Path, paths: List[str], target_factory=None) -> int:
     models = _models(args)
     print(format_plan(plan(paths, models, only_slo_profiles=args.slo_profiles, mix=args.mix, retest=_retest(args))))
     results_dir = Path(args.results_dir or f"results/run-all-{time.strftime('%Y%m%d-%H%M%S')}")
+    metadata = run_metadata(args)
+    from .experiments.order import rotation_index
+    index = rotation_index(root, getattr(args, "workload_rotation_index", None))
+    metadata["workload_rotation_index"] = index
     batch = run_batch(paths, models, results_dir=results_dir, fail_fast=args.fail_fast,
                       only_slo_profiles=args.slo_profiles, mix=args.mix, retest=_retest(args), target_factory=target_factory,
-                      run_metadata=run_metadata(args))
+                      run_metadata=metadata)
     print(f"\n{'=' * 78}\nSUMMARY\n{'=' * 78}")
     print(format_summary(batch))
     from .summary import summarize_profile
@@ -300,6 +304,7 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--dry-run", action="store_true", help="same as `plan`")
     run.add_argument("--pilot", action="store_true", help="same as `pilot`")
     run.add_argument("--pilot-requests", type=int, default=3, metavar="N")
+    run.add_argument("--workload-rotation-index", type=int, help="replay a workload rotation; default: increment local run counter")
     run.add_argument("--results-dir", help="default: results/run-all-<timestamp>")
     run.add_argument("--fail-fast", action="store_true", help="stop at the first failed run")
     run.add_argument("--owner", help="who owns this run (default: $USER)")

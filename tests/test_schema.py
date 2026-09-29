@@ -44,7 +44,7 @@ class ShippedExperimentTests(unittest.TestCase):
         for path in sorted(Path("experiments").glob("*.yaml")):
             spec = load_experiment(str(path), MICRO)
             with self.subTest(path=path.name):
-                if spec.history_protocol is not None:
+                if spec.history_protocol is not None or spec.burst_protocol:
                     self.assertEqual(spec.purpose, "characterization")
                     self.assertIsNone(spec.confirmation)
                 else:
@@ -84,7 +84,7 @@ class ShippedExperimentTests(unittest.TestCase):
         spec = load_experiment("experiments/capacity-reference-concurrency.yaml", MICRO)
         self.assertEqual([(w.name, w.slo_profile) for w in spec.workloads],
                          [("short_chat", "gold"), ("rag_answer", "silver"), ("long_generation", "bronze")])
-        self.assertEqual(spec.sweep.stop_after_fails, 2)
+        self.assertEqual(spec.sweep.stop_after_fails, 1)
         # Sample-count driven: no repetition cap, only requests and time.
         c = spec.confirmation
         self.assertEqual((c.max_repetitions, c.max_requests, c.max_duration_s, c.candidates, c.cooldown_s),

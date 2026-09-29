@@ -4,10 +4,11 @@
 # experiment: a workload here sends no traffic until an experiment lists it.
 #
 #   in / out   input_tokens (padding calibrated to it) / output_tokens (max_tokens)
-#   slo        profile from constraints/slo.yaml: TTFT / TPOT / success / throttle
+#   slo        profile from constraints/slo.yaml: TPOT / success / throttle
+#              TTFT is selected separately from configured input_tokens.
 #   e2e        latency_p95_ms -- end-to-end cap for THIS workload (business-defined;
 #              different output lengths can't share one E2E budget)
-#   role       reference         -- one per SLO tier; the ONLY workloads a
+#   role       reference         -- the ONLY workloads a
 #                                   production admission envelope is produced for
 #                                   (by reference experiments: capacity-reference-rate,
 #                                   capacity-reference-concurrency, capacity-mix-rate)
@@ -24,7 +25,7 @@
 workloads:
   # name                       in      out   slo     e2e ms   role                      typical use -- purpose
 
-  # Reference workloads -- one per SLO tier
+  # Reference workloads -- TTFT follows input length, independently of slo_profile
   short_chat:                {input_tokens: 512,   output_tokens: 64,   slo_profile: gold,   latency_p95_ms: 3000,  role: reference}         # chatbot/copilot/short Q&A -- interactive baseline
   rag_answer:                {input_tokens: 4096,  output_tokens: 256,  slo_profile: silver, latency_p95_ms: 10000, role: reference}         # knowledge assistant/support RAG -- context + medium answer
   long_generation:           {input_tokens: 4096,  output_tokens: 1024, slo_profile: bronze, latency_p95_ms: 60000, role: reference}         # reports/code/drafts -- decode pressure, long occupancy

@@ -1,58 +1,51 @@
-# SLO -- what quality we REQUIRE, as named profiles. POLICY, not a
-# benchmark result: these are externally supplied requirements, and the
-# benchmark only finds the operating region that satisfies them -- it
-# never derives, tunes or relaxes an SLO from measurements. Kept separate from
-# workloads: catalog/workloads.yaml binds each workload to one of these
-# profiles explicitly (no default), and experiments only list workloads.
-# The same model serves every profile, so each profile yields its own
-# safe envelope per model -- a gateway's request_class -> limits.
+# TTFT budgets follow configured input length; TPOT and reliability are
+# selected independently through each workload's slo_profile.
+# These are policy budgets, not fitted provider performance or quota windows.
 #
-# Three service classes, by business criticality of the request -- not
-# by model:
+# Bands have inclusive upper bounds, in ascending order. The last is unbounded.
+# Selection uses the workload's declared input_tokens before calibration/load;
+# observed token counts must still pass workload validation. Crossing a band
+# due to sampling/calibration variation does not change a request's SLO.
+# Initial boundaries and budgets are configurable choices, not measured knees.
 #
-# Gated on the two latency components rather than end-to-end latency,
-# so one class stays meaningful whatever the output length:
-#
-#   ttft_p95_ms        time to first token, p95 (streaming only). Every
-#                      p95 limit T is judged as "P(value > T) <= 5%" with
-#                      an exact bound, like throttle: 59 clean requests to
-#                      PASS, more once any request is over T.
-#   tpot_p95_ms        time per output token after the first, p95:
-#                      (latency - TTFT) / (output_tokens - 1)
-#   (end-to-end latency is NOT set here -- it depends on output length,
-#    so each workload sets its own latency_p95_ms cap in catalog/workloads.yaml)
-#   success_rate_min   fraction of requests that must succeed
-#   throttle_rate_max  max fraction throttled (429)
-#   confidence         one-sided confidence (0.95 below; 0.95 if omitted):
-#                      latency exceedance, success and throttle are judged
-#                      PASS / FAIL / INCONCLUSIVE on exact (Clopper-Pearson)
-#                      bounds -- an observed violation FAILs; too few
-#                      requests to prove the limit is INCONCLUSIVE, not a
-#                      fail. Requests per point to resolve throttle_rate_max
-#                      at 95% with zero throttles: 2,995 (0.001), 598
-#                      (0.005), 299 (0.01). Don't loosen a profile to reach
-#                      PASS -- raise the confirmation caps instead.
+# ttft_p95_ms: SDK invocation to first non-empty streamed text, p95.
+# tpot_p95_ms: (latency - TTFT) / (output_tokens - 1), p95.
+# E2E budgets remain workload-specific in catalog/workloads.yaml.
+# Latency gates test threshold exceedances with exact confidence bounds;
+# the new TTFT selection rule does not change the statistical tests.
+# Profile names below select output-speed and reliability budgets only.
+
+ttft_budgets:
+  short_input:
+    max_input_tokens: 512
+    ttft_p95_ms: 800
+  medium_input:
+    max_input_tokens: 4096
+    ttft_p95_ms: 1500
+  long_input:
+    max_input_tokens: null
+    ttft_p95_ms: 3000
 
 profiles:
   gold:
-    # Real-time, latency-sensitive, business-critical workloads.
-    ttft_p95_ms: 800
+    # TPOT p95 <= 40 ms/output token.
+    # Success >= 99.5%; throttling <= 0.1%.
     tpot_p95_ms: 40
     success_rate_min: 0.995
     throttle_rate_max: 0.001
     confidence: 0.95
 
   silver:
-    # Standard synchronous application workloads.
-    ttft_p95_ms: 1500
+    # TPOT p95 <= 70 ms/output token.
+    # Success >= 99%; throttling <= 0.5%.
     tpot_p95_ms: 70
     success_rate_min: 0.99
     throttle_rate_max: 0.005
     confidence: 0.95
 
   bronze:
-    # Async, batch, or throughput-oriented workloads.
-    ttft_p95_ms: 3000
+    # TPOT p95 <= 120 ms/output token.
+    # Success >= 99%; throttling <= 1%.
     tpot_p95_ms: 120
     success_rate_min: 0.99
     throttle_rate_max: 0.01

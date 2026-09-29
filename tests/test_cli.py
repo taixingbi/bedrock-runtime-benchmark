@@ -63,7 +63,9 @@ class CliTests(unittest.TestCase):
 
     def test_experiments_are_named_not_pathed(self):
         self.assertEqual(cli.experiment_paths(["capacity-reference-rate"], REPO), [str(REPO / "experiments/capacity-reference-rate.yaml")])
-        self.assertEqual(len(cli.experiment_paths(["all"], REPO)), len(cli.experiment_names(REPO)))
+        self.assertEqual(len(cli.experiment_paths(["all"], REPO)), len(cli.experiment_names(REPO)) - 1)
+        self.assertNotIn(str(REPO / "experiments/capacity-burst-rate.yaml"), cli.experiment_paths(["all"], REPO))
+        self.assertEqual(cli.experiment_paths(["capacity-burst-rate"], REPO), [str(REPO / "experiments/capacity-burst-rate.yaml")])
         with self.assertRaises(SystemExit) as ctx:
             cli.experiment_paths(["experiments/capacity-reference-rate.yaml"], REPO)
         self.assertIn("unknown experiment", str(ctx.exception))

@@ -213,6 +213,7 @@ class ConfirmationResult:
             out["decision"] = {"n": self.decision_n, "n_throttled": d.n_throttled,
                                "throttle_rate_upper": d.throttle_rate_upper, "success_rate_lower": d.success_rate_lower}
         if self.detail is not None:
+            out["checks_basis"] = "fixed_count_decision" if self.stop_reason in ("confirmed", "violation_demonstrated", "looks_exhausted") else "descriptive_all_collected; not the sequential verdict"
             out["checks"] = [c.to_dict() for c in self.detail.checks if c.verdict != PASS] or "all PASS"
         if self.point is not None:
             m = self.point.metrics

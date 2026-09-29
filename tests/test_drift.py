@@ -130,3 +130,23 @@ class DriftTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_different_slo_policies_do_not_pool(tmp_path):
+    a = _profile("2026-09-26T10:00:00+00:00", 5, 4)
+    b = copy.deepcopy(a)
+    a["constraints"] = {"slo":{"effective_by_workload":{"short_chat":{"ttft_p95_ms":800}}}}
+    b["constraints"] = {"slo":{"effective_by_workload":{"short_chat":{"ttft_p95_ms":1500}}}}
+    for name, profile in (("a",a),("b",b)):
+        (tmp_path / f"{name}-capacity-profile.yaml").write_text(yaml.safe_dump(profile))
+    assert len(summarize([str(tmp_path)])) == 2
+
+
+def test_continuous_and_accumulated_exposure_do_not_pool(tmp_path):
+    a = _profile('2026-09-26T10:00:00+00:00', 5, 4)
+    a['measurement'] = {'confirmation': {'min_steady_state_duration_s': 300, 'continuous': False}}
+    b = copy.deepcopy(a)
+    b['measurement']['confirmation']['continuous'] = True
+    for name, profile in [('a', a), ('b', b)]:
+        (tmp_path / f'{name}-capacity-profile.yaml').write_text(yaml.safe_dump(profile))
+    assert len(summarize([str(tmp_path)])) == 2

@@ -13,7 +13,7 @@
 # nova-micro) is reached at C ~= ceiling x latency: ~4 for short_chat
 # (~0.56 s), ~14 for rag_answer (~2 s), ~43 for long_generation (~6.5 s)
 # -- so one list spans 1..48, and stop_after_fails ends each class's
-# discovery two points past its saturation instead of sweeping a
+# discovery at its first clear failure instead of sweeping a
 # throttle storm. For a low-quota model even C=1 can exceed quota --
 # that's a real result, and capacity-reference-rate.yaml resolves such a model.
 #
@@ -25,8 +25,8 @@ name: capacity-reference-concurrency
 description: |
   The three reference workloads (short_chat gold, rag_answer silver,
   long_generation bronze), each swept alone at concurrency 1..48 until
-  two consecutive FAILs, 10s warmup + 120s window per point, plus
-  adaptive confirmation at the top two non-failing concurrencies.
+  a clear FAIL, 10s warmup + 120s window per discovery point, plus
+  adaptive confirmation with continuous windows of at least 300s.
   Answers: each class's isolated max_inflight and its saturation edge.
 
 workloads: [short_chat, rag_answer, long_generation]
@@ -41,7 +41,8 @@ stream: true
 sweep:
   type: concurrency
   values: [1, 2, 4, 6, 8, 12, 16, 24, 32, 48]
-  stop_after_fails: 2
+  stop_after_fails: 1
+  stop_after_clear_fail: true
   # Coarse grid -> non-FAIL / FAIL bracket -> integer bisection ->
   # fresh confirmation. 8 non-FAIL / 12 FAIL tests 10, then 11 or 9: the
   # candidate becomes the real edge (say 11 -> max_inflight 8) instead of
@@ -68,6 +69,10 @@ isolation:
   # Points throttled far below the ceiling are discarded, recovered and
   # re-measured once (provider state, not the point's own load).
   recovery_probe:
+    baseline_fraction: 0.25
+    baseline_duration_s: 120
+    baseline_min_requests: 100
+    baseline_goodput_ratio: 0.9
     duration_s: 20
     concurrency: 1
     max_throttle_rate: 0.0
@@ -80,7 +85,7 @@ isolation:
 #
 #   coarse concurrency sweep          fixed-duration windows (warmup_s / duration_s above)
 #           |
-#   two consecutive FAILs             stop_after_fails
+#   first clear FAIL             stop_after_fails
 #           |
 #   integer bisection refinement      refinement -- still discovery-class data
 #           |
@@ -109,6 +114,8 @@ isolation:
 # cooldown_s runs before each tested candidate (not counted against
 # max_duration_s), so none inherits the overload that ran before it.
 confirmation:
+  min_steady_state_duration_s: 300
+  continuous: true
   max_looks: 2
   max_requests: 8000
   max_duration_s: 3000

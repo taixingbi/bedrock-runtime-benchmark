@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -152,9 +153,14 @@ class BedrockConverseTarget:
         # so no lock is needed.
         self._outstanding = 0
         self.peak_outstanding = 0
+        self._sdk_lock = threading.Lock()
+        self._sdk_inflight = 0
+        self.peak_sdk_inflight = 0
 
     def reset_peak(self) -> None:
         self.peak_outstanding = self._outstanding
+        with self._sdk_lock:
+            self.peak_sdk_inflight = self._sdk_inflight
 
     @property
     def client_limited(self) -> bool:
@@ -214,6 +220,16 @@ class BedrockConverseTarget:
             self._outstanding -= 1
 
     def _invoke_sync(self, request: InvokeRequest) -> RequestResult:
+        with self._sdk_lock:
+            self._sdk_inflight += 1
+            self.peak_sdk_inflight = max(self.peak_sdk_inflight, self._sdk_inflight)
+        try:
+            return self._invoke_tracked(request)
+        finally:
+            with self._sdk_lock:
+                self._sdk_inflight -= 1
+
+    def _invoke_tracked(self, request: InvokeRequest) -> RequestResult:
         request_id = str(uuid.uuid4())
         scheduled_at = request.scheduled_at or time.time()
         clock = _Clock()

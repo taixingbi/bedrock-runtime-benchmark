@@ -241,7 +241,7 @@ class RunExperimentTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_concurrency_sweep_confirms_its_candidate_with_fresh_data(self):
         from bedrock_benchmark.experiments.schema import ConfirmationConfig
-        target = BedrockConverseTarget(model_id="m", client=FakeBedrockRuntimeClient())
+        target = BedrockConverseTarget(model_id="m", client=FakeBedrockRuntimeClient(responses=[{"input_tokens": 100, "output_tokens": 16, "text": "ok"}]))
         spec = _spec(sweep=SweepConfig(type="concurrency", values=[2, 4]), repetitions=1, slo=self.LOOSE,
                      confirmation=ConfirmationConfig(max_repetitions=20, max_requests=10**6))
 

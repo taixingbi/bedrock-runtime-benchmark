@@ -533,7 +533,7 @@ def _measurement_windows(subject, spec, all_results, recorded_windows=()):
 
     grouped = {
         (w["start"], w["end"], w["phase"], w["value"], w["repetition"]): []
-        for w in recorded_windows if w["subject"] == subject
+        for w in recorded_windows if w["subject"] == subject and w["phase"] != "invalidated"
     }
     for r in all_results:
         tags = r.tags
@@ -555,6 +555,11 @@ def _measurement_windows(subject, spec, all_results, recorded_windows=()):
         window = MeasurementWindow(start, end)
         entry = {"phase": phase, "value": value, "repetition": repetition,
                  **describe_series(rows, window, **kwargs)}
+        observed_peak = next((w["peak_sdk_inflight"] for w in recorded_windows
+                              if w["subject"] == subject and w["start"] == start
+                              and "peak_sdk_inflight" in w), None)
+        if observed_peak is not None:
+            entry["peak_sdk_inflight"] = observed_peak
         if spec.mix is not None:
             entry["classes"] = {
                 w.name: describe_series([r for r in rows if r.tags.get("workload") == w.name],
@@ -566,6 +571,22 @@ def _measurement_windows(subject, spec, all_results, recorded_windows=()):
 
 
 def _envelope(entry: dict, profile_report, spec, report_results: List[RequestResult], recorded_windows=()) -> None:
+    _envelope_unchecked(entry, profile_report, spec, report_results, recorded_windows)
+    reasons = []
+    if entry.get("workload_validation", {}).get("valid") is False:
+        reasons.append("workload_validation_failed")
+    if (profile_report.measurement_validity or {}).get("status") == "invalid":
+        reasons.append("measurement INVALID")
+    if reasons:
+        prior_reason = entry.get("recommendation", {}).get("reason")
+        if prior_reason:
+            reasons.append(prior_reason)
+        entry["recommendation"] = {"admission_envelope": None, "reason": "; ".join(reasons)}
+        if "calibration_point" in entry:
+            entry["calibration_point"] = None
+
+
+def _envelope_unchecked(entry: dict, profile_report, spec, report_results: List[RequestResult], recorded_windows=()) -> None:
     subject = profile_report.workload_name
     control = entry.get("role") == "reference_control"
     purpose = "characterization" if control else spec.purpose
@@ -597,8 +618,9 @@ def _envelope(entry: dict, profile_report, spec, report_results: List[RequestRes
         entry["sweep_points"] = _sweep_points(profile_report, sub_ceiling.rps if sub_ceiling else None)
     swept = {_value(p) for p in points}
     skipped = [v for v in spec.sweep_values(subject) if v not in swept]
-    if skipped and spec.sweep.stop_after_fails is not None:
-        entry["sweep_stopped_early"] = {"after_consecutive_fails": spec.sweep.stop_after_fails, "skipped_values": skipped}
+    if skipped and (spec.sweep.stop_after_fails is not None or spec.sweep.stop_after_clear_fail):
+        entry["sweep_stopped_early"] = {"after_consecutive_fails": spec.sweep.stop_after_fails,
+                                        **({"stop_after_clear_fail": True} if spec.sweep.stop_after_clear_fail else {}), "skipped_values": skipped}
     if profile_report.measurement_validity is not None:
         # valid | suspect_* | invalid -- suspect measurements carry
         # explicit caveats even when a lower candidate confirms.
@@ -612,6 +634,10 @@ def _envelope(entry: dict, profile_report, spec, report_results: List[RequestRes
             "candidates": [_candidate_dict(c, sub_ceiling.rps if sub_ceiling else None)
                            for c in profile_report.confirmations],
         }
+    if spec.burst_protocol:
+        entry["burst"] = (profile_report.measurement_validity or {}).get("burst_results", [])
+        entry["recommendation"] = _no_recommendation(purpose)
+        return
     rec = profile_report.recommendation
     if rec is None:
         analysis = profile_report.analysis
@@ -748,6 +774,8 @@ def build_capacity_profile(report: ExperimentReport, run_metadata: Optional[dict
         profile_report = by_name.get(workload.name)
         if profile_report is not None and profile_report.mix_shares is None:
             _envelope(entry, profile_report, spec, report.all_results, report.measurement_windows)
+            if spec.name == "capacity-reference-rate":
+                entry.get("rate", {}).pop("measured_burst_ceiling_rps", None)
         workload_classes[workload.name] = entry
 
     mixed: Dict[str, dict] = {}
@@ -766,6 +794,10 @@ def build_capacity_profile(report: ExperimentReport, run_metadata: Optional[dict
             for name in profile_report.mix_shares
         })
         entry["observed_mix"]["scope"] = "all_measured_requests"
+        entry["workload_validation"] = {
+            "valid": not any(workload_classes[n]["workload_validation"]["valid"] is False
+                             for n, share in profile_report.mix_shares.items() if share > 0)
+        }
         _envelope(entry, profile_report, spec, report.all_results, report.measurement_windows)
         rec = profile_report.recommendation
         if rec is not None and rec.confirmed_point is not None:
@@ -826,6 +858,15 @@ def build_capacity_profile(report: ExperimentReport, run_metadata: Optional[dict
             # envelope is judged against -- never derived from measurements.
             "slo": {
                 "role": "policy_input",
+                "ttft_selection": "configured_workload_input_tokens" if spec.ttft_budgets else "profile",
+                "ttft_budgets": {
+                    name: {"max_input_tokens": b.max_input_tokens, "ttft_p95_ms": b.ttft_p95_ms}
+                    for name, b in spec.ttft_budgets.items()
+                },
+                "effective_by_workload": {
+                    w.name: {"ttft_budget": spec.ttft_budget_name(w.name), **_slo_dict(spec.slo_for(w.name))}
+                    for w in spec.workloads
+                },
                 "profiles": {
                     n: _slo_dict(spec.slo_profiles[n])
                     for n in sorted({w.slo_profile for w in spec.workloads if w.slo_profile in spec.slo_profiles})
@@ -833,7 +874,7 @@ def build_capacity_profile(report: ExperimentReport, run_metadata: Optional[dict
             },
             # The catalog entries (catalog/workloads.yaml) as run: shape,
             # profile, and the workload-level E2E cap -- profiles carry
-            # only TTFT/TPOT, so latency_p95_ms is null there and the
+            # TPOT/reliability; TTFT is resolved above by input length. The
             # effective E2E limit is the one here.
             "workloads": {
                 w.name: {"input_tokens": w.input_tokens, "output_tokens": w.output_tokens,
@@ -842,6 +883,9 @@ def build_capacity_profile(report: ExperimentReport, run_metadata: Optional[dict
             },
         },
         "measurement": {
+            "workload_rotation_index": spec.workload_rotation_index,
+            "workload_order": [p.workload_name for p in report.profiles],
+            "burst_protocol": spec.burst_protocol,
             "metrics_version": 1,
             "stream": spec.stream,
             "descriptive_bin_s": spec.history_protocol.bin_s if spec.history_protocol else 30,
@@ -889,7 +933,8 @@ def build_capacity_profile(report: ExperimentReport, run_metadata: Optional[dict
                  "max_requests": spec.confirmation.max_requests, "max_duration_s": spec.confirmation.max_duration_s,
                  "candidates": spec.confirmation.candidates, "cooldown_s": spec.confirmation.cooldown_s,
                  "warmup_s": spec.confirmation.warmup_s,
-                 "min_steady_state_duration_s": spec.confirmation.min_steady_state_duration_s}
+                 "min_steady_state_duration_s": spec.confirmation.min_steady_state_duration_s,
+                 "continuous": spec.confirmation.continuous}
                 if spec.confirmation is not None else None
             ),
             "min_requests_to_resolve_throttle_slo": min_samples_to_resolve_rate(
@@ -898,6 +943,7 @@ def build_capacity_profile(report: ExperimentReport, run_metadata: Optional[dict
         },
         "sweep": {
             "type": spec.sweep.type,
+            "stop_after_clear_fail": spec.sweep.stop_after_clear_fail,
             # Absolute values, or quota_fractions of each subject's
             # provider ceiling (resolved per class: sweep_values_rps).
             **({"quota_fractions": spec.sweep.quota_fractions, "relative_to": "provider_ceiling"}
