@@ -15,7 +15,6 @@ on:
 
 permissions:
   contents: read
-  id-token: write
 
 # Serialize live runs across this workflow, including different models.
 concurrency:
@@ -70,29 +69,19 @@ jobs:
           Path('experiments/diagnostic-context-history-ci.yaml').write_text(encoded)
           PY
           bedrock-benchmark plan diagnostic-context-history-ci --model "$MODEL"
-      - name: Check AWS role configuration
-        if: ${{ !inputs.dry_run }}
-        env:
-          ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
-        run: |
-          if [ -z "$ROLE_ARN" ]; then
-            echo 'Configure repository variable AWS_ROLE_ARN with an OIDC role (MaxSessionDuration >= 18000 seconds).'
-            exit 1
-          fi
       - name: Authenticate to AWS
         if: ${{ !inputs.dry_run }}
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: us-east-1
-          role-duration-seconds: 18000
-          role-session-name: benchmark-${{ github.run_id }}
       - name: Run history subset
         if: ${{ !inputs.dry_run }}
         env:
           RUN_OWNER: ${{ github.actor }}
         run: |
-          # Stop before credentials/job expire, leaving time to upload completed arms.
+          # Stop before the job timeout, leaving time to upload completed arms.
           timeout --signal=INT --kill-after=90s 270m \
             bedrock-benchmark run diagnostic-context-history-ci --model "$MODEL" \
               --results-dir results --workload-rotation-index 0 \

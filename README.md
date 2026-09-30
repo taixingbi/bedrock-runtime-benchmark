@@ -478,10 +478,10 @@ about 3.4 hours plus calibration/drain, below the hosted runner's six-hour limit
 Total measurement time remains about 34.3 hours; runner setup adds overhead.
 Matrix job ordering is not guaranteed. Avoid other traffic sharing the quota.
 
-Configure repository **Settings → Secrets and variables → Actions → Variables**:
-`AWS_ROLE_ARN` must name an AWS role that trusts GitHub OIDC for this repository
-and the selected branch, permits the required Bedrock calls, and has
-`MaxSessionDuration >= 18000` seconds. No local AWS credentials are copied.
+Configure repository **Settings → Secrets and variables → Actions → Secrets**:
+add `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` for a dedicated IAM user
+with the required Bedrock permissions. Store the keys only in Actions secrets.
+This workflow uses the keys directly; it does not require `AWS_ROLE_ARN` or OIDC.
 The workflow authenticates separately for each job and stops measurement after
 270 minutes to leave time for cleanup and artifact upload.
 
