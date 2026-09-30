@@ -413,7 +413,9 @@ def _candidate_dict(result, ceiling_rps: Optional[float]) -> dict:
     if result.point is not None and ceiling_rps:
         out["ceiling_ratio"] = ceiling_ratio(result.point, ceiling_rps)
         if _throttled_below_ceiling(result, ceiling_rps):
-            out["throttled_below_ceiling"] = True  # provider state suspect -- see _unconfirmed_reason
+            out["throttled_below_ceiling"] = True
+            out["capacity_interpretation"] = "provider_state_anomaly; candidate safety unresolved"
+            out["anomaly"] = {"kind": "throttled_below_nominal_ceiling", "cause": "unresolved"}
     return out
 
 
@@ -447,8 +449,7 @@ def _unconfirmed_reason(profile_report, spec) -> str:
         suspect = [c for c in tried if _throttled_below_ceiling(c, sub_ceiling.rps if sub_ceiling else None)]
         if suspect:
             text += ("; NOTE: " + ", ".join(f"{c.value:g}" for c in suspect) + " throttled while served far below "
-                     "the nominal ceiling (throttled_below_ceiling) -- that points at provider state (a preceding "
-                     "overload, other traffic), not the candidate's own load: re-run before reading it as unsafe")
+                     "the nominal ceiling (throttled_below_ceiling) -- possible provider state anomaly; cause unresolved: re-run before reading it as unsafe")
         return text
     ordered = sorted(zip(profile_report.points, profile_report.verdicts), key=lambda pv: _value(pv[0]))
     stop = next(((p, v) for p, v in ordered if v.verdict != PASS), None)
@@ -776,6 +777,18 @@ def build_capacity_profile(report: ExperimentReport, run_metadata: Optional[dict
             _envelope(entry, profile_report, spec, report.all_results, report.measurement_windows)
             if spec.name == "capacity-reference-rate":
                 entry.get("rate", {}).pop("measured_burst_ceiling_rps", None)
+        if profile_report is not None and profile_report.mix_shares is None:
+            confirmed = next((c for c in profile_report.confirmations if c.verdict == PASS), None)
+            entry["operating_conditions"] = {
+                "scope": "isolated_workload_class",
+                "provider_state": confirmed.provider_state if confirmed else None,
+                "measurement_status": (profile_report.measurement_validity or {}).get("status", "unverified"),
+                "quota": {"rpm": spec.quota_snapshot.rpm, "tpm": spec.quota_snapshot.tpm},
+                "slo": _slo_dict(spec.slo_for(workload.name)),
+                "environment": _environment(report),
+                "interpretation": "conditional on observed conditions; recovery probes do not prove provider reset",
+                "temporal_validation_required": True,
+            }
         workload_classes[workload.name] = entry
 
     mixed: Dict[str, dict] = {}

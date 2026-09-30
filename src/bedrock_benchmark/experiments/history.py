@@ -5,7 +5,9 @@ The observation is one continuous load window; bins do not restart the runner.
 """
 from __future__ import annotations
 
+import asyncio
 import math
+import time
 
 from ..analysis.capacity import SweepPoint
 from ..analysis.observability import describe_metrics
@@ -55,19 +57,27 @@ async def run_history_comparison(spec, target, subject, all_results, recover, on
     arms = []
     for trial in range(spec.repetitions):
         # Reverse order on alternate trials to expose, rather than hide, order effects.
-        scenarios = ["after_idle", "after_overload_recovery"]
+        scenarios = [("after_idle", None)] + [("after_overload_recovery", delay)
+                    for delay in (h.recovery_delays_s or [h.recovery_s])]
         if trial % 2:
             scenarios.reverse()
         for index, rps in enumerate(spec.sweep_values(subject.name)):
             seed = None if spec.seed is None else spec.seed + trial * 10000 + index
-            for scenario in scenarios:
+            for scenario, recovery_delay in scenarios:
                 arm = {"scenario": scenario, "trial": trial, "target_rps": rps,
                        "nominal_ceiling_rps": ceiling, "seed": seed,
-                       "status": "preparing", "bins": []}
+                       "status": "preparing", "bins": [],
+                       "recovery_mode": h.recovery_mode, "requested_recovery_s": recovery_delay}
                 arms.append(arm)
-                # Same idle preparation for both arms; a healthy probe is an
-                # observed baseline, not a claim that the provider has reset.
-                if not await recover(h.idle_s, f"history {scenario} rate {rps} trial {trial}: baseline"):
+                # Prepare each arm independently. Fixed waits send no probes;
+                # verified mode retains the legacy recovery checks.
+                async def prepare(seconds, reason):
+                    if h.recovery_mode == "fixed_wait":
+                        await asyncio.sleep(seconds)
+                        return True
+                    return await recover(seconds, reason)
+
+                if not await prepare(h.idle_s, f"history {scenario} rate {rps} trial {trial}: baseline"):
                     arm["status"] = "baseline_unhealthy"
                     return arms
 
@@ -79,6 +89,7 @@ async def run_history_comparison(spec, target, subject, all_results, recover, on
                     for r in rows:
                         r.tags.update({"subject": subject.name, "sweep_type": "rate", "sweep_value": rate,
                                        "phase": phase, "scenario": scenario, "trial": trial,
+                                       "requested_recovery_s": recovery_delay,
                                        "window_start": runner.window.start, "window_end": runner.window.end,
                                        "measured": phase == "history_measurement" and runner.window.contains(r.scheduled_at)})
                     all_results.extend(rows)
@@ -91,17 +102,34 @@ async def run_history_comparison(spec, target, subject, all_results, recover, on
                     arm["overload"]["throttling_observed"] = any(r.throttled for r in rows)
                     # Rate > nominal ceiling is an offered overload, not proof
                     # that a hidden provider resource was exhausted.
-                    if not await recover(h.recovery_s, f"history {scenario} rate {rps} trial {trial}: recovery"):
+                    arm["overload_drained_at"] = time.time()
+                    if not await prepare(recovery_delay, f"history {scenario} rate {rps} trial {trial}: recovery"):
                         arm["status"] = "recovery_unhealthy"
                         return arms
                 rows, window = await load(rps, spec.duration_s, "history_measurement")
                 if "overload" in arm:
                     arm["seconds_since_overload_end"] = window.start - arm["overload"]["end"]
+                    arm["seconds_since_overload_drain"] = window.start - arm["overload_drained_at"]
                 arm["aggregate"] = describe_window(rows, window, slo, rps)
                 for i in range(math.ceil(window.duration_s / h.bin_s)):
                     start = window.start + i * h.bin_s
                     b = MeasurementWindow(start, min(start + h.bin_s, window.end))
                     arm["bins"].append({"offset_s": i * h.bin_s, **describe_window(rows, b, slo, rps)})
+                initial_end = min(window.start + 120, window.end)
+                tail_start = window.start + window.duration_s * 2 / 3
+                first = describe_window(rows, MeasurementWindow(window.start, initial_end), slo, rps)
+                tail = describe_window(rows, MeasurementWindow(tail_start, window.end), slo, rps)
+                throttled = [r.scheduled_at - window.start for r in rows
+                             if r.throttled and window.contains(r.scheduled_at)]
+                arm["recovery_summary"] = {
+                    "first_throttle_offset_s": min(throttled) if throttled else None,
+                    "initial_window_s": initial_end - window.start,
+                    "tail_start_offset_s": tail_start - window.start,
+                    "initial_successful_rps": first["successful_rps"],
+                    "tail_successful_rps": tail["successful_rps"],
+                    "throttle_rate": arm["aggregate"]["throttle_rate"],
+                    "interpretation": "descriptive; does not establish SLO compliance or provider reset",
+                }
                 arm["status"] = "observed"
                 if on_progress:
                     metrics = compute_run_metrics(rows, windows=[window], offered_rps=rps,

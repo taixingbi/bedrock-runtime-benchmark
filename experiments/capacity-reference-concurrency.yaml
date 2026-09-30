@@ -23,6 +23,8 @@
 purpose: reference
 name: capacity-reference-concurrency
 description: |
+  Estimate the isolated-workload concurrency operating envelope under healthy
+  observed provider conditions. Recovery checks do not prove a provider reset.
   The three reference workloads (short_chat gold, rag_answer silver,
   long_generation bronze), each swept alone at concurrency 1..48 until
   a clear FAIL, 10s warmup + 120s window per discovery point, plus
@@ -81,6 +83,11 @@ isolation:
     max_attempts: 5
     retry_cooldown_s: 120
 
+# Every confirmation candidate (including a lower candidate after failure)
+# requires cooldown -> liveness probe -> baseline-capacity probe -> fresh data.
+# Probe failure blocks confirmation. Candidate provider_state records the checks.
+# Repeat at different times/days and use temporal validation before production.
+#
 # The whole experiment, per class:
 #
 #   coarse concurrency sweep          fixed-duration windows (warmup_s / duration_s above)

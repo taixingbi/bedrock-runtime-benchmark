@@ -63,6 +63,8 @@ class HistoryProtocol:
     overload_quota_fraction: float = 2.0
     overload_duration_s: float = 120.0
     recovery_s: float = 120.0
+    recovery_delays_s: Optional[List[float]] = None
+    recovery_mode: str = "verified"
     bin_s: float = 30.0
 
 
@@ -680,11 +682,18 @@ def _validate(spec: ExperimentSpec) -> None:
     h = spec.history_protocol
     if h is not None:
         if (spec.purpose != "characterization" or spec.sweep.type != "rate" or spec.mix is not None
-                or spec.confirmation is not None or spec.recovery_probe is None
+                or spec.confirmation is not None or (h.recovery_mode == "verified" and spec.recovery_probe is None)
                 or spec.sweep.stop_after_fails is not None or spec.sweep.refinement is not None or spec.warmup_s != 0):
-            raise ValueError("history_protocol requires isolated characterization rate measurements, recovery probes, "
+            raise ValueError("history_protocol requires isolated characterization rate measurements, probes in verified mode, "
                              "zero warmup, no confirmation/refinement/early-stop")
-        for name, value in vars(h).items():
+        if h.recovery_mode not in {"verified", "fixed_wait"}:
+            raise ValueError("history_protocol.recovery_mode must be verified or fixed_wait")
+        if h.recovery_delays_s is not None and (
+                not isinstance(h.recovery_delays_s, list) or not h.recovery_delays_s or
+                any(type(v) not in (int, float) or not math.isfinite(v) or v <= 0 for v in h.recovery_delays_s)):
+            raise ValueError("history_protocol.recovery_delays_s must be a nonempty list of positive finite delays")
+        for name in ("idle_s", "overload_quota_fraction", "overload_duration_s", "recovery_s", "bin_s"):
+            value = getattr(h, name)
             if not isinstance(value, (float, int)) or not math.isfinite(value) or value <= 0:
                 raise ValueError(f"history_protocol.{name} must be finite and > 0")
         if h.overload_quota_fraction <= 1 or h.bin_s > spec.duration_s:

@@ -652,11 +652,20 @@ async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress:
                 # what ran before it and conditioning never starts on a
                 # throttled provider. None of it counts against
                 # max_duration_s: shift its clock.
+                recovery_start = len(validity["recovery_probes"])
+                candidate_state = {"status": "unverified", "recovery_checks": []}
                 paused_from = time.perf_counter()
                 if not await recover(cfg.cooldown_s, f"before candidate {value:g}"):
-                    confirmations.append(ConfirmationResult(value, INCONCLUSIVE, "provider_state_invalid"))
+                    candidate_state.update(status="unrecovered", recovery_checks=list(validity["recovery_probes"][recovery_start:]))
+                    confirmations.append(ConfirmationResult(value, INCONCLUSIVE, "provider_state_invalid",
+                                                            provider_state=candidate_state))
                     stopped = True  # the provider never recovered: no further candidate is meaningful
                     continue
+                candidate_state.update(
+                    status="healthy_observed" if rp is not None and rp.baseline_fraction is not None else "unverified",
+                    recovery_checks=list(validity["recovery_probes"][recovery_start:]),
+                    checked_at_unix_s=time.time(),
+                )
                 if cfg.warmup_s > 0:
                     await condition(value, cfg.warmup_s)  # discarded: steady state before the looks
                 started += time.perf_counter() - paused_from
@@ -681,7 +690,7 @@ async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress:
                         on_progress(subject.name, value, point)
                     if suspect_retries and suspect_point(point, ceiling_rps):
                         # Control signal: throttled far below the ceiling --
-                        # provider state, not this candidate's own load.
+                        # possible provider-state anomaly; cause remains unresolved.
                         # Discard its confirmation data, recover, restart.
                         suspect_retries -= 1
                         paused_from = time.perf_counter()
@@ -689,6 +698,11 @@ async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress:
                         note_suspect("confirmation", value, point,
                                      "restarted_after_recovery" if ok else "provider_unrecovered")
                         invalidate("confirmation", value)
+                        candidate_state.update(
+                            status="anomaly_observed" if ok else "unrecovered",
+                            recovery_checks=list(validity["recovery_probes"][recovery_start:]),
+                            checked_at_unix_s=time.time(),
+                        )
                         if not ok:
                             result = ConfirmationResult(value, INCONCLUSIVE, "provider_state_invalid")
                             break
@@ -805,6 +819,7 @@ async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress:
                                 "violations": sanity,
                             },
                         )
+                result.provider_state = candidate_state
                 confirmations.append(result)
                 stopped = result.verdict == PASS or result.stop_reason == "provider_state_invalid"
             confirmed = highest_confirmed(confirmations)

@@ -253,3 +253,44 @@ def test_invalid_measurement_blocks_otherwise_confirmed_capacity(monkeypatch):
     assert entry["workload_validation"]["valid"] is True
     assert entry["concurrency"]["statistically_confirmed"] == 2
     assert entry["recommendation"]["admission_envelope"] is None
+
+
+@pytest.mark.parametrize('recover_next', [True, False])
+def test_each_candidate_requires_its_own_healthy_baseline(monkeypatch, recover_next):
+    # Initial probes, two discovery points, candidate 2 probes + failed
+    # confirmation, then candidate 1 probes (and confirmation only if healthy).
+    counts = [(100, 0), (100, 0), (200, 0), (200, 0),
+              (100, 0), (100, 0), (100, 900),
+              (100, 0), (100, 0) if recover_next else (10, 90)]
+    if recover_next:
+        counts.append((1000, 0))
+    calls = scripted(monkeypatch, counts)
+    spec = _spec(repetitions=1, duration_s=10, warmup_s=0,
+        sweep=SweepConfig(type='concurrency', values=[1, 2]),
+        recovery_probe=RecoveryProbe(baseline_fraction=.25, baseline_duration_s=10,
+            baseline_min_requests=10, max_attempts=1, retry_cooldown_s=0),
+        confirmation=ConfirmationConfig(candidates=2, cooldown_s=0, continuous=True,
+            min_steady_state_duration_s=300, max_requests='auto', max_duration_s='auto'),
+        slo=replace(_spec().slo, throttle_rate_max=.01, success_rate_min=.99))
+    spec.provider_ceilings = {'short': ProviderCeiling(tokens_per_request=116, rpm_rps=40, tpm_rps=None)}
+    # This test isolates candidate transitions, independently of anomaly retries.
+    monkeypatch.setattr(executor, 'suspect_point', lambda *args: False)
+    report = run(spec)
+    first, second = report.profiles[0].confirmations
+    assert first.verdict == 'FAIL'
+    assert first.provider_state['status'] == 'healthy_observed'
+    assert second.verdict == ('PASS' if recover_next else 'INCONCLUSIVE')
+    assert second.provider_state['status'] == ('healthy_observed' if recover_next else 'unrecovered')
+    assert len(calls) == (10 if recover_next else 9)
+    assert all(p['reason'] == 'before candidate 1' for p in second.provider_state['recovery_checks'])
+    assert [p['kind'] for p in second.provider_state['recovery_checks']] == ['liveness', 'baseline_capacity']
+    artifact = build_capacity_profile(report)['workload_classes']['short']
+    assert artifact['operating_conditions']['temporal_validation_required']
+    anomaly = artifact['confirmation']['candidates'][0]
+    assert anomaly['verdict'] == 'FAIL'
+    assert anomaly['anomaly']['cause'] == 'unresolved'
+    assert 'safety unresolved' in anomaly['capacity_interpretation']
+    assert artifact['confirmation']['candidates'][1]['provider_state'] == second.provider_state
+    if recover_next:
+        assert second.n == 1000  # discovery and recovery data are excluded
+        assert artifact['operating_conditions']['provider_state']['status'] == 'healthy_observed'

@@ -197,12 +197,15 @@ class ConfirmationResult:
     # The caps this candidate ran under -- per candidate when `auto`.
     caps: Optional[dict] = None
     steady_state: Optional[dict] = None
+    provider_state: Optional[dict] = None
 
     def to_dict(self) -> dict:
         out = {"value": self.value, "verdict": self.verdict, "stop_reason": self.stop_reason,
                "repetitions": self.repetitions, "n": self.n, "looks_used": self.looks_used}
         if self.next_look_n is not None and self.verdict != PASS:
             out["next_look_n"] = self.next_look_n
+        if self.provider_state is not None:
+            out["provider_state"] = self.provider_state
         if self.steady_state is not None:
             out["steady_state"] = self.steady_state
         if self.caps is not None:

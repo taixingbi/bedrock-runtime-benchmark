@@ -3,7 +3,7 @@ from dataclasses import replace
 
 from bedrock_benchmark.analysis.metrics import MeasurementWindow
 from bedrock_benchmark.experiments import history
-from bedrock_benchmark.experiments.schema import load_experiment
+from bedrock_benchmark.experiments.schema import load_experiment, HistoryProtocol, RecoveryProbe
 from bedrock_benchmark.models import ModelConfig
 from bedrock_benchmark.results import RequestResult
 from bedrock_benchmark.run_file import estimated_duration_s
@@ -12,8 +12,14 @@ from bedrock_benchmark.run_file import estimated_duration_s
 MODEL = ModelConfig(name="test", model_id="m", quota_rpm=400, quota_tpm=8000000)
 
 
-def test_history_pairs_rate_and_seed_reverses_order_and_does_not_restart_bins(monkeypatch):
+def legacy_spec():
     spec = load_experiment("experiments/diagnostic-context-history.yaml", MODEL)
+    return replace(spec, history_protocol=HistoryProtocol(), recovery_probe=RecoveryProbe(),
+                   sweep=replace(spec.sweep, values=[1.6667]))
+
+
+def test_history_pairs_rate_and_seed_reverses_order_and_does_not_restart_bins(monkeypatch):
+    spec = legacy_spec()
     runs, recoveries, raw = [], [], []
 
     class Target:
@@ -58,7 +64,7 @@ def test_history_pairs_rate_and_seed_reverses_order_and_does_not_restart_bins(mo
 
 
 def test_unhealthy_baseline_does_not_send_observation_traffic():
-    spec = load_experiment("experiments/diagnostic-context-history.yaml", MODEL)
+    spec = legacy_spec()
     async def unhealthy(*args): return False
     arms = asyncio.run(history.run_history_comparison(spec, None, spec.workloads[0], [], unhealthy))
     assert arms[0]['status'] == 'baseline_unhealthy'
@@ -120,3 +126,54 @@ def test_empty_history_window_has_zero_goodput_and_unknown_reliability():
                                 spec.slo_for(spec.workloads[0].name), 1)["metrics"]
     assert m["throughput"]["slo_goodput_rps"] == 0
     assert m["reliability"]["success_rate"] is None
+
+
+def test_fixed_wait_matrix_has_independent_overloads_and_no_probes(monkeypatch):
+    spec = load_experiment("experiments/diagnostic-context-history.yaml", MODEL)
+    spec = replace(spec, sweep=replace(spec.sweep, values=[0.1]))
+    clock, events = [1000.0], []
+    class Target:
+        def reset_peak(self): pass
+    class Runner:
+        def __init__(self, target, subject, **kw):
+            self.kw = kw
+            self.window = MeasurementWindow(clock[0], clock[0] + kw['duration_s'])
+        async def run(self):
+            events.append(('load', self.kw['duration_s']))
+            clock[0] = self.window.end + 2  # drain precedes recovery wait
+            return [RequestResult(request_id='t', scheduled_at=self.window.start + 10,
+                                  started_at=self.window.start + 10, completed_at=self.window.start + 10.1,
+                                  throttled=True, success=False)]
+    async def sleep(seconds):
+        events.append(('wait', seconds))
+        clock[0] += seconds
+    async def forbidden(*args):
+        raise AssertionError('fixed waits must not send recovery probes')
+    monkeypatch.setattr(history, 'RateRunner', Runner)
+    monkeypatch.setattr(history.asyncio, 'sleep', sleep)
+    monkeypatch.setattr(history.time, 'time', lambda: clock[0])
+    raw = []
+    arms = asyncio.run(history.run_history_comparison(spec, Target(), spec.workloads[0], raw, forbidden))
+    assert [a['requested_recovery_s'] for a in arms] == [None, 120, 300, 600, 600, 300, 120, None]
+    assert len([e for e in events if e == ('load', 120)]) == 6
+    assert len([e for e in events if e == ('load', 900)]) == 8
+    for a in arms:
+        assert a['recovery_summary']['first_throttle_offset_s'] == 10
+        assert a['recovery_summary']['initial_successful_rps'] == 0
+        assert a['recovery_summary']['tail_start_offset_s'] == 600
+        if a['requested_recovery_s'] is not None:
+            assert a['seconds_since_overload_end'] == a['requested_recovery_s'] + 2
+            assert a['seconds_since_overload_drain'] == a['requested_recovery_s']
+    assert all('requested_recovery_s' in r.tags for r in raw)
+    assert estimated_duration_s(spec) == 24720
+
+
+def test_history_rejects_invalid_recovery_modes_and_delays():
+    import pytest
+    from bedrock_benchmark.experiments.schema import _validate
+    spec = load_experiment('experiments/diagnostic-context-history.yaml', MODEL)
+    for delays in ([], [0], [-1], [float('nan')], [float('inf')], [True], '120'):
+        with pytest.raises(ValueError, match='recovery_delays_s'):
+            _validate(replace(spec, history_protocol=replace(spec.history_protocol, recovery_delays_s=delays)))
+    with pytest.raises(ValueError, match='recovery_mode'):
+        _validate(replace(spec, history_protocol=replace(spec.history_protocol, recovery_mode='retry')))

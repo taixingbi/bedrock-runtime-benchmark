@@ -329,15 +329,25 @@ admission recommendation in this experiment.
 ### Follow-up experiments for provider-state behavior
 
 `diagnostic-context-history` compares `long_context_short_answer` and `very_large_context`
-at 0.25 of each workload's nominal rate ceiling (1.67 RPS for the recorded
-400-RPM configuration). Every arm starts with 300s idle and a healthy low-load
-probe. The overload arm then applies 2x nominal rate for 120s, waits 120s and
-requires another healthy probe. Each observation is one continuous 900s window;
-30s bins do not interrupt traffic. Two trials reverse arm order and use paired
-arrival seeds. Idle and healthy probes do not establish that the provider reset.
-Record any other traffic sharing the quota. A configured overload need not cause
-throttling: the artifact records whether it did. This is descriptive evidence,
-not a capacity recommendation or proof of a provider-internal mechanism.
+at fixed rates `[0.1, 0.25, 0.5, 1.0, 1.6667]` RPS. Each rate has one idle arm
+and three independent overload arms with recovery waits of 120, 300 and 600s.
+Every arm starts with 300s idle. Each overload arm applies 2x nominal rate for
+120s, drains outstanding requests, then waits before observation. The
+`fixed_wait` mode sends no recovery probes and never extends a wait through
+probe retries. Each observation is one continuous 900s window with 30s bins.
+Two trials reverse arm order and pair arrival seeds. The complete matrix takes
+about 34.3 hours plus calibration and drain time; use `plan` before running.
+These exploratory rates are not validated safe rates. Record other traffic
+sharing the quota. Idle and fixed waits do not establish a provider reset.
+The artifact records whether overload actually caused throttling.
+
+Each arm records its requested delay, actual interval since the overload window
+ended, and interval since overload drain completed. `recovery_summary` reports
+the first throttled request's arrival offset (null when none), successful RPS
+in the first 120s (or the whole window if shorter), successful RPS in the final
+third, and aggregate throttle rate. These summaries are descriptive and do not
+establish SLO compliance. Legacy configurations default to `verified` recovery
+and retain their probe behavior and single `recovery_s` delay.
 
 Bins report offered/scheduled/attempted/successful/throttled RPS, request-cohort
 success/throttle rates, TTFT, latency, peak inflight, and scheduling lag. Rate
@@ -418,3 +428,29 @@ Reports record the resolved limits in `constraints.slo.effective_by_workload`.
 - `run` advances a local rotation counter in `results/.workload-rotation-index`. All experiments in that batch share the index. Use `--workload-rotation-index 0` (or 1, 2, …) to replay an order. The actual order and index are recorded in the profile. Rotation does not replace recovery checks.
 
 Single-run results describe the measured conditions. Repeat across times/days for temporal validation. Separately measured concurrency and rate limits still require validation when applied together or to mixed traffic.
+
+## Conditional concurrency operating envelope
+
+The reference concurrency experiment estimates the isolated-workload concurrency
+operating envelope under healthy observed provider conditions. Discovery and
+refinement only select candidates. Each confirmation candidate requires its own
+cooldown, liveness probe and baseline-capacity probe before fresh measurement.
+A failed recovery blocks that candidate and later candidates. Probes are recorded
+but excluded from capacity measurements; a healthy probe does not prove the
+provider has reset or that prior overload has no effect.
+
+Each confirmation candidate now records `provider_state`: its recovery checks,
+check time and observed status. `healthy_observed` requires both probe types;
+`unverified` means that full baseline checking was not configured.
+`anomaly_observed` records a restart after suspicious throttling; `unrecovered`
+means recovery failed. A candidate can still have a statistical FAIL while its
+capacity interpretation remains unresolved. Throttling below the nominal ceiling
+is reported as an explicit `anomaly` with unresolved cause, not proof of a
+specific provider mechanism or a universally unsafe candidate.
+
+Per-workload `operating_conditions` binds the result to its observed provider
+state, measurement status, quota, time/environment and effective SLO. Existing
+`observed_nonfailing`, `statistically_confirmed`, and discovery `saturation`
+remain separate. Existing admission envelope fields retain their meaning.
+Single-run results require repeated measurements at different times/days and
+`bedrock-benchmark validate` before use as production capacity inputs.

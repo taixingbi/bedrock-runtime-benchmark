@@ -64,9 +64,11 @@ def estimated_duration_s(spec: ExperimentSpec) -> float:
     depends on real latency, so it isn't counted."""
     if spec.history_protocol is not None:
         h = spec.history_protocol
-        probe = spec.recovery_probe.duration_s
+        probe = spec.recovery_probe.duration_s if h.recovery_mode == "verified" else 0
+        delays = h.recovery_delays_s or [h.recovery_s]
         return sum(len(spec.sweep_values(n)) for n in spec.subject_names) * spec.repetitions * (
-            2 * h.idle_s + h.overload_duration_s + h.recovery_s + 3 * probe + 2 * spec.duration_s)
+            (1 + len(delays)) * (h.idle_s + spec.duration_s + probe)
+            + len(delays) * (h.overload_duration_s + probe) + sum(delays))
     per_run = spec.warmup_s + spec.duration_s
     refine = spec.sweep.refinement.max_points if spec.sweep.refinement is not None else 0
     discovery = (spec.sweep.point_count + refine) * spec.repetitions * per_run

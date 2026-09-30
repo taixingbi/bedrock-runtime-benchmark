@@ -390,3 +390,45 @@ lock inside SDK execution threads through stream completion. This is separate
 from timestamp-reconstructed outstanding metrics. A peak above the configured
 concurrency records a `concurrency_invariant_violated` event, invalidates the
 subject, stops its remaining measurement phases and blocks recommendations.
+
+## Conditional concurrency operating envelope
+
+The reference concurrency experiment estimates the isolated-workload concurrency
+operating envelope under healthy observed provider conditions. Discovery and
+refinement only select candidates. Each confirmation candidate requires its own
+cooldown, liveness probe and baseline-capacity probe before fresh measurement.
+A failed recovery blocks that candidate and later candidates. Probes are recorded
+but excluded from capacity measurements; a healthy probe does not prove the
+provider has reset or that prior overload has no effect.
+
+Each confirmation candidate now records `provider_state`: its recovery checks,
+check time and observed status. `healthy_observed` requires both probe types;
+`unverified` means that full baseline checking was not configured.
+`anomaly_observed` records a restart after suspicious throttling; `unrecovered`
+means recovery failed. A candidate can still have a statistical FAIL while its
+capacity interpretation remains unresolved. Throttling below the nominal ceiling
+is reported as an explicit `anomaly` with unresolved cause, not proof of a
+specific provider mechanism or a universally unsafe candidate.
+
+Per-workload `operating_conditions` binds the result to its observed provider
+state, measurement status, quota, time/environment and effective SLO. Existing
+`observed_nonfailing`, `statistically_confirmed`, and discovery `saturation`
+remain separate. Existing admission envelope fields retain their meaning.
+Single-run results require repeated measurements at different times/days and
+`bedrock-benchmark validate` before use as production capacity inputs.
+
+### History recovery matrix
+
+`measurement.history_protocol.recovery_mode` is `verified` (legacy default) or
+`fixed_wait` (no recovery probes). `recovery_delays_s`, when present, replaces
+`recovery_s` with independent overload arms. Each arm records
+`requested_recovery_s` (null for idle), `seconds_since_overload_end`, and
+`seconds_since_overload_drain`. The latter intervals apply to overload arms;
+waits begin after drain, and verified mode additionally includes probe time.
+Raw rows carry `requested_recovery_s` to distinguish arms at the same rate.
+
+`recovery_summary` contains `first_throttle_offset_s` (scheduled arrival, null
+if none), `initial_window_s`, `tail_start_offset_s`, `initial_successful_rps`,
+`tail_successful_rps`, and aggregate `throttle_rate`. Initial exposure is up to
+120s; the tail is the final third of the observation. These are descriptive
+summaries, with no additional SLO test or capacity claim.

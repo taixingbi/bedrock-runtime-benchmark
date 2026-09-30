@@ -58,8 +58,15 @@ def summarize_entry(name: str, entry: dict, profile: dict) -> List[str]:
         lines = [f"{name} / history comparison", "  Descriptive observations; no confirmed capacity or admission recommendation"]
         for arm in arms:
             m = arm.get("aggregate", {})
-            lines.append(f"  {arm['scenario']} trial={arm['trial']} target={arm['target_rps']:.4g} rps: "
+            lines.append(f"  {arm['scenario']} trial={arm['trial']} target={arm['target_rps']:.4g} rps "
+                         f"recovery_s={arm.get('requested_recovery_s')}: "
                          f"{arm['status']}, throttle={m.get('throttle_rate')}, successful_rps={m.get('successful_rps')}")
+            if arm.get("recovery_summary"):
+                summary = arm["recovery_summary"]
+                lines.append(f"    first_throttle_s={summary['first_throttle_offset_s']}, "
+                             f"initial_rps={summary['initial_successful_rps']}, "
+                             f"tail_rps={summary['tail_successful_rps']}, "
+                             f"actual_recovery_s={arm.get('seconds_since_overload_end')}")
         return lines
     control = entry.get("role") == "reference_control"
     purpose = "characterization" if control else profile.get("purpose")
