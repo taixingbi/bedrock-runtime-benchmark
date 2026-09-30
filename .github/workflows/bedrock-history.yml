@@ -1,8 +1,13 @@
-name: Bedrock history benchmark
+name: Bedrock benchmark
 
 on:
   workflow_dispatch:
     inputs:
+      experiment:
+        description: Experiment name or YAML filename from experiments/
+        type: string
+        default: diagnostic-context-history
+        required: true
       model:
         description: Model name from the repository catalog
         type: string
@@ -22,20 +27,39 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  history:
-    name: ${{ matrix.workload }} / ${{ matrix.rps }} RPS
+  prepare:
+    name: Prepare experiment jobs
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    env:
+      EXPERIMENT: ${{ inputs.experiment }}
+      MODEL: ${{ inputs.model }}
+      AWS_EC2_METADATA_DISABLED: 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -e .
+      - name: Build jobs from experiment
+        id: matrix
+        run: python scripts/actions_matrix.py
+      - name: Validate experiment plan
+        run: bedrock-benchmark plan "${EXPERIMENT%.yaml}" --model "$MODEL"
+
+  benchmark:
+    needs: prepare
+    name: ${{ matrix.label }}
     runs-on: ubuntu-latest
     timeout-minutes: 330
     strategy:
       fail-fast: false
       max-parallel: 1
-      matrix:
-        workload: [long_context_short_answer, very_large_context]
-        rps: [0.1, 0.25, 0.5, 1.0, 1.6667]
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
     env:
       MODEL: ${{ inputs.model }}
-      WORKLOAD: ${{ matrix.workload }}
-      RPS: ${{ matrix.rps }}
+      EXPERIMENT_CONFIG: ${{ toJSON(matrix.config) }}
       PYTHONUNBUFFERED: '1'
       AWS_EC2_METADATA_DISABLED: 'true'
     steps:
@@ -51,24 +75,16 @@ jobs:
         run: |
           mkdir -p results
           python - <<'PY'
+          import json
           import os
           from pathlib import Path
           import yaml
-          config = yaml.safe_load(Path('experiments/diagnostic-context-history.yaml').read_text())
-          workload, rate = os.environ['WORKLOAD'], float(os.environ['RPS'])
-          if workload not in config['workloads'] or rate not in config['sweep']['values']:
-              raise ValueError('Workflow matrix differs from the history experiment')
-          if config.get('seed') is not None:
-              config['seed'] += config['sweep']['values'].index(rate)
-          config['name'] = 'diagnostic-context-history-ci'
-          config['workloads'] = [workload]
-          config['sweep'] = {'type': 'rate', 'values': [rate]}
-          # Keep both trials, paired seeds, all recovery delays and reversed arm order.
+          config = json.loads(os.environ['EXPERIMENT_CONFIG'])
           encoded = yaml.safe_dump(config, sort_keys=False)
           Path('results/experiment.yaml').write_text(encoded)
-          Path('experiments/diagnostic-context-history-ci.yaml').write_text(encoded)
+          Path('experiments/actions-selected.yaml').write_text(encoded)
           PY
-          bedrock-benchmark plan diagnostic-context-history-ci --model "$MODEL"
+          bedrock-benchmark plan actions-selected --model "$MODEL"
       - name: Authenticate to AWS
         if: ${{ !inputs.dry_run }}
         uses: aws-actions/configure-aws-credentials@v4
@@ -76,22 +92,22 @@ jobs:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: us-east-1
-      - name: Run history subset
+      - name: Run selected experiment
         if: ${{ !inputs.dry_run }}
         env:
           RUN_OWNER: ${{ github.actor }}
         run: |
           # Stop before the job timeout, leaving time to upload completed arms.
           timeout --signal=INT --kill-after=90s 270m \
-            bedrock-benchmark run diagnostic-context-history-ci --model "$MODEL" \
+            bedrock-benchmark run actions-selected --model "$MODEL" \
               --results-dir results --workload-rotation-index 0 \
-              --owner "$RUN_OWNER" --purpose 'history diagnosis via GitHub Actions' \
+              --owner "$RUN_OWNER" --purpose 'benchmark via GitHub Actions' \
               --ticket "actions-${GITHUB_RUN_ID}" --environment dev
       - name: Upload this subset and completed checkpoints
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
-          name: history-${{ matrix.workload }}-${{ matrix.rps }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: benchmark-${{ matrix.id }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: results/
           if-no-files-found: warn
           retention-days: 14

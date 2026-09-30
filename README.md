@@ -468,15 +468,26 @@ remain separate. Existing admission envelope fields retain their meaning.
 Single-run results require repeated measurements at different times/days and
 `bedrock-benchmark validate` before use as production capacity inputs.
 
-### Run history diagnostics in GitHub Actions
+### Run experiments in GitHub Actions
 
-Use **Actions → Bedrock history benchmark → Run workflow**. `dry_run` defaults
-to true and only checks the plan. Select `nova-micro` and disable `dry_run` for
-live traffic. The workflow splits the full matrix into ten serial jobs, one per
-workload/rate, retaining both trials and all recovery delays. Each job takes
-about 3.4 hours plus calibration/drain, below the hosted runner's six-hour limit.
-Total measurement time remains about 34.3 hours; runner setup adds overhead.
-Matrix job ordering is not guaranteed. Avoid other traffic sharing the quota.
+Use **Actions → Bedrock benchmark → Run workflow**. Set `experiment` to a name
+from `experiments/`, for example `diagnostic-context-history` (the default),
+`capacity-reference-concurrency`, or another experiment. The `.yaml` suffix is
+optional. Select the model using `model`. `dry_run` defaults to true and only
+checks plans; disable it for live traffic.
+
+The workflow reads the selected YAML. History experiments with explicit rate
+values split into serial workload/rate jobs, retaining all trials, recovery
+delays and paired seeds. The current history configuration creates ten jobs,
+about 3.4 hours each and 34.3 hours total, plus calibration/drain and setup.
+Other experiments run as one job, preserving their full sweep, adaptive
+refinement, confirmation and inter-workload isolation. Matrix job ordering is
+not guaranteed. Avoid other traffic sharing the quota.
+
+Every job has a 270-minute measurement limit. Check the dry-run duration before
+starting a different experiment; longer experiments need a different execution
+setup or a protocol-specific split. Incremental arm checkpoints are available
+for history mode; other modes may not retain partial measurements on timeout.
 
 Configure repository **Settings → Secrets and variables → Actions → Secrets**:
 add `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` for a dedicated IAM user
