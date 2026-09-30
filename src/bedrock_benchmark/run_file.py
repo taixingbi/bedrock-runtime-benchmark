@@ -262,7 +262,28 @@ def run_file(
 
     start = time.perf_counter()
     target = target_factory(spec) if target_factory is not None else None
-    report = asyncio.run(run_experiment(spec, on_progress=_make_progress_printer(), target=target))
+    run_id = str(uuid.uuid4())[:8]
+    out_dir = Path(results_dir) / model.name
+    checkpoints = None
+    options = {}
+    if spec.history_protocol is not None:
+        from .history_checkpoint import HistoryCheckpoints
+        checkpoints = HistoryCheckpoints(
+            out_dir / f"{spec.name}-{run_id}-checkpoints", spec,
+            {**(run_metadata or {}), "run_id": run_id})
+        options["on_history_arm"] = checkpoints.save_arm
+        print(f"local progress: {checkpoints.directory / 'manifest.yaml'}", flush=True)
+    try:
+        report = asyncio.run(run_experiment(spec, on_progress=_make_progress_printer(), target=target, **options))
+    except BaseException as exc:
+        if checkpoints is not None:
+            try:
+                checkpoints.finish("interrupted" if isinstance(exc, (KeyboardInterrupt, SystemExit)) else "failed")
+            except OSError:
+                pass  # Keep the original error; previously published artifacts remain readable.
+        raise
+    if checkpoints is not None:
+        checkpoints.finish()
     elapsed_s = time.perf_counter() - start
 
     print("\n-- input-token calibration --")
@@ -286,8 +307,6 @@ def run_file(
                   f"latency_p95={m.latency_p95_ms}ms "
                   f"slo_goodput={m.slo_goodput_rps}")
 
-    run_id = str(uuid.uuid4())[:8]
-    out_dir = Path(results_dir) / model.name
     jsonl_path = out_dir / f"{spec.name}-{run_id}.jsonl"
     profile_path = out_dir / f"{spec.name}-{run_id}-capacity-profile.yaml"
 

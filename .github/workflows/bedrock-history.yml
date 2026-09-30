@@ -1,0 +1,108 @@
+name: Bedrock history benchmark
+
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: Model name from the repository catalog
+        type: string
+        default: nova-micro
+        required: true
+      dry_run:
+        description: Plan only, without AWS requests
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  id-token: write
+
+# Serialize live runs across this workflow, including different models.
+concurrency:
+  group: bedrock-history-benchmark
+  cancel-in-progress: false
+
+jobs:
+  history:
+    name: ${{ matrix.workload }} / ${{ matrix.rps }} RPS
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        workload: [long_context_short_answer, very_large_context]
+        rps: [0.1, 0.25, 0.5, 1.0, 1.6667]
+    env:
+      MODEL: ${{ inputs.model }}
+      WORKLOAD: ${{ matrix.workload }}
+      RPS: ${{ matrix.rps }}
+      PYTHONUNBUFFERED: '1'
+      AWS_EC2_METADATA_DISABLED: 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install benchmark
+        run: pip install -e .
+      - name: Prepare independent subset
+        run: |
+          mkdir -p results
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          import yaml
+          config = yaml.safe_load(Path('experiments/diagnostic-context-history.yaml').read_text())
+          workload, rate = os.environ['WORKLOAD'], float(os.environ['RPS'])
+          if workload not in config['workloads'] or rate not in config['sweep']['values']:
+              raise ValueError('Workflow matrix differs from the history experiment')
+          if config.get('seed') is not None:
+              config['seed'] += config['sweep']['values'].index(rate)
+          config['name'] = 'diagnostic-context-history-ci'
+          config['workloads'] = [workload]
+          config['sweep'] = {'type': 'rate', 'values': [rate]}
+          # Keep both trials, paired seeds, all recovery delays and reversed arm order.
+          encoded = yaml.safe_dump(config, sort_keys=False)
+          Path('results/experiment.yaml').write_text(encoded)
+          Path('experiments/diagnostic-context-history-ci.yaml').write_text(encoded)
+          PY
+          bedrock-benchmark plan diagnostic-context-history-ci --model "$MODEL"
+      - name: Check AWS role configuration
+        if: ${{ !inputs.dry_run }}
+        env:
+          ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
+        run: |
+          if [ -z "$ROLE_ARN" ]; then
+            echo 'Configure repository variable AWS_ROLE_ARN with an OIDC role (MaxSessionDuration >= 18000 seconds).'
+            exit 1
+          fi
+      - name: Authenticate to AWS
+        if: ${{ !inputs.dry_run }}
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: us-east-1
+          role-duration-seconds: 18000
+          role-session-name: benchmark-${{ github.run_id }}
+      - name: Run history subset
+        if: ${{ !inputs.dry_run }}
+        env:
+          RUN_OWNER: ${{ github.actor }}
+        run: |
+          # Stop before credentials/job expire, leaving time to upload completed arms.
+          timeout --signal=INT --kill-after=90s 270m \
+            bedrock-benchmark run diagnostic-context-history-ci --model "$MODEL" \
+              --results-dir results --workload-rotation-index 0 \
+              --owner "$RUN_OWNER" --purpose 'history diagnosis via GitHub Actions' \
+              --ticket "actions-${GITHUB_RUN_ID}" --environment dev
+      - name: Upload this subset and completed checkpoints
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: history-${{ matrix.workload }}-${{ matrix.rps }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: results/
+          if-no-files-found: warn
+          retention-days: 14

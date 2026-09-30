@@ -208,6 +208,7 @@ def _slo_kwargs(slo, *, latency: bool = True) -> dict:
 async def run_experiment(
     spec: ExperimentSpec, *, on_progress: Optional[ProgressCallback] = None,
     target: Optional[BedrockConverseTarget] = None,
+    on_history_arm: Optional[Callable] = None,
 ) -> ExperimentReport:
     # `target` is injectable for tests (a fake client) -- never set by the CLI.
     owns_target = target is None
@@ -216,13 +217,14 @@ async def run_experiment(
             model_id=spec.target.model_id, region=spec.target.region, transport=spec.transport,
         )
     try:
-        return await _run(spec, target, on_progress)
+        return await _run(spec, target, on_progress, on_history_arm)
     finally:
         if owns_target:
             target.close()
 
 
-async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress: Optional[ProgressCallback]) -> ExperimentReport:
+async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress: Optional[ProgressCallback],
+               on_history_arm: Optional[Callable] = None) -> ExperimentReport:
     report = ExperimentReport(spec=spec)
     if spec.sweep.type not in ("concurrency", "rate"):
         raise ValueError(f"unknown sweep type: {spec.sweep.type!r} (use 'concurrency' or 'rate')")
@@ -511,7 +513,9 @@ async def _run(spec: ExperimentSpec, target: BedrockConverseTarget, on_progress:
 
         if spec.history_protocol is not None:
             from .history import run_history_comparison
-            history = await run_history_comparison(spec, target, subject, report.all_results, recover, on_progress)
+            history = await run_history_comparison(
+                spec, target, subject, report.all_results, recover, on_progress,
+                **({"on_history_arm": on_history_arm} if on_history_arm is not None else {}))
             report.profiles.append(ProfileReport(workload_name=subject.name, measurement_validity=validity,
                                                  history_comparison=history))
             continue

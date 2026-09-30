@@ -341,6 +341,19 @@ These exploratory rates are not validated safe rates. Record other traffic
 sharing the quota. Idle and fixed waits do not establish a provider reset.
 The artifact records whether overload actually caused throttling.
 
+History runs save locally after each arm finishes, without waiting for the full
+matrix. Under `results/<model>/<experiment>-<run_id>-checkpoints/`,
+`manifest.yaml` reports saved/observed arm counts, the planned total, configuration,
+and run status. Each `arm-NNNN.yaml` contains the descriptive summary and bins;
+its matching JSONL contains that arm's measurement, overload, and recovery-probe
+requests (initial calibration remains in the final full-run output).
+Files are replaced atomically; the manifest lists an arm only after both files
+are written. Ctrl+C or an error retains previously saved arms. The current
+unfinished arm is not checkpointed, and automatic resume is not supported.
+A forcibly killed process may leave status `running`; listed files remain usable.
+Normal completion also writes the usual combined JSONL and capacity-profile YAML.
+No files are uploaded. This does not shorten the configured measurement windows.
+
 Each arm records its requested delay, actual interval since the overload window
 ended, and interval since overload drain completed. `recovery_summary` reports
 the first throttled request's arrival offset (null when none), successful RPS
@@ -369,7 +382,7 @@ validated rate envelope. Compare repeated runs before deriving an admission poli
   --workload medium_context --candidate-concurrency 7 --steady-state-duration-s 1800
 ```
 
-History comparison takes about three hours before recovery retries/drain; the
+The full history matrix takes about 34.3 hours before calibration/drain; the
 sustain retest typically needs at least an hour if its candidate remains eligible.
 Run them separately to avoid contaminating their provider state with each other.
 Reports retain `nominal_binding_constraint`, but throttling is described as an
@@ -454,3 +467,29 @@ state, measurement status, quota, time/environment and effective SLO. Existing
 remain separate. Existing admission envelope fields retain their meaning.
 Single-run results require repeated measurements at different times/days and
 `bedrock-benchmark validate` before use as production capacity inputs.
+
+### Run history diagnostics in GitHub Actions
+
+Use **Actions → Bedrock history benchmark → Run workflow**. `dry_run` defaults
+to true and only checks the plan. Select `nova-micro` and disable `dry_run` for
+live traffic. The workflow splits the full matrix into ten serial jobs, one per
+workload/rate, retaining both trials and all recovery delays. Each job takes
+about 3.4 hours plus calibration/drain, below the hosted runner's six-hour limit.
+Total measurement time remains about 34.3 hours; runner setup adds overhead.
+Matrix job ordering is not guaranteed. Avoid other traffic sharing the quota.
+
+Configure repository **Settings → Secrets and variables → Actions → Variables**:
+`AWS_ROLE_ARN` must name an AWS role that trusts GitHub OIDC for this repository
+and the selected branch, permits the required Bedrock calls, and has
+`MaxSessionDuration >= 18000` seconds. No local AWS credentials are copied.
+The workflow authenticates separately for each job and stops measurement after
+270 minutes to leave time for cleanup and artifact upload.
+
+Each finished job uploads its results and local checkpoints as a separate
+Actions artifact, retained for 14 days. Earlier jobs' artifacts can be downloaded
+while later jobs run. Failed jobs also attempt to upload completed checkpoints;
+forced runner termination can prevent the final upload. Checkpoints from a
+running job become downloadable when its upload step runs. These subsets are
+independent runs with separate run IDs, not repeated measurements of the entire
+matrix. A GitHub runner also changes the client/network environment compared
+with a local run; keep that context when comparing latency.

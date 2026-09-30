@@ -91,12 +91,15 @@ def test_history_executor_emits_descriptive_artifact_without_capacity(monkeypatc
     from .fakes import FakeBedrockRuntimeClient
     spec = load_experiment('experiments/diagnostic-context-history.yaml', MODEL)
     seen = []
-    async def comparison(spec, target, subject, raw, recover, on_progress):
+    def checkpoint(subject, arm, rows):
+        pass
+    async def comparison(spec, target, subject, raw, recover, on_progress, on_history_arm=None):
+        assert on_history_arm is checkpoint
         seen.append(subject.name)
         return [{'scenario': 'after_idle', 'trial': 0, 'target_rps': 1, 'status': 'observed', 'bins': []}]
     monkeypatch.setattr(history, 'run_history_comparison', comparison)
     target = BedrockConverseTarget(model_id='m', client=FakeBedrockRuntimeClient())
-    report = asyncio.run(run_experiment(spec, target=target))
+    report = asyncio.run(run_experiment(spec, target=target, on_history_arm=checkpoint))
     artifact = build_capacity_profile(report)
     _, schema = schema_for(artifact)
     jsonschema.validate(artifact, schema)
@@ -153,7 +156,20 @@ def test_fixed_wait_matrix_has_independent_overloads_and_no_probes(monkeypatch):
     monkeypatch.setattr(history.asyncio, 'sleep', sleep)
     monkeypatch.setattr(history.time, 'time', lambda: clock[0])
     raw = []
-    arms = asyncio.run(history.run_history_comparison(spec, Target(), spec.workloads[0], raw, forbidden))
+    saved = []
+    def checkpoint(subject, arm, rows):
+        assert arm['status'] == 'observed'
+        saved.append((subject, arm['requested_recovery_s'], list(rows)))
+        events.append(('saved', arm['requested_recovery_s']))
+    arms = asyncio.run(history.run_history_comparison(
+        spec, Target(), spec.workloads[0], raw, forbidden, on_history_arm=checkpoint))
+    assert len(saved) == 8
+    assert [len(item[2]) for item in saved] == [1, 2, 2, 2, 2, 2, 2, 1]
+    assert [r for item in saved for r in item[2]] == raw
+    # Every arm is saved before the next independent baseline starts.
+    for i, event in enumerate(events):
+        if event[0] == 'saved' and i + 1 < len(events):
+            assert events[i + 1] == ('wait', 300)
     assert [a['requested_recovery_s'] for a in arms] == [None, 120, 300, 600, 600, 300, 120, None]
     assert len([e for e in events if e == ('load', 120)]) == 6
     assert len([e for e in events if e == ('load', 900)]) == 8

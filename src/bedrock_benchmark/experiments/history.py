@@ -48,7 +48,7 @@ def describe_window(rows, window, slo, offered_rps):
     }
 
 
-async def run_history_comparison(spec, target, subject, all_results, recover, on_progress=None):
+async def run_history_comparison(spec, target, subject, all_results, recover, on_progress=None, on_history_arm=None):
     h = spec.history_protocol
     ceiling = spec.provider_ceilings[subject.name].rps
     if not ceiling:
@@ -69,6 +69,12 @@ async def run_history_comparison(spec, target, subject, all_results, recover, on
                        "status": "preparing", "bins": [],
                        "recovery_mode": h.recovery_mode, "requested_recovery_s": recovery_delay}
                 arms.append(arm)
+                arm_start = len(all_results)
+
+                def checkpoint():
+                    if on_history_arm is not None:
+                        on_history_arm(subject.name, arm, all_results[arm_start:])
+
                 # Prepare each arm independently. Fixed waits send no probes;
                 # verified mode retains the legacy recovery checks.
                 async def prepare(seconds, reason):
@@ -79,6 +85,7 @@ async def run_history_comparison(spec, target, subject, all_results, recover, on
 
                 if not await prepare(h.idle_s, f"history {scenario} rate {rps} trial {trial}: baseline"):
                     arm["status"] = "baseline_unhealthy"
+                    checkpoint()
                     return arms
 
                 async def load(rate, seconds, phase):
@@ -105,6 +112,7 @@ async def run_history_comparison(spec, target, subject, all_results, recover, on
                     arm["overload_drained_at"] = time.time()
                     if not await prepare(recovery_delay, f"history {scenario} rate {rps} trial {trial}: recovery"):
                         arm["status"] = "recovery_unhealthy"
+                        checkpoint()
                         return arms
                 rows, window = await load(rps, spec.duration_s, "history_measurement")
                 if "overload" in arm:
@@ -131,6 +139,7 @@ async def run_history_comparison(spec, target, subject, all_results, recover, on
                     "interpretation": "descriptive; does not establish SLO compliance or provider reset",
                 }
                 arm["status"] = "observed"
+                checkpoint()
                 if on_progress:
                     metrics = compute_run_metrics(rows, windows=[window], offered_rps=rps,
                                                   ttft_slo_ms=slo.ttft_p95_ms, tpot_slo_ms=slo.tpot_p95_ms,
