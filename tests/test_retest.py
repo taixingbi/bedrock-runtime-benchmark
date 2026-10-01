@@ -38,7 +38,7 @@ def test_invalid_retest_parameters_fail_before_execution(changes):
 
 
 def test_reference_and_history_experiments_cannot_be_retested_as_calibration():
-    for path in ('experiments/capacity-reference-concurrency.yaml', 'experiments/diagnostic-context-history.yaml'):
+    for path in ('experiments/capacity-reference-concurrency.yaml', 'tests/fixtures/context-history-legacy.yaml'):
         with pytest.raises(ValueError, match='isolated admission_calibration'):
             load_experiment(path, MODEL, retest=RETEST)
 

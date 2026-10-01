@@ -64,7 +64,7 @@ def check_environment(root: Path, *, git: Callable[[List[str]], str] = None) -> 
 def check_config(model_name: str, paths: List[str], *, account: Optional[str]) -> (List[Check], Any, list):
     """Returns (checks, model or None, loaded specs)."""
     from .constraints import load_policy, load_quotas, load_slo
-    from .experiments.schema import load_experiment
+    from .experiments.schema import NoMatchingWorkloads, load_experiment
     from .models import load_models
     checks, model, specs = [], None, []
     for label, loader in (("slo.yaml", load_slo), ("recommendation-policy.yaml", load_policy),
@@ -84,6 +84,8 @@ def check_config(model_name: str, paths: List[str], *, account: Optional[str]) -
     for path in paths:
         try:
             specs.append(load_experiment(path, model))
+        except NoMatchingWorkloads as exc:
+            checks.append(Check(Path(path).stem, WARN, f"skipped: {exc}"))
         except Exception as exc:  # noqa: BLE001
             bad.append(f"{Path(path).stem}: {exc}")
     checks.append(Check("experiments", FAIL if bad else OK,

@@ -35,3 +35,9 @@ workloads:
   medium_context:            {input_tokens: 2048,  output_tokens: 128,  slo_profile: silver, latency_p95_ms: 6000,  role: characterization}  # small RAG/doc Q&A/ticket summary -- common app traffic
   long_context_short_answer: {input_tokens: 8192,  output_tokens: 64,   slo_profile: silver, latency_p95_ms: 8000,  role: characterization}  # long-doc/contract lookup -- prefill pressure (TPM-bound on llama3-3-70b)
   very_large_context:        {input_tokens: 16384, output_tokens: 256,  slo_profile: bronze, latency_p95_ms: 20000, role: characterization}  # multi-doc/filing analysis -- large prefill (UNCONFIRMED placeholder values)
+
+  # Main input/history study: output, TPOT/reliability and E2E held constant.
+  # TTFT keeps the configured input-length bands in constraints/slo.yaml.
+  short:  {input_tokens: 512,  output_tokens: 64, slo_profile: silver, latency_p95_ms: 8000, role: characterization}
+  medium: {input_tokens: 2048, output_tokens: 64, slo_profile: silver, latency_p95_ms: 8000, role: characterization}
+  long:   {input_tokens: 8192, output_tokens: 64, slo_profile: silver, latency_p95_ms: 8000, role: characterization}

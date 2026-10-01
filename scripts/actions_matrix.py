@@ -13,6 +13,8 @@ def build_matrix(experiment, root=Path('.')):
     if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]*', name):
         raise ValueError('Use an experiment name or filename from experiments/')
     config = yaml.safe_load((root / 'experiments' / f'{name}.yaml').read_text())
+    if config.get('baseline_required'):
+        raise ValueError('Generate Experiment B with scripts/prepare_context_history.py first')
     sweep = config.get('sweep', {})
     jobs = []
     # Only explicit-rate history arms are independent. Keep other protocols whole.
@@ -22,6 +24,9 @@ def build_matrix(experiment, root=Path('.')):
                 subset = copy.deepcopy(config)
                 subset['workloads'] = [workload]
                 subset['sweep']['values'] = [rate]
+                if subset.get('baseline_context'):
+                    subset['baseline_context']['load_fractions'] = [
+                        config['baseline_context']['load_fractions'][index]]
                 if subset.get('seed') is not None:
                     subset['seed'] += index
                 jobs.append({'label': f'{workload} / {rate} RPS', 'config': subset})

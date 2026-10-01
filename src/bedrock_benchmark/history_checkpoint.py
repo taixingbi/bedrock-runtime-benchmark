@@ -26,6 +26,7 @@ class HistoryCheckpoints:
             'experiment': spec.name, 'run': metadata, 'target': asdict(spec.target),
             'status': 'running', 'planned_arms': total, 'saved_arms': 0, 'observed_arms': 0,
             'protocol': asdict(h), 'duration_s': spec.duration_s,
+            **({'baseline_context': spec.baseline_context} if spec.baseline_context is not None else {}),
             'repetitions': spec.repetitions, 'seed': spec.seed, 'stream': spec.stream,
             'configured_workloads': [asdict(w) for w in spec.workloads],
             'workloads': {n: {'rates_rps': spec.sweep_values(n), 'slo': asdict(spec.slo_for(n))}

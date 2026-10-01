@@ -314,6 +314,7 @@ class ExperimentSpec:
     transport: TransportConfig = field(default_factory=TransportConfig)
     mix: Optional[MixConfig] = None
     history_protocol: Optional[HistoryProtocol] = None
+    baseline_context: Optional[dict] = None
     burst_protocol: bool = False
     retest: Optional[dict] = None
     # `isolation: {inter_subject_cooldown_s}` -- a fixed recovery interval
@@ -397,8 +398,7 @@ class ExperimentSpec:
 
 
 class NoMatchingWorkloads(Exception):
-    """Raised by load_experiment when an --slo-profile filter leaves the
-    experiment nothing to run -- a skip, not an error."""
+    """Skip when filters leave no workloads or a template awaits baseline evidence."""
 
 
 _MODEL_KEYS = ("target", "quota_snapshot", "quota")
@@ -417,6 +417,10 @@ def load_experiment(
     make it a different mix); with nothing left, NoMatchingWorkloads is
     raised so the caller can skip the experiment."""
     raw = yaml.safe_load(Path(path).read_text())
+    if raw.get("baseline_required"):
+        raise NoMatchingWorkloads(
+            "Experiment B needs confirmed Experiment A results; run scripts/prepare_context_history.py first"
+        )
 
     present = [k for k in _MODEL_KEYS if k in raw]
     if present:
@@ -488,6 +492,7 @@ def load_experiment(
         mix=mix_config,
         burst_protocol=raw.get("burst_protocol", False),
         history_protocol=HistoryProtocol(**raw["history_protocol"]) if raw.get("history_protocol") else None,
+        baseline_context=raw.get("baseline_context"),
         inter_subject_cooldown_s=_isolation(raw, path),
         recovery_probe=_recovery_probe(raw, path),
         workload_validation_tolerance_pct=raw.get("workload_validation_tolerance_pct", 10.0),
@@ -529,6 +534,9 @@ def load_experiment(
     spec.slo = _strictest_gate([spec.slo_profiles[w.slo_profile] for w in spec.workloads])
     spec.provider_ceilings = _ceilings(spec, model)
     _validate_sweep(spec, model, path)
+    if spec.baseline_context is not None:
+        from ..context_history import validate_binding
+        validate_binding(spec)
     return spec
 
 

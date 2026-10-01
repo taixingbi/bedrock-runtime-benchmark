@@ -12,7 +12,7 @@ from .test_history_protocol import MODEL
 
 
 def spec():
-    original = load_experiment('experiments/diagnostic-context-history.yaml', MODEL)
+    original = load_experiment('tests/fixtures/context-history-legacy.yaml', MODEL)
     return replace(original, workloads=original.workloads[:1], repetitions=1,
                    sweep=replace(original.sweep, values=[0.1]),
                    history_protocol=replace(original.history_protocol, recovery_delays_s=[120]))
@@ -63,7 +63,7 @@ def test_run_file_preserves_arm_on_interruption(tmp_path, monkeypatch, error, st
         raise error()
     monkeypatch.setattr(module, 'run_experiment', interrupted)
     with pytest.raises(error):
-        module.run_file('experiments/diagnostic-context-history.yaml', MODEL, results_dir=str(tmp_path))
+        module.run_file('tests/fixtures/context-history-legacy.yaml', MODEL, results_dir=str(tmp_path))
     manifest_path, = tmp_path.glob('test/*-checkpoints/manifest.yaml')
     manifest = yaml.safe_load(manifest_path.read_text())
     assert manifest['status'] == status

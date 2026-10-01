@@ -1,15 +1,15 @@
-# Descriptive comparison, not a production capacity/recommendation experiment.
-# Run on a quiet account; record any other traffic sharing the model quota.
-# Each recovery delay gets a fresh idle + overload sequence, with no probes.
-# Fixed waits are experimental conditions, not evidence of a provider reset.
+# Experiment B template: generate runnable configs from Experiment A results with
+# scripts/prepare_context_history.py. No example R_safe values are used as data.
+# Each arm starts with idle; fixed waits do not prove a provider reset.
 purpose: characterization
 name: diagnostic-context-history
 description: |
-  Compare large-context open-loop traffic after idle and after offered overload
-  plus fixed recovery delays. Continuous 15-minute observations with 30s
-  descriptive bins; paired arrival seeds and reversed arm order on trial two.
-  Does not produce a safe capacity or identify an internal quota mechanism.
-workloads: [long_context_short_answer, very_large_context]
+  Compare 512/64, 2048/64, and 8192/64 input classes at 50%, 75%, and 90%
+  of their independently confirmed idle baseline rates. Continuous 900s
+  observations, 30s descriptive bins, paired seeds and reversed arm order.
+  Recovery observations do not independently confirm post-overload capacity.
+workloads: [short, medium, long]
+baseline_required: true
 warmup_s: 0
 duration_s: 900
 repetitions: 2
@@ -17,12 +17,13 @@ stream: true
 seed: 7
 sweep:
   type: rate
-  values: [0.1, 0.25, 0.5, 1.0, 1.6667]
+  baseline_fractions: [0.5, 0.75, 0.9]
 history_protocol:
   idle_s: 300
   overload_quota_fraction: 2.0
   overload_duration_s: 120
   recovery_mode: fixed_wait
+  # Preserve the first-round protocol; revisit shorter waits after completion.
   recovery_delays_s: [120, 300, 600]
   bin_s: 30
 transport:

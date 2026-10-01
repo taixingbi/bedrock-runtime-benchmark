@@ -128,7 +128,8 @@ class SloProfileFilterBatchTests(unittest.TestCase):
         micro = load_models(names=["nova-micro"])
         planned = plan(paths, micro, only_slo_profiles={"gold"})
         skipped = {p.experiment: p.skip_reason for p in planned if p.skip_reason}
-        self.assertEqual(set(skipped), {"capacity-mix-rate", "diagnostic-context-history"})
+        self.assertEqual(set(skipped), {"capacity-mix-rate", "diagnostic-context-history", "diagnostic-context-stress",
+                                              "capacity-context-short-rate", "capacity-context-medium-rate", "capacity-context-long-rate"})
         proc = subprocess.run(
             [sys.executable, "scripts/run_all.py", "--dry-run", "--model", "nova-micro", "--slo-profile", "gold"],
             capture_output=True, text=True,

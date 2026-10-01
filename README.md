@@ -328,18 +328,51 @@ admission recommendation in this experiment.
 
 ### Follow-up experiments for provider-state behavior
 
-`diagnostic-context-history` compares `long_context_short_answer` and `very_large_context`
-at fixed rates `[0.1, 0.25, 0.5, 1.0, 1.6667]` RPS. Each rate has one idle arm
-and three independent overload arms with recovery waits of 120, 300 and 600s.
-Every arm starts with 300s idle. Each overload arm applies 2x nominal rate for
-120s, drains outstanding requests, then waits before observation. The
-`fixed_wait` mode sends no recovery probes and never extends a wait through
-probe retries. Each observation is one continuous 900s window with 30s bins.
-Two trials reverse arm order and pair arrival seeds. The complete matrix takes
-about 34.3 hours plus calibration and drain time; use `plan` before running.
-These exploratory rates are not validated safe rates. Record other traffic
-sharing the quota. Idle and fixed waits do not establish a provider reset.
-The artifact records whether overload actually caused throttling.
+The main input/history study uses three enterprise classes with fixed output=64:
+
+| Class | Input / output | Experiment A rates (RPS) |
+| --- | --- | --- |
+| `short` | 512 / 64 | 0.5, 1, 2, 3, 4 |
+| `medium` | 2048 / 64 | 0.5, 1, 1.5, 2 |
+| `long` | 8192 / 64 | 0.25, 0.5, 0.75, 1 |
+
+All three use silver TPOT/reliability and an 8000ms E2E budget. TTFT follows
+`constraints/slo.yaml` input bands (800 / 1500 / 3000ms). Thus capacity is
+conditional on these SLOs; latency curves help distinguish input cost from
+budget effects. Token validation checks actual output as well as input.
+
+**Experiment A:** run `capacity-context-{short,medium,long}-rate` separately.
+Discovery uses 900s windows; independent confirmation starts after 300s cooldown
+and recovery checks, with at least 900s continuous measured exposure. Use only
+`calibration_point.statistically_confirmed_rate` as `R_safe_idle`; discovery,
+quota ceilings and production headroom are not baselines. This is an operational
+idle/recovery baseline, not proof that provider state reset. If no rate confirms,
+extend the sweep downward; if every rate passes, extend upward before treating
+the highest tested rate as the capacity boundary.
+
+**Experiment B:** `diagnostic-context-history.yaml` is a template. It is skipped
+until A's three valid artifacts are supplied to the generator. The generator
+writes three runnable configs, each at 50%, 75%, and 90% of its own baseline.
+It rejects missing/unconfirmed baselines and mismatched models, quotas, shapes,
+or SLOs, and records source hashes and baseline rates. Generated configs also
+check those bindings at load time; regenerate when the environment changes.
+
+Each of the nine cells has an idle arm and three independent overload arms.
+Every arm starts with 300s idle. Overload is still 2x the class's nominal quota
+ceiling for 120s; drain completes before the fixed 120/300/600s recovery wait.
+No recovery probes are sent in B. Each observation is a continuous 900s window
+with 30s bins. Two repetitions reverse arm order and pair arrival seeds.
+The matrix has 72 observations and takes about **30.9 hours**, plus calibration
+and drain (10.3 hours per generated class config; 3.4 hours per Actions cell).
+Record other traffic sharing the quota. The artifact records whether offered
+overload actually caused throttling. Target pressure is normalized to baseline;
+overload pressure retains the existing quota-relative protocol.
+
+The first round compares recovery behavior. Its descriptive bins and three load
+levels do not independently confirm `R_safe_after_overload`; establishing that
+function requires boundary sweeps and confirmation for each recovery condition.
+`diagnostic-context-stress` retains 16K/256 separately for appendix stress work.
+Existing results and partially completed runs are left intact.
 
 History runs save locally after each arm finishes, without waiting for the full
 matrix. Under `results/<model>/<experiment>-<run_id>-checkpoints/`,
@@ -376,13 +409,22 @@ may reject the candidate or require additional windows. Its measured RPS is not 
 validated rate envelope. Compare repeated runs before deriving an admission policy.
 
 ```sh
-.venv/bin/bedrock-benchmark plan diagnostic-context-history --model nova-micro
-.venv/bin/bedrock-benchmark run diagnostic-context-history --model nova-micro
+# Run these sequentially, against the same quiet model quota.
+.venv/bin/bedrock-benchmark run capacity-context-short-rate --model nova-micro
+.venv/bin/bedrock-benchmark run capacity-context-medium-rate --model nova-micro
+.venv/bin/bedrock-benchmark run capacity-context-long-rate --model nova-micro
+
+# Supply the three actual capacity-profile.yaml paths from A.
+.venv/bin/python scripts/prepare_context_history.py --model nova-micro \
+  --profiles <short-profile.yaml> <medium-profile.yaml> <long-profile.yaml> \
+  --output-dir results/context-history-configs
+.venv/bin/python scripts/run.py results/context-history-configs/diagnostic-context-history-short.yaml --model nova-micro
+# Then run the medium and long generated configs sequentially.
 .venv/bin/bedrock-benchmark run capacity-shape-concurrency --model nova-micro \
   --workload medium_context --candidate-concurrency 7 --steady-state-duration-s 1800
 ```
 
-The full history matrix takes about 34.3 hours before calibration/drain; the
+The full history matrix takes about 30.9 hours before calibration/drain; the
 sustain retest typically needs at least an hour if its candidate remains eligible.
 Run them separately to avoid contaminating their provider state with each other.
 Reports retain `nominal_binding_constraint`, but throttling is described as an
@@ -471,15 +513,17 @@ Single-run results require repeated measurements at different times/days and
 ### Run experiments in GitHub Actions
 
 Use **Actions → Bedrock benchmark → Run workflow**. Set `experiment` to a name
-from `experiments/`, for example `diagnostic-context-history` (the default),
+from `experiments/`, for example `capacity-context-short-rate` (the default),
 `capacity-reference-concurrency`, or another experiment. The `.yaml` suffix is
 optional. Select the model using `model`. `dry_run` defaults to true and only
 checks plans; disable it for live traffic.
 
 The workflow reads the selected YAML. History experiments with explicit rate
 values split into serial workload/rate jobs, retaining all trials, recovery
-delays and paired seeds. The current history configuration creates ten jobs,
-about 3.4 hours each and 34.3 hours total, plus calibration/drain and setup.
+delays and paired seeds. Copy generated class configs into `experiments/` to
+select them in Actions: each produces three serial jobs, about 3.4 hours each.
+The unbound main template is rejected with a generation instruction. All three
+classes total nine jobs and 30.9 hours, plus calibration/drain and setup.
 Other experiments run as one job, preserving their full sweep, adaptive
 refinement, confirmation and inter-workload isolation. Matrix job ordering is
 not guaranteed. Avoid other traffic sharing the quota.

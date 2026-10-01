@@ -6,7 +6,7 @@ from pathlib import Path
 import yaml
 
 from bedrock_benchmark.constraints import load_quotas, load_slo, resolve_account
-from bedrock_benchmark.experiments.schema import load_experiment
+from bedrock_benchmark.experiments.schema import load_experiment, NoMatchingWorkloads
 from bedrock_benchmark.models import ModelConfig, load_models
 from bedrock_benchmark.workload import load_workloads
 
@@ -43,6 +43,10 @@ class ShippedConstraintsTests(unittest.TestCase):
     def test_every_workload_names_its_profile_and_gets_exactly_it(self):
         slos = load_slo()
         for path in sorted(Path("experiments").glob("*.yaml")):
+            if path.stem == "diagnostic-context-history":
+                with self.assertRaises(NoMatchingWorkloads):
+                    load_experiment(str(path), MICRO)
+                continue
             spec = load_experiment(str(path), MICRO)
             for w in spec.workloads:
                 with self.subTest(path=path.name, workload=w.name):
@@ -58,7 +62,7 @@ class ShippedConstraintsTests(unittest.TestCase):
             {n: w.slo_profile for n, w in catalog.items()},
             {"tiny_request": "gold", "short_chat": "gold", "medium_context": "silver",
              "long_context_short_answer": "silver", "rag_answer": "silver", "long_generation": "bronze",
-             "very_large_context": "bronze"},
+             "very_large_context": "bronze", "short": "silver", "medium": "silver", "long": "silver"},
         )
         for w in catalog.values():
             self.assertIn(w.slo_profile, slos.profiles)

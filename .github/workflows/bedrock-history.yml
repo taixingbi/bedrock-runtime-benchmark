@@ -6,7 +6,7 @@ on:
       experiment:
         description: Experiment name or YAML filename from experiments/
         type: string
-        default: diagnostic-context-history
+        default: capacity-context-short-rate
         required: true
       model:
         description: Model name from the repository catalog

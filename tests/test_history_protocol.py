@@ -13,7 +13,7 @@ MODEL = ModelConfig(name="test", model_id="m", quota_rpm=400, quota_tpm=8000000)
 
 
 def legacy_spec():
-    spec = load_experiment("experiments/diagnostic-context-history.yaml", MODEL)
+    spec = load_experiment("tests/fixtures/context-history-legacy.yaml", MODEL)
     return replace(spec, history_protocol=HistoryProtocol(), recovery_probe=RecoveryProbe(),
                    sweep=replace(spec.sweep, values=[1.6667]))
 
@@ -72,7 +72,7 @@ def test_unhealthy_baseline_does_not_send_observation_traffic():
 
 
 def test_bin_counts_separate_arrival_start_and_completion():
-    spec = load_experiment("experiments/diagnostic-context-history.yaml", MODEL)
+    spec = load_experiment("tests/fixtures/context-history-legacy.yaml", MODEL)
     rows = [RequestResult(request_id='late', scheduled_at=29, started_at=31, completed_at=32,
                           latency_ms=1000, throttled=True, success=False)]
     first = history.describe_window(rows, MeasurementWindow(0,30), spec.slo_for(spec.workloads[0].name), 1)
@@ -89,7 +89,7 @@ def test_history_executor_emits_descriptive_artifact_without_capacity(monkeypatc
     from bedrock_benchmark.contract import schema_for
     from bedrock_benchmark.summary import summarize_entry
     from .fakes import FakeBedrockRuntimeClient
-    spec = load_experiment('experiments/diagnostic-context-history.yaml', MODEL)
+    spec = load_experiment('tests/fixtures/context-history-legacy.yaml', MODEL)
     seen = []
     def checkpoint(subject, arm, rows):
         pass
@@ -124,7 +124,7 @@ def test_medium_retest_uses_continuous_long_windows():
 
 
 def test_empty_history_window_has_zero_goodput_and_unknown_reliability():
-    spec = load_experiment("experiments/diagnostic-context-history.yaml", MODEL)
+    spec = load_experiment("tests/fixtures/context-history-legacy.yaml", MODEL)
     m = history.describe_window([], MeasurementWindow(0, 30),
                                 spec.slo_for(spec.workloads[0].name), 1)["metrics"]
     assert m["throughput"]["slo_goodput_rps"] == 0
@@ -132,7 +132,7 @@ def test_empty_history_window_has_zero_goodput_and_unknown_reliability():
 
 
 def test_fixed_wait_matrix_has_independent_overloads_and_no_probes(monkeypatch):
-    spec = load_experiment("experiments/diagnostic-context-history.yaml", MODEL)
+    spec = load_experiment("tests/fixtures/context-history-legacy.yaml", MODEL)
     spec = replace(spec, sweep=replace(spec.sweep, values=[0.1]))
     clock, events = [1000.0], []
     class Target:
@@ -187,7 +187,7 @@ def test_fixed_wait_matrix_has_independent_overloads_and_no_probes(monkeypatch):
 def test_history_rejects_invalid_recovery_modes_and_delays():
     import pytest
     from bedrock_benchmark.experiments.schema import _validate
-    spec = load_experiment('experiments/diagnostic-context-history.yaml', MODEL)
+    spec = load_experiment('tests/fixtures/context-history-legacy.yaml', MODEL)
     for delays in ([], [0], [-1], [float('nan')], [float('inf')], [True], '120'):
         with pytest.raises(ValueError, match='recovery_delays_s'):
             _validate(replace(spec, history_protocol=replace(spec.history_protocol, recovery_delays_s=delays)))

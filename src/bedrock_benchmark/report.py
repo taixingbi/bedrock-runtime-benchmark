@@ -916,6 +916,7 @@ def build_capacity_profile(report: ExperimentReport, run_metadata: Optional[dict
             },
             **({"retest": spec.retest} if spec.retest is not None else {}),
             **({"history_protocol": vars(spec.history_protocol)} if spec.history_protocol is not None else {}),
+            **({"baseline_context": spec.baseline_context} if spec.baseline_context is not None else {}),
             "warmup_s": spec.warmup_s,
             "window_s": spec.duration_s,
             "throttle_pause_s": spec.throttle_pause_s,  # concurrency sweeps: a worker's wait after a 429

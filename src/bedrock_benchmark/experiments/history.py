@@ -69,6 +69,9 @@ async def run_history_comparison(spec, target, subject, all_results, recover, on
                        "status": "preparing", "bins": [],
                        "recovery_mode": h.recovery_mode, "requested_recovery_s": recovery_delay}
                 arms.append(arm)
+                if spec.baseline_context is not None:
+                    arm['r_safe_idle_rps'] = spec.baseline_context['r_safe_idle_rps']
+                    arm['load_fraction'] = spec.baseline_context['load_fractions'][index]
                 arm_start = len(all_results)
 
                 def checkpoint():
@@ -94,6 +97,8 @@ async def run_history_comparison(spec, target, subject, all_results, recover, on
                     target.reset_peak()
                     rows = await runner.run()
                     for r in rows:
+                        if spec.baseline_context is not None:
+                            r.tags.update(r_safe_idle_rps=arm['r_safe_idle_rps'], load_fraction=arm['load_fraction'])
                         r.tags.update({"subject": subject.name, "sweep_type": "rate", "sweep_value": rate,
                                        "phase": phase, "scenario": scenario, "trial": trial,
                                        "requested_recovery_s": recovery_delay,

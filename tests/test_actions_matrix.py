@@ -13,8 +13,8 @@ build_matrix = MODULE.build_matrix
 
 
 def test_history_covers_all_pairs_and_preserves_protocol():
-    original = yaml.safe_load((ROOT / 'experiments/diagnostic-context-history.yaml').read_text())
-    jobs = build_matrix('diagnostic-context-history.yaml', ROOT)['include']
+    original = yaml.safe_load((ROOT / 'experiments/diagnostic-context-stress.yaml').read_text())
+    jobs = build_matrix('diagnostic-context-stress.yaml', ROOT)['include']
     assert len(jobs) == len(original['workloads']) * len(original['sweep']['values'])
     pairs = set()
     for job in jobs:
