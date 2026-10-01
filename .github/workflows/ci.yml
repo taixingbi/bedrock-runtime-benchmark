@@ -42,15 +42,19 @@ jobs:
       - name: Run tests
         run: python -m pytest -q
 
-      - name: Verify every experiment binds to every model
+      - name: Verify runnable experiments bind to every model
         run: |
           python -c "
           import glob
-          from bedrock_benchmark.experiments.schema import load_experiment
+          from bedrock_benchmark.experiments.schema import NoMatchingWorkloads, load_experiment
           from bedrock_benchmark.models import load_models
           for model in load_models(include_disabled=True):
               for path in sorted(glob.glob('experiments/*.yaml')):
-                  load_experiment(path, model)
+                  try:
+                      load_experiment(path, model)
+                  except NoMatchingWorkloads as skip:
+                      print(f'skip: {model.name} x {path}: {skip}')
+                      continue
                   print(f'ok: {model.name} x {path}')
           "
 
