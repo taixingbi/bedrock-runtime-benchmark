@@ -5,6 +5,7 @@ __pycache__/
 .venv*/
 *.egg-info/
 .env
-# Real measurement outputs (incl. per-model folders) -- never committed.
+# Ignore local measurements. Actions explicitly commits saved results on the
+# benchmark-results branch when commit_results is enabled.
 results/*
 !results/.gitkeep

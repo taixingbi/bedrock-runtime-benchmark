@@ -17,6 +17,10 @@ on:
         description: Plan only, without AWS requests
         type: boolean
         default: true
+      commit_results:
+        description: Commit each live job's saved results to benchmark-results branch
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -50,6 +54,8 @@ jobs:
 
   benchmark:
     needs: prepare
+    permissions:
+      contents: write
     name: ${{ matrix.label }}
     runs-on: ubuntu-latest
     timeout-minutes: 330
@@ -111,3 +117,9 @@ jobs:
           path: results/
           if-no-files-found: warn
           retention-days: 14
+      - name: Commit this job's saved results to the repository
+        if: ${{ always() && !inputs.dry_run && inputs.commit_results }}
+        env:
+          RESULTS_DIR: results
+          RESULTS_JOB_ID: ${{ matrix.id }}
+        run: python scripts/commit_actions_results.py

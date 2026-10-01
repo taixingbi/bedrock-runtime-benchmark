@@ -533,6 +533,17 @@ starting a different experiment; longer experiments need a different execution
 setup or a protocol-specific split. Incremental arm checkpoints are available
 for history mode; other modes may not retain partial measurements on timeout.
 
+Live runs also default to `commit_results: true`. After each job uploads its
+artifact, it commits all saved files in `results/` to the **benchmark-results**
+branch under `results/actions/<run-id>/<attempt>/<job-id>/`. The branch starts
+from the first publishing run's source commit; later jobs append result commits.
+The benchmark job requests `contents: write` for its `GITHUB_TOKEN`; branch rules
+must permit it to create/update `benchmark-results`. The source branch stays
+unchanged. Uncheck `commit_results` for artifact-only storage; dry runs never
+commit results. Failed measurements also publish saved files when the final
+steps can execute. A hard runner termination may prevent both upload and commit.
+Existing runs use their original workflow; start a new run to use this behavior.
+
 Configure repository **Settings → Secrets and variables → Actions → Secrets**:
 add `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` for a dedicated IAM user
 with the required Bedrock permissions. Store the keys only in Actions secrets.
