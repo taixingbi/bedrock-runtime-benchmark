@@ -371,7 +371,12 @@ overload pressure retains the existing quota-relative protocol.
 The first round compares recovery behavior. Its descriptive bins and three load
 levels do not independently confirm `R_safe_after_overload`; establishing that
 function requires boundary sweeps and confirmation for each recovery condition.
-`diagnostic-context-stress` retains 16K/256 separately for appendix stress work.
+`diagnostic-context-stress` runs `short`, `medium`, and `long` at fixed absolute
+rates of 0.1, 0.25, 0.5, 1.0, and 1.6667 RPS, with output=64 and the same
+history protocol. It runs without baseline artifacts and does not normalize
+target pressure. Actions splits it into 15 serial jobs, about 3.4 hours each
+and 51.5 hours total before calibration/drain. The 16K/256 shape remains in
+the workload catalog but is not selected by this experiment.
 Existing results and partially completed runs are left intact.
 
 History runs save locally after each arm finishes, without waiting for the full

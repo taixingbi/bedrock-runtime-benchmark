@@ -1,4 +1,4 @@
-# Appendix: 16K/256 stress characterization. Separate from the main input study.
+# Fixed-rate stress characterization across 512/64, 2048/64 and 8192/64.
 # Descriptive comparison, not a production capacity/recommendation experiment.
 # Run on a quiet account; record any other traffic sharing the model quota.
 # Each recovery delay gets a fresh idle + overload sequence, with no probes.
@@ -6,11 +6,14 @@
 purpose: characterization
 name: diagnostic-context-stress
 description: |
-  Compare large-context open-loop traffic after idle and after offered overload
+  Compare short, medium and long input classes at fixed output=64 and the same
+  absolute offered rates, after idle and after offered overload
   plus fixed recovery delays. Continuous 15-minute observations with 30s
   descriptive bins; paired arrival seeds and reversed arm order on trial two.
   Does not produce a safe capacity or identify an internal quota mechanism.
-workloads: [very_large_context]
+# Shapes and silver SLO bindings are defined in catalog/workloads.yaml.
+# TTFT keeps the configured input-length bands in constraints/slo.yaml.
+workloads: [short, medium, long]
 warmup_s: 0
 duration_s: 900
 repetitions: 2
